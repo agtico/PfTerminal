@@ -43,6 +43,8 @@ use codex_rollout_trace::TraceWriter;
 use codex_rollout_trace::replay_bundle;
 use codex_tools::FreeformTool;
 use codex_tools::FreeformToolFormat;
+use codex_tools::JsonSchema;
+use codex_tools::ResponsesApiTool;
 use codex_tools::ToolSpec;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
@@ -185,8 +187,8 @@ fn test_session_telemetry() -> SessionTelemetry {
 
 #[test]
 fn chat_completions_wraps_freeform_tools_as_functions() {
-    let tools =
-        super::create_tools_json_for_chat_completions(&[ToolSpec::Freeform(FreeformTool {
+    let tools = super::create_tools_json_for_chat_completions(
+        &[ToolSpec::Freeform(FreeformTool {
             name: "apply_patch".to_string(),
             description: "Apply a patch".to_string(),
             format: FreeformToolFormat {
@@ -194,8 +196,10 @@ fn chat_completions_wraps_freeform_tools_as_functions() {
                 syntax: "lark".to_string(),
                 definition: "start: /.+/".to_string(),
             },
-        })])
-        .expect("chat tools");
+        })],
+        false,
+    )
+    .expect("chat tools");
 
     assert_eq!(
         tools,
@@ -218,6 +222,60 @@ fn chat_completions_wraps_freeform_tools_as_functions() {
                 "strict": true,
             },
         })]
+    );
+}
+
+#[test]
+fn ambient_chat_completions_strips_strict_from_tools() {
+    let freeform = ToolSpec::Freeform(FreeformTool {
+        name: "apply_patch".to_string(),
+        description: "Apply a patch".to_string(),
+        format: FreeformToolFormat {
+            r#type: "grammar".to_string(),
+            syntax: "lark".to_string(),
+            definition: "start: /.+/".to_string(),
+        },
+    });
+    let function = ToolSpec::Function(ResponsesApiTool {
+        name: "ambient_probe".to_string(),
+        description: "Records a small probe result.".to_string(),
+        strict: true,
+        defer_loading: None,
+        parameters: JsonSchema::object(
+            BTreeMap::from([(
+                "ok".to_string(),
+                JsonSchema::boolean(Some("Whether the probe succeeded.".to_string())),
+            )]),
+            Some(vec!["ok".to_string()]),
+            Some(false.into()),
+        ),
+        output_schema: None,
+    });
+
+    let tools = super::create_tools_json_for_chat_completions(
+        &[freeform, function],
+        /*strip_strict*/ true,
+    )
+    .expect("chat tools");
+
+    assert_eq!(tools.len(), 2);
+    assert!(
+        tools
+            .iter()
+            .all(|tool| tool.pointer("/function/strict").is_none()),
+        "Ambient chat tool payloads must omit strict: {tools:?}"
+    );
+    assert_eq!(
+        tools[1]
+            .pointer("/function/name")
+            .and_then(|value| value.as_str()),
+        Some("ambient_probe")
+    );
+    assert_eq!(
+        tools[1]
+            .pointer("/function/parameters/additionalProperties")
+            .and_then(|value| value.as_bool()),
+        Some(false)
     );
 }
 

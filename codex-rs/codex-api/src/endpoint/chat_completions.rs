@@ -24,6 +24,7 @@ use http::HeaderMap;
 use http::HeaderValue;
 use http::Method;
 use serde::Deserialize;
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -255,12 +256,22 @@ struct PendingToolCall {
     arguments: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct TextFunctionCall {
+    #[serde(rename = "type")]
+    kind: String,
+    name: Option<String>,
+    arguments: Option<Value>,
+    call_id: Option<String>,
+}
+
 #[derive(Debug)]
 struct ChatStreamState {
     response_id: Option<String>,
     last_server_model: Option<String>,
     message_added: bool,
     message_text: String,
+    emitted_text_len: usize,
     tool_calls: BTreeMap<usize, PendingToolCall>,
     token_usage: Option<TokenUsage>,
     response_id_hint: Option<String>,
@@ -273,6 +284,7 @@ impl ChatStreamState {
             last_server_model: None,
             message_added: false,
             message_text: String::new(),
+            emitted_text_len: 0,
             tool_calls: BTreeMap::new(),
             token_usage: None,
             response_id_hint,
@@ -307,28 +319,8 @@ impl ChatStreamState {
             if let Some(delta) = choice.delta.content
                 && !delta.is_empty()
             {
-                if !self.message_added {
-                    let item = ResponseItem::Message {
-                        id: Some(self.message_id()),
-                        role: "assistant".to_string(),
-                        content: Vec::new(),
-                        phase: None,
-                        metadata: None,
-                    };
-                    if tx_event
-                        .send(Ok(ResponseEvent::OutputItemAdded(item)))
-                        .await
-                        .is_err()
-                    {
-                        return false;
-                    }
-                    self.message_added = true;
-                }
                 self.message_text.push_str(&delta);
-                if tx_event
-                    .send(Ok(ResponseEvent::OutputTextDelta(delta)))
-                    .await
-                    .is_err()
+                if !self.should_delay_text_delta() && !self.emit_pending_text_delta(tx_event).await
                 {
                     return false;
                 }
@@ -353,33 +345,65 @@ impl ChatStreamState {
         true
     }
 
-    async fn complete(self, tx_event: &mpsc::Sender<Result<ResponseEvent, ApiError>>) {
+    async fn complete(mut self, tx_event: &mpsc::Sender<Result<ResponseEvent, ApiError>>) {
         let response_id = self.response_id();
         let message_id = format!("msg_{response_id}");
-        let token_usage = self.token_usage;
+        let token_usage = self.token_usage.take();
 
-        if self.message_added {
-            let item = ResponseItem::Message {
-                id: Some(message_id),
-                role: "assistant".to_string(),
-                content: vec![ContentItem::OutputText {
-                    text: self.message_text,
-                }],
-                phase: None,
-                metadata: None,
-            };
-            if tx_event
-                .send(Ok(ResponseEvent::OutputItemDone(item)))
-                .await
-                .is_err()
-            {
-                return;
+        if !self.message_text.is_empty() {
+            match parse_serialized_function_call_text(&self.message_text) {
+                Ok(Some(item)) => {
+                    if tx_event
+                        .send(Ok(ResponseEvent::OutputItemDone(item)))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Ok(None) => {
+                    if self.emitted_text_len < self.message_text.len()
+                        && !self.emit_pending_text_delta(tx_event).await
+                    {
+                        return;
+                    }
+                    if self.message_added {
+                        let item = ResponseItem::Message {
+                            id: Some(message_id),
+                            role: "assistant".to_string(),
+                            content: vec![ContentItem::OutputText {
+                                text: self.message_text,
+                            }],
+                            phase: None,
+                            metadata: None,
+                        };
+                        if tx_event
+                            .send(Ok(ResponseEvent::OutputItemDone(item)))
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
+                Err(message) => {
+                    let _ = tx_event.send(Err(ApiError::Stream(message))).await;
+                    return;
+                }
             }
         }
 
         for (index, tool_call) in self.tool_calls {
             if tool_call.name.is_empty() {
-                continue;
+                let call_id = tool_call.id.as_deref().unwrap_or("<missing>");
+                let _ = tx_event
+                    .send(Err(ApiError::Stream(format!(
+                        "chat completions stream emitted a tool call without a function name \
+                         at index {index}; call_id={call_id}; arguments excerpt: {}",
+                        diagnostic_excerpt(&tool_call.arguments)
+                    ))))
+                    .await;
+                return;
             }
             let call_id = tool_call
                 .id
@@ -420,6 +444,144 @@ impl ChatStreamState {
             .or_else(|| self.response_id_hint.clone())
             .unwrap_or_else(|| "chatcmpl-unknown".to_string())
     }
+
+    fn should_delay_text_delta(&self) -> bool {
+        self.emitted_text_len == 0 && is_potential_serialized_tool_text(&self.message_text)
+    }
+
+    async fn emit_pending_text_delta(
+        &mut self,
+        tx_event: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
+    ) -> bool {
+        if self.emitted_text_len >= self.message_text.len() {
+            return true;
+        }
+
+        if !self.message_added {
+            let item = ResponseItem::Message {
+                id: Some(self.message_id()),
+                role: "assistant".to_string(),
+                content: Vec::new(),
+                phase: None,
+                metadata: None,
+            };
+            if tx_event
+                .send(Ok(ResponseEvent::OutputItemAdded(item)))
+                .await
+                .is_err()
+            {
+                return false;
+            }
+            self.message_added = true;
+        }
+
+        let delta = self.message_text[self.emitted_text_len..].to_string();
+        self.emitted_text_len = self.message_text.len();
+        tx_event
+            .send(Ok(ResponseEvent::OutputTextDelta(delta)))
+            .await
+            .is_ok()
+    }
+}
+
+fn is_potential_serialized_tool_text(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    if trimmed.is_empty() {
+        return true;
+    }
+    if !trimmed.starts_with('{') {
+        return false;
+    }
+
+    let probe: String = trimmed.chars().take(256).collect();
+    if probe.contains("\"function_call\"") || probe.contains("\"custom_tool_call\"") {
+        return true;
+    }
+
+    probe.len() < 256
+}
+
+fn parse_serialized_function_call_text(text: &str) -> Result<Option<ResponseItem>, String> {
+    if !looks_like_serialized_tool_call(text) {
+        return Ok(None);
+    }
+
+    let trimmed = text.trim();
+    let parsed: TextFunctionCall = serde_json::from_str(trimmed).map_err(|err| {
+        format!(
+            "chat completions stream emitted malformed function-call JSON as assistant text: \
+             {err}; raw excerpt: {}",
+            diagnostic_excerpt(trimmed)
+        )
+    })?;
+
+    if parsed.kind != "function_call" {
+        return Err(format!(
+            "chat completions stream emitted unsupported serialized tool call type `{}` as \
+             assistant text; raw excerpt: {}",
+            parsed.kind,
+            diagnostic_excerpt(trimmed)
+        ));
+    }
+
+    let name = parsed.name.filter(|name| !name.is_empty()).ok_or_else(|| {
+        format!(
+            "chat completions stream emitted serialized function_call text without a name; \
+             raw excerpt: {}",
+            diagnostic_excerpt(trimmed)
+        )
+    })?;
+    let call_id = parsed
+        .call_id
+        .filter(|call_id| !call_id.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "chat completions stream emitted serialized function_call text without call_id; \
+             raw excerpt: {}",
+                diagnostic_excerpt(trimmed)
+            )
+        })?;
+    let arguments = parsed.arguments.ok_or_else(|| {
+        format!(
+            "chat completions stream emitted serialized function_call text without arguments; \
+             raw excerpt: {}",
+            diagnostic_excerpt(trimmed)
+        )
+    })?;
+    let arguments = match arguments {
+        Value::String(arguments) => arguments,
+        other => serde_json::to_string(&other).map_err(|err| {
+            format!(
+                "chat completions stream emitted function_call arguments that could not be \
+                 serialized: {err}; raw excerpt: {}",
+                diagnostic_excerpt(trimmed)
+            )
+        })?,
+    };
+
+    Ok(Some(ResponseItem::FunctionCall {
+        id: Some(format!("fc_{call_id}")),
+        name,
+        namespace: None,
+        arguments,
+        call_id,
+        metadata: None,
+    }))
+}
+
+fn looks_like_serialized_tool_call(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    trimmed.starts_with('{')
+        && (trimmed.contains("\"function_call\"") || trimmed.contains("\"custom_tool_call\""))
+}
+
+fn diagnostic_excerpt(text: &str) -> String {
+    const MAX_EXCERPT_CHARS: usize = 800;
+    let mut excerpt: String = text.chars().take(MAX_EXCERPT_CHARS).collect();
+    if text.chars().count() > MAX_EXCERPT_CHARS {
+        excerpt.push_str("...");
+    }
+    excerpt.replace('\n', "\\n")
 }
 
 async fn process_chat_sse(
@@ -535,6 +697,23 @@ mod tests {
         events
     }
 
+    fn content_event(id: &str, content: &str) -> Vec<u8> {
+        format!(
+            "data: {}\n\n",
+            serde_json::json!({
+                "id": id,
+                "choices": [
+                    {
+                        "delta": {
+                            "content": content,
+                        }
+                    }
+                ],
+            })
+        )
+        .into_bytes()
+    }
+
     #[tokio::test]
     async fn parses_text_deltas_and_usage() {
         let events = collect_events(&[
@@ -602,6 +781,73 @@ mod tests {
             Ok(ResponseEvent::Completed { response_id, .. }) if response_id == "chatcmpl-2"
         );
         assert_eq!(events.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn parses_serialized_function_call_text_without_leaking_as_text() {
+        let content = serde_json::json!({
+            "type": "function_call",
+            "name": "exec_command",
+            "arguments": {
+                "cmd": "date"
+            },
+            "call_id": "chatcmpl-tool-1",
+        })
+        .to_string();
+        let event = content_event("chatcmpl-serialized", &content);
+
+        let events = collect_events(&[event.as_slice(), b"data: [DONE]\n\n"]).await;
+
+        assert_matches!(
+            &events[0],
+            Ok(ResponseEvent::OutputItemDone(ResponseItem::FunctionCall {
+                name,
+                arguments,
+                call_id,
+                ..
+            })) if name == "exec_command" && arguments == "{\"cmd\":\"date\"}" && call_id == "chatcmpl-tool-1"
+        );
+        assert_matches!(
+            &events[1],
+            Ok(ResponseEvent::Completed { response_id, .. }) if response_id == "chatcmpl-serialized"
+        );
+        assert_eq!(events.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn errors_on_malformed_serialized_function_call_text() {
+        let content = r#"{"type":"function_call","name":"exec_command","arguments":"{"cmd":"date"}","call_id":"chatcmpl-tool-bad"}"#;
+        let event = content_event("chatcmpl-malformed", content);
+
+        let events = collect_events(&[event.as_slice(), b"data: [DONE]\n\n"]).await;
+
+        assert_matches!(
+            &events[0],
+            Err(ApiError::Stream(message))
+                if message.contains("malformed function-call JSON as assistant text")
+                    && message.contains("raw excerpt")
+                    && message.contains("chatcmpl-tool-bad")
+        );
+        assert_eq!(events.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn errors_on_tool_call_delta_without_function_name() {
+        let events = collect_events(&[
+            br#"data: {"id":"chatcmpl-nameless","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"arguments":"{\"cmd\":\"date\"}"}}]}}]}"#,
+            b"\n\n",
+            b"data: [DONE]\n\n",
+        ])
+        .await;
+
+        assert_matches!(
+            &events[0],
+            Err(ApiError::Stream(message))
+                if message.contains("tool call without a function name")
+                    && message.contains("call_id=call_1")
+                    && message.contains(r#"{"cmd":"date"}"#)
+        );
+        assert_eq!(events.len(), 1);
     }
 
     #[tokio::test]

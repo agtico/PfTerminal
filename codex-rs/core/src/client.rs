@@ -919,7 +919,11 @@ impl ModelClient {
             append_chat_messages_for_response_item(item, &mut messages);
         }
 
-        let tools = create_tools_json_for_chat_completions(&prompt.tools)?;
+        // Ambient GLM chat streams proper tool calls when OpenAI's `strict`
+        // function flag is omitted. Keep the JSON schema, but drop that
+        // provider-incompatible wrapper bit for Ambient only.
+        let strip_strict_from_tools = self.state.provider.info().is_ambient();
+        let tools = create_tools_json_for_chat_completions(&prompt.tools, strip_strict_from_tools)?;
         let response_format = prompt.output_schema.as_ref().map(|schema| {
             json!({
                 "type": "json_schema",
@@ -2052,23 +2056,26 @@ fn normalize_chat_role(role: &str) -> String {
     }
 }
 
-fn create_tools_json_for_chat_completions(tools: &[ToolSpec]) -> Result<Vec<Value>> {
+fn create_tools_json_for_chat_completions(
+    tools: &[ToolSpec],
+    strip_strict: bool,
+) -> Result<Vec<Value>> {
     tools
         .iter()
-        .filter_map(tool_spec_to_chat_tool)
+        .filter_map(|tool| tool_spec_to_chat_tool(tool, strip_strict))
         .collect::<Result<Vec<_>>>()
 }
 
-fn tool_spec_to_chat_tool(tool: &ToolSpec) -> Option<Result<Value>> {
+fn tool_spec_to_chat_tool(tool: &ToolSpec, strip_strict: bool) -> Option<Result<Value>> {
     match tool {
         ToolSpec::Function(_) => Some(serde_json::to_value(tool).map_err(Into::into).and_then(
             |value| {
-                responses_tool_to_chat_tool(value).ok_or_else(|| {
+                responses_tool_to_chat_tool(value, strip_strict).ok_or_else(|| {
                     CodexErr::Fatal("failed to convert function tool for chat".to_string())
                 })
             },
         )),
-        ToolSpec::Freeform(tool) => Some(Ok(freeform_tool_to_chat_tool(tool))),
+        ToolSpec::Freeform(tool) => Some(Ok(freeform_tool_to_chat_tool(tool, strip_strict))),
         ToolSpec::Namespace(_)
         | ToolSpec::ToolSearch { .. }
         | ToolSpec::ImageGeneration { .. }
@@ -2076,7 +2083,7 @@ fn tool_spec_to_chat_tool(tool: &ToolSpec) -> Option<Result<Value>> {
     }
 }
 
-fn responses_tool_to_chat_tool(mut tool: Value) -> Option<Value> {
+fn responses_tool_to_chat_tool(mut tool: Value, strip_strict: bool) -> Option<Value> {
     let object = tool.as_object_mut()?;
     if object.get("type").and_then(Value::as_str)? != "function" {
         return None;
@@ -2098,7 +2105,9 @@ fn responses_tool_to_chat_tool(mut tool: Value) -> Option<Value> {
         function.insert("description".to_string(), description);
     }
     function.insert("parameters".to_string(), parameters);
-    if let Some(strict) = strict {
+    if let Some(strict) = strict
+        && !strip_strict
+    {
         function.insert("strict".to_string(), strict);
     }
 
@@ -2108,8 +2117,8 @@ fn responses_tool_to_chat_tool(mut tool: Value) -> Option<Value> {
     }))
 }
 
-fn freeform_tool_to_chat_tool(tool: &codex_tools::FreeformTool) -> Value {
-    json!({
+fn freeform_tool_to_chat_tool(tool: &codex_tools::FreeformTool, strip_strict: bool) -> Value {
+    let mut value = json!({
         "type": "function",
         "function": {
             "name": tool.name.as_str(),
@@ -2133,7 +2142,12 @@ fn freeform_tool_to_chat_tool(tool: &codex_tools::FreeformTool) -> Value {
             },
             "strict": true,
         },
-    })
+    });
+    if strip_strict && let Some(function) = value.get_mut("function").and_then(Value::as_object_mut)
+    {
+        function.remove("strict");
+    }
+    value
 }
 
 /// Stamp a ResponsesWsRequest with the current time.
