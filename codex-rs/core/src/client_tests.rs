@@ -29,6 +29,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -283,6 +284,7 @@ fn ambient_chat_completions_strips_strict_from_tools() {
 #[test]
 fn chat_completions_omits_agent_messages_from_history() {
     let mut messages = Vec::new();
+    let mut skipped_tool_call_ids = std::collections::HashSet::new();
     super::append_chat_messages_for_response_item(
         ResponseItem::AgentMessage {
             id: None,
@@ -303,6 +305,7 @@ fn chat_completions_omits_agent_messages_from_history() {
             metadata: None,
         },
         &mut messages,
+        &mut skipped_tool_call_ids,
     );
 
     assert!(
@@ -321,11 +324,76 @@ fn chat_completions_omits_agent_messages_from_history() {
             metadata: None,
         },
         &mut messages,
+        &mut skipped_tool_call_ids,
     );
 
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].role, "assistant");
     assert_eq!(messages[0].content.as_deref(), Some("real assistant text"));
+}
+
+#[test]
+fn chat_completions_skips_malformed_historical_tool_calls() {
+    let mut messages = Vec::new();
+    let mut skipped_tool_call_ids = std::collections::HashSet::new();
+    let malformed_call_id = "chatcmpl-tool-bad-plan".to_string();
+
+    super::append_chat_messages_for_response_item(
+        ResponseItem::FunctionCall {
+            id: None,
+            name: "update_plan".to_string(),
+            arguments: concat!(
+                "{\"explanation\":\"bad historical call\",",
+                "\"plan\":[step\":\"Explore repo\",",
+                "\"status\":\"in_progress\"}]}"
+            )
+            .to_string(),
+            call_id: malformed_call_id.clone(),
+            namespace: None,
+            metadata: None,
+        },
+        &mut messages,
+        &mut skipped_tool_call_ids,
+    );
+
+    super::append_chat_messages_for_response_item(
+        ResponseItem::FunctionCallOutput {
+            id: None,
+            call_id: malformed_call_id,
+            output: FunctionCallOutputPayload::from_text(
+                "failed to parse function arguments".to_string(),
+            ),
+            metadata: None,
+        },
+        &mut messages,
+        &mut skipped_tool_call_ids,
+    );
+
+    assert!(
+        messages.is_empty(),
+        "malformed historical tool calls and their outputs must not poison resumed Chat requests"
+    );
+
+    super::append_chat_messages_for_response_item(
+        ResponseItem::FunctionCall {
+            id: None,
+            name: "exec_command".to_string(),
+            arguments: "{\"cmd\":\"pwd\"}".to_string(),
+            call_id: "chatcmpl-tool-good".to_string(),
+            namespace: None,
+            metadata: None,
+        },
+        &mut messages,
+        &mut skipped_tool_call_ids,
+    );
+
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].role, "assistant");
+    assert_eq!(messages[0].tool_calls.len(), 1);
+    assert_eq!(
+        messages[0].tool_calls[0].function.arguments,
+        "{\"cmd\":\"pwd\"}"
+    );
 }
 
 #[test]

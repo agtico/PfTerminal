@@ -24,6 +24,7 @@
 //! fails, normal stream retry/fallback logic handles recovery on the same turn.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
@@ -109,6 +110,7 @@ use tokio::sync::oneshot::error::TryRecvError;
 use tokio_tungstenite::tungstenite::Error;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
+use tracing::debug;
 use tracing::instrument;
 use tracing::trace;
 use tracing::warn;
@@ -915,8 +917,9 @@ impl ModelClient {
         }
 
         let input = prompt.get_formatted_input_for_request(model_info.use_responses_lite);
+        let mut skipped_tool_call_ids = HashSet::new();
         for item in input {
-            append_chat_messages_for_response_item(item, &mut messages);
+            append_chat_messages_for_response_item(item, &mut messages, &mut skipped_tool_call_ids);
         }
 
         // Ambient GLM chat streams proper tool calls when OpenAI's `strict`
@@ -1972,7 +1975,11 @@ impl ModelClientSession {
     }
 }
 
-fn append_chat_messages_for_response_item(item: ResponseItem, messages: &mut Vec<ChatMessage>) {
+fn append_chat_messages_for_response_item(
+    item: ResponseItem,
+    messages: &mut Vec<ChatMessage>,
+    skipped_tool_call_ids: &mut HashSet<String>,
+) {
     match item {
         ResponseItem::Message { role, content, .. } => {
             if let Some(content) = content_items_to_chat_text(&content) {
@@ -1997,6 +2004,15 @@ fn append_chat_messages_for_response_item(item: ResponseItem, messages: &mut Vec
             call_id,
             ..
         } => {
+            if serde_json::from_str::<Value>(&arguments).is_err() {
+                debug!(
+                    call_id = %call_id,
+                    name = %name,
+                    "skipping malformed historical chat tool call arguments during replay"
+                );
+                skipped_tool_call_ids.insert(call_id);
+                return;
+            }
             messages.push(ChatMessage {
                 role: "assistant".to_string(),
                 content: None,
@@ -2014,6 +2030,13 @@ fn append_chat_messages_for_response_item(item: ResponseItem, messages: &mut Vec
         | ResponseItem::CustomToolCallOutput {
             call_id, output, ..
         } => {
+            if skipped_tool_call_ids.contains(&call_id) {
+                debug!(
+                    call_id = %call_id,
+                    "skipping historical chat tool output for malformed replayed call"
+                );
+                return;
+            }
             messages.push(ChatMessage {
                 role: "tool".to_string(),
                 content: Some(output.body.to_text().unwrap_or_else(|| output.to_string())),
