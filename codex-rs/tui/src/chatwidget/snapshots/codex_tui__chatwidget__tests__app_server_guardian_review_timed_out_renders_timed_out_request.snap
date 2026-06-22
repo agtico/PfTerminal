@@ -1,6 +1,5 @@
 ---
 source: tui/src/chatwidget/tests/guardian.rs
-assertion_line: 513
 expression: normalize_snapshot_paths(term.backend().vt100().screen().contents())
 ---
 
@@ -18,4 +17,4 @@ expression: normalize_snapshot_paths(term.backend().vt100().screen().contents())
 
 › Ask PFTerminal to do anything
 
-  zai-org/GLM-5.2-FP8 standard · /tmp/project
+  zai-org/GLM-5.2-FP8 standard · /tmp/project · Post Fiat Terminal · TPS: -- tok/s

@@ -108,7 +108,14 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    fn record_tps_stream_delta(&mut self, delta: &str) {
+        if self.tps_estimator.record_stream_delta(delta) {
+            self.refresh_status_surfaces();
+        }
+    }
+
     pub(super) fn on_agent_message_delta(&mut self, delta: String) {
+        self.record_tps_stream_delta(&delta);
         self.handle_streaming_delta(delta);
     }
 
@@ -198,6 +205,7 @@ impl ChatWidget {
     }
 
     pub(super) fn on_agent_reasoning_delta(&mut self, delta: String) {
+        self.record_tps_stream_delta(&delta);
         // For reasoning deltas, do not stream to history. Accumulate the
         // current reasoning block and extract the first bold element
         // (between **/**) as the chunk header. Show this header as status.

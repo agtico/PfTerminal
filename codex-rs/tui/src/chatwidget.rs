@@ -415,6 +415,8 @@ mod tool_lifecycle;
 mod tool_requests;
 mod transcript;
 use self::transcript::TranscriptState;
+mod tps;
+use self::tps::TpsEstimator;
 mod turn_lifecycle;
 mod turn_runtime;
 use self::turn_lifecycle::TurnLifecycleState;
@@ -473,7 +475,8 @@ const ASK_FOR_APPROVAL_LABEL: &str = "Ask for approval";
 const APPROVE_FOR_ME_LABEL: &str = "Approve for me";
 const AUTO_REVIEW_DESCRIPTION: &str = "Only ask for actions detected as potentially unsafe.";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
-const DEFAULT_STATUS_LINE_ITEMS: [&str; 3] = ["model-with-reasoning", "current-dir", "brand"];
+const DEFAULT_STATUS_LINE_ITEMS: [&str; 4] =
+    ["model-with-reasoning", "current-dir", "brand", "tps"];
 const MAX_AGENT_COPY_HISTORY: usize = 32;
 
 /// Common initialization parameters shared by all `ChatWidget` constructors.
@@ -550,6 +553,7 @@ pub(crate) struct ChatWidget {
     runtime_model_provider_base_url: Option<String>,
     pub(crate) remote_connection: Option<RemoteConnectionStatus>,
     token_info: Option<TokenUsageInfo>,
+    tps_estimator: TpsEstimator,
     rate_limit_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshotDisplay>,
     refreshing_status_outputs: Vec<(u64, StatusHistoryHandle)>,
     next_status_refresh_request_id: u64,
@@ -1130,8 +1134,12 @@ impl ChatWidget {
     fn apply_token_info(&mut self, info: TokenUsageInfo) {
         let percent = self.context_remaining_percent(&info);
         let used_tokens = self.context_used_tokens(&info, percent.is_some());
+        let tps_updated = self.tps_estimator.record_provider_usage(&info);
         self.bottom_pane.set_context_window(percent, used_tokens);
         self.token_info = Some(info);
+        if tps_updated {
+            self.refresh_status_surfaces();
+        }
     }
 
     fn context_remaining_percent(&self, info: &TokenUsageInfo) -> Option<i64> {

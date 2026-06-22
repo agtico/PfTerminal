@@ -1,6 +1,5 @@
 ---
 source: tui/src/chatwidget/tests/status_and_layout.rs
-assertion_line: 1445
 expression: snapshot
 ---
 "                                                                                "
@@ -9,4 +8,4 @@ expression: snapshot
 "                                                                                "
 "› Ask PFTerminal to do anything                                                 "
 "                                                                                "
-"  zai-org/GLM-5.2-FP8 standard · /tmp/project       Goal paused (/goal resume)  "
+"  zai-org/GLM-5.2-FP8 standard · /tmp/project · Po… Goal paused (/goal resume)  "

@@ -655,6 +655,7 @@ impl ChatWidget {
             ),
             StatusLineItem::TaskProgress => self.terminal_title_task_progress(),
             StatusLineItem::Brand => Some("Post Fiat Terminal".to_string()),
+            StatusLineItem::Tps => Some(self.tps_estimator.label(Instant::now())),
         }
     }
 
@@ -698,6 +699,7 @@ impl ChatWidget {
             StatusSurfacePreviewItem::ModelWithReasoning => StatusLineItem::ModelWithReasoning,
             StatusSurfacePreviewItem::Reasoning => StatusLineItem::Reasoning,
             StatusSurfacePreviewItem::Brand => StatusLineItem::Brand,
+            StatusSurfacePreviewItem::Tps => StatusLineItem::Tps,
         };
         self.status_line_value_for_item(status_line_item)
     }

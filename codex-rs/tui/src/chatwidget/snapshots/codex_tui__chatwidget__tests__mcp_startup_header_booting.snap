@@ -1,6 +1,5 @@
 ---
 source: tui/src/chatwidget/tests/mcp_startup.rs
-assertion_line: 118
 expression: normalized_backend_snapshot(terminal.backend())
 ---
 "                                                                                "
@@ -9,4 +8,4 @@ expression: normalized_backend_snapshot(terminal.backend())
 "                                                                                "
 "› Ask PFTerminal to do anything                                                 "
 "                                                                                "
-"  zai-org/GLM-5.2-FP8 standard · /tmp/project                                   "
+"  zai-org/GLM-5.2-FP8 standard · /tmp/project · Post Fiat Terminal · TPS: -- to…"

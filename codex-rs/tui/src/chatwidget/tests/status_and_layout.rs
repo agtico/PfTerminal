@@ -2106,15 +2106,116 @@ async fn default_status_line_includes_product_brand() {
             "model-with-reasoning".to_string(),
             "current-dir".to_string(),
             "brand".to_string(),
+            "tps".to_string(),
         ]
     );
 
     chat.refresh_status_line();
 
-    assert_eq!(
-        status_line_text(&chat),
-        Some("zai-org/GLM-5.2-FP8 standard · /tmp/project · Post Fiat Terminal".to_string())
+    let status_line = status_line_text(&chat).expect("default status line should render");
+    assert!(status_line.contains("Post Fiat Terminal"));
+    assert!(status_line.ends_with("TPS: -- tok/s"));
+}
+
+#[tokio::test]
+async fn status_line_tps_updates_during_active_streaming() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.refresh_status_line();
+    chat.tps_estimator.start_turn(
+        std::time::Instant::now() - std::time::Duration::from_secs(1),
+        None,
     );
+    chat.on_agent_message_delta("12345678901234567890".to_string());
+
+    let status_line = status_line_text(&chat).expect("status line should render");
+    assert!(status_line.contains("Post Fiat Terminal"));
+    assert!(
+        status_line.contains("TPS: ~"),
+        "stream-estimated active TPS should be marked approximate: {status_line}"
+    );
+    assert_eq!(status_line.matches("TPS:").count(), 1);
+}
+
+#[tokio::test]
+async fn status_line_tps_updates_from_completed_turn_average() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.on_task_started();
+    chat.set_token_info(Some(TokenUsageInfo {
+        total_token_usage: TokenUsage {
+            output_tokens: 30,
+            reasoning_output_tokens: 10,
+            total_tokens: 40,
+            ..TokenUsage::default()
+        },
+        last_token_usage: TokenUsage {
+            output_tokens: 30,
+            reasoning_output_tokens: 10,
+            total_tokens: 40,
+            ..TokenUsage::default()
+        },
+        model_context_window: Some(128_000),
+    }));
+    chat.on_task_complete(
+        /*last_agent_message*/ None,
+        Some(2_000),
+        /*from_replay*/ false,
+    );
+
+    let status_line = status_line_text(&chat).expect("status line should render after TPS sample");
+    assert!(status_line.contains("Post Fiat Terminal"));
+    assert!(status_line.ends_with("TPS: 20.0 tok/s"));
+}
+
+#[tokio::test]
+async fn status_line_tps_uses_streamed_text_when_usage_is_missing() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.on_task_started();
+    chat.on_agent_message_delta("12345678901234567890".to_string());
+    chat.on_task_complete(
+        /*last_agent_message*/ None,
+        Some(1_000),
+        /*from_replay*/ false,
+    );
+
+    let status_line =
+        status_line_text(&chat).expect("status line should render after fallback TPS sample");
+    assert!(status_line.contains("Post Fiat Terminal"));
+    assert!(status_line.ends_with("TPS: ~5.0 tok/s"));
+}
+
+#[tokio::test]
+async fn status_line_tps_updates_when_usage_arrives_after_completion() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.on_task_started();
+    chat.on_task_complete(
+        /*last_agent_message*/ None,
+        Some(2_000),
+        /*from_replay*/ false,
+    );
+    chat.set_token_info(Some(TokenUsageInfo {
+        total_token_usage: TokenUsage {
+            output_tokens: 30,
+            reasoning_output_tokens: 10,
+            total_tokens: 40,
+            ..TokenUsage::default()
+        },
+        last_token_usage: TokenUsage {
+            output_tokens: 30,
+            reasoning_output_tokens: 10,
+            total_tokens: 40,
+            ..TokenUsage::default()
+        },
+        model_context_window: Some(128_000),
+    }));
+
+    let status_line =
+        status_line_text(&chat).expect("status line should render after late usage update");
+    assert!(status_line.contains("Post Fiat Terminal"));
+    assert!(status_line.ends_with("TPS: 20.0 tok/s"));
 }
 
 #[tokio::test]

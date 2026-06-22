@@ -48,7 +48,12 @@ impl ChatWidget {
 
     pub(super) fn on_task_started(&mut self) {
         self.input_queue.user_turn_pending_start = false;
-        self.turn_lifecycle.start(Instant::now());
+        let started_at = Instant::now();
+        self.turn_lifecycle.start(started_at);
+        self.tps_estimator.start_turn(
+            started_at,
+            self.token_info.as_ref().map(|info| &info.total_token_usage),
+        );
         self.transcript.reset_turn_flags();
         self.adaptive_chunking.reset();
         if self.plan_stream_controller.take().is_some() {
@@ -166,7 +171,13 @@ impl ChatWidget {
         self.input_queue.user_turn_pending_start = false;
         self.clear_active_hook_cell();
         self.turn_lifecycle.finish();
+        let tps_sample_recorded = self
+            .tps_estimator
+            .complete_turn(duration_ms, Instant::now());
         self.update_task_running_state();
+        if tps_sample_recorded {
+            self.refresh_status_surfaces();
+        }
         self.running_commands.clear();
         self.suppressed_exec_calls.clear();
         self.last_unified_wait = None;
@@ -309,6 +320,7 @@ impl ChatWidget {
         // Reset running state and clear streaming buffers.
         self.input_queue.user_turn_pending_start = false;
         self.turn_lifecycle.finish();
+        self.tps_estimator.cancel_active();
         self.update_task_running_state();
         self.running_commands.clear();
         self.suppressed_exec_calls.clear();

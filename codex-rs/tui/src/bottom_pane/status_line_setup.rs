@@ -15,6 +15,7 @@
 //! - Permissions profile
 //! - Approval mode
 //! - Context usage (remaining %, used %, window size)
+//! - Unified tokens-per-second estimate
 //! - Usage limits (primary, secondary)
 //! - Session info (thread title, thread ID, tokens used)
 //! - Application version and product brand
@@ -142,6 +143,9 @@ pub(crate) enum StatusLineItem {
 
     /// Product branding.
     Brand,
+
+    /// Unified generated-token throughput estimate.
+    Tps,
 }
 
 impl StatusLineItem {
@@ -192,6 +196,7 @@ impl StatusLineItem {
                 "Latest task progress from update_plan (omitted until available)"
             }
             StatusLineItem::Brand => "Product branding",
+            StatusLineItem::Tps => "Generated tokens per second from the unified estimator",
         }
     }
 
@@ -223,6 +228,7 @@ impl StatusLineItem {
             StatusLineItem::ThreadTitle => StatusSurfacePreviewItem::ThreadTitle,
             StatusLineItem::TaskProgress => StatusSurfacePreviewItem::TaskProgress,
             StatusLineItem::Brand => StatusSurfacePreviewItem::Brand,
+            StatusLineItem::Tps => StatusSurfacePreviewItem::Tps,
         }
     }
 }
