@@ -21,12 +21,12 @@ state separate from stock Codex.
 
 These providers are compiled into PFTerminal:
 
-| Provider id | Display name | Base URL | Env key | Wire API |
-| --- | --- | --- | --- | --- |
-| `ambient` | Ambient | `https://api.ambient.xyz/v1` | `AMBIENT_API_KEY` | Chat Completions |
-| `zai` | Z.AI | `https://api.z.ai/api/coding/paas/v4` | `ZAI_API_KEY` | Chat Completions |
-| `openrouter` | OpenRouter | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | Chat Completions |
-| `baseten` | Baseten | `https://inference.baseten.co/v1` | `BASETEN_API_KEY` | Chat Completions |
+| Provider id  | Display name | Base URL                              | Env key              | Wire API         |
+| ------------ | ------------ | ------------------------------------- | -------------------- | ---------------- |
+| `ambient`    | Ambient      | `https://api.ambient.xyz/v1`          | `AMBIENT_API_KEY`    | Chat Completions |
+| `zai`        | Z.AI         | `https://api.z.ai/api/coding/paas/v4` | `ZAI_API_KEY`        | Chat Completions |
+| `openrouter` | OpenRouter   | `https://openrouter.ai/api/v1`        | `OPENROUTER_API_KEY` | Chat Completions |
+| `baseten`    | Baseten      | `https://inference.baseten.co/v1`     | `BASETEN_API_KEY`    | Chat Completions |
 
 Provider credentials should normally be stored through onboarding or `/vault`.
 Environment variables are supported for temporary sessions and automation.

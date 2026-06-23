@@ -27,13 +27,13 @@ in the encrypted vault, not in the chat transcript.
 
 PFTerminal currently ships these provider paths:
 
-| Use case | Provider | Model |
-| --- | --- | --- |
-| Ambient coding plan | Ambient | `zai-org/GLM-5.2-FP8` |
-| Z.AI coding plan | Z.AI | `glm-5.2` |
-| Metered GLM via OpenRouter | OpenRouter | `z-ai/glm-5.2` |
+| Use case                          | Provider   | Model                                                                   |
+| --------------------------------- | ---------- | ----------------------------------------------------------------------- |
+| Ambient coding plan               | Ambient    | `zai-org/GLM-5.2-FP8`                                                   |
+| Z.AI coding plan                  | Z.AI       | `glm-5.2`                                                               |
+| Metered GLM via OpenRouter        | OpenRouter | `z-ai/glm-5.2`                                                          |
 | Metered alternative coding models | OpenRouter | `minimax/minimax-m3`, `openrouter/owl-alpha`, `google/gemini-3.5-flash` |
-| Metered GLM via Baseten | Baseten | `zai-org/GLM-5.2` |
+| Metered GLM via Baseten           | Baseten    | `zai-org/GLM-5.2`                                                       |
 
 Open `/model` to switch models. You can also start with a specific model:
 
@@ -65,13 +65,13 @@ Provider API keys stored through onboarding use labels such as
 
 ## Useful Slash Commands
 
-| Command | Purpose |
-| --- | --- |
-| `/model` | Select provider model and reasoning/effort mode |
-| `/vault` | Add, inspect, or delete credentials without exposing raw secrets to chat |
-| `/skills` | Browse bundled and installed skills |
-| `/status` | Inspect current model/provider/session state |
-| `/compact` | Compact a long conversation |
+| Command    | Purpose                                                                  |
+| ---------- | ------------------------------------------------------------------------ |
+| `/model`   | Select provider model and reasoning/effort mode                          |
+| `/vault`   | Add, inspect, or delete credentials without exposing raw secrets to chat |
+| `/skills`  | Browse bundled and installed skills                                      |
+| `/status`  | Inspect current model/provider/session state                             |
+| `/compact` | Compact a long conversation                                              |
 
 ## Verify Setup
 

@@ -14,12 +14,12 @@ compatibility, but PFTerminal's default provider setup is API-key based.
 
 Built-in providers use these key names:
 
-| Provider | Provider id | Key name | Vault label |
-| --- | --- | --- | --- |
-| Ambient | `ambient` | `AMBIENT_API_KEY` | `provider/ambient_api_key` |
-| Z.AI | `zai` | `ZAI_API_KEY` | `provider/zai_api_key` |
+| Provider   | Provider id  | Key name             | Vault label                   |
+| ---------- | ------------ | -------------------- | ----------------------------- |
+| Ambient    | `ambient`    | `AMBIENT_API_KEY`    | `provider/ambient_api_key`    |
+| Z.AI       | `zai`        | `ZAI_API_KEY`        | `provider/zai_api_key`        |
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` | `provider/openrouter_api_key` |
-| Baseten | `baseten` | `BASETEN_API_KEY` | `provider/baseten_api_key` |
+| Baseten    | `baseten`    | `BASETEN_API_KEY`    | `provider/baseten_api_key`    |
 
 Provider key resolution checks the encrypted vault first. Legacy
 `provider_auth.json` is still read for migration compatibility, and a successful

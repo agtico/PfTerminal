@@ -5,15 +5,15 @@ binary, provider credentials, the encrypted vault, and model selection.
 
 ## System Requirements
 
-| Requirement | Details |
-| --- | --- |
-| Operating system | macOS 12+, Ubuntu 20.04+/Debian 10+, or Windows 11 via WSL2 |
-| Git | 2.23+ recommended |
-| RAM | 4 GB minimum, 8 GB recommended |
-| Rust | Required only for source builds |
-| Node.js | Required only for npm/package development |
-| Linux sandbox | `bubblewrap` recommended on Linux |
-| Linux keyring | A Secret Service provider such as GNOME Keyring is recommended |
+| Requirement      | Details                                                        |
+| ---------------- | -------------------------------------------------------------- |
+| Operating system | macOS 12+, Ubuntu 20.04+/Debian 10+, or Windows 11 via WSL2    |
+| Git              | 2.23+ recommended                                              |
+| RAM              | 4 GB minimum, 8 GB recommended                                 |
+| Rust             | Required only for source builds                                |
+| Node.js          | Required only for npm/package development                      |
+| Linux sandbox    | `bubblewrap` recommended on Linux                              |
+| Linux keyring    | A Secret Service provider such as GNOME Keyring is recommended |
 
 On Ubuntu/Debian hosts, install the common runtime helpers:
 
@@ -85,12 +85,12 @@ PFTerminal ships built-in providers. You do not need to define these providers
 manually in `config.toml`; you only need a credential for the provider you plan
 to use.
 
-| Provider | Provider id | Key name | Model(s) shown in `/model` |
-| --- | --- | --- | --- |
-| Ambient | `ambient` | `AMBIENT_API_KEY` | `zai-org/GLM-5.2-FP8` |
-| Z.AI | `zai` | `ZAI_API_KEY` | `glm-5.2` |
+| Provider   | Provider id  | Key name             | Model(s) shown in `/model`                                                              |
+| ---------- | ------------ | -------------------- | --------------------------------------------------------------------------------------- |
+| Ambient    | `ambient`    | `AMBIENT_API_KEY`    | `zai-org/GLM-5.2-FP8`                                                                   |
+| Z.AI       | `zai`        | `ZAI_API_KEY`        | `glm-5.2`                                                                               |
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` | `z-ai/glm-5.2`, `minimax/minimax-m3`, `openrouter/owl-alpha`, `google/gemini-3.5-flash` |
-| Baseten | `baseten` | `BASETEN_API_KEY` | `zai-org/GLM-5.2` |
+| Baseten    | `baseten`    | `BASETEN_API_KEY`    | `zai-org/GLM-5.2`                                                                       |
 
 The first-run provider picker can accept Ambient, Z.AI, OpenRouter, or Baseten
 API keys. Provider keys entered through the PFTerminal UI are stored in the
@@ -114,12 +114,12 @@ and listed in the PFTerminal vault.
 PFTerminal stores provider API keys in the encrypted vault. Provider keys use
 stable labels derived from their key names:
 
-| Provider key | Vault label |
-| --- | --- |
-| `AMBIENT_API_KEY` | `provider/ambient_api_key` |
-| `ZAI_API_KEY` | `provider/zai_api_key` |
+| Provider key         | Vault label                   |
+| -------------------- | ----------------------------- |
+| `AMBIENT_API_KEY`    | `provider/ambient_api_key`    |
+| `ZAI_API_KEY`        | `provider/zai_api_key`        |
 | `OPENROUTER_API_KEY` | `provider/openrouter_api_key` |
-| `BASETEN_API_KEY` | `provider/baseten_api_key` |
+| `BASETEN_API_KEY`    | `provider/baseten_api_key`    |
 
 The vault backend is the Codex managed-secrets substrate:
 
@@ -172,15 +172,15 @@ The `/model` picker groups models into:
 
 Current visible model metadata:
 
-| Model | Provider | Notes |
-| --- | --- | --- |
-| `zai-org/GLM-5.2-FP8` | Ambient | Ambient default GLM 5.2 coding model |
-| `glm-5.2` | Z.AI | Z.AI coding-plan GLM 5.2 |
-| `zai-org/GLM-5.2` | Baseten | GLM 5.2, listed as `$1.50/M input`, `$0.30/M cached input`, `$4.50/M output` |
-| `z-ai/glm-5.2` | OpenRouter | GLM 5.2, listed as `$0.98/M input`, `$3.08/M output` |
-| `minimax/minimax-m3` | OpenRouter | MiniMax M3, listed as `$0.30/M input`, `$1.20/M output` |
-| `openrouter/owl-alpha` | OpenRouter | Owl Alpha, listed as `$0/M input`, `$0/M output` |
-| `google/gemini-3.5-flash` | OpenRouter | Gemini 3.5 Flash, listed as `$1.50/M input`, `$9.00/M output` |
+| Model                     | Provider   | Notes                                                                        |
+| ------------------------- | ---------- | ---------------------------------------------------------------------------- |
+| `zai-org/GLM-5.2-FP8`     | Ambient    | Ambient default GLM 5.2 coding model                                         |
+| `glm-5.2`                 | Z.AI       | Z.AI coding-plan GLM 5.2                                                     |
+| `zai-org/GLM-5.2`         | Baseten    | GLM 5.2, listed as `$1.50/M input`, `$0.30/M cached input`, `$4.50/M output` |
+| `z-ai/glm-5.2`            | OpenRouter | GLM 5.2, listed as `$0.98/M input`, `$3.08/M output`                         |
+| `minimax/minimax-m3`      | OpenRouter | MiniMax M3, listed as `$0.30/M input`, `$1.20/M output`                      |
+| `openrouter/owl-alpha`    | OpenRouter | Owl Alpha, listed as `$0/M input`, `$0/M output`                             |
+| `google/gemini-3.5-flash` | OpenRouter | Gemini 3.5 Flash, listed as `$1.50/M input`, `$9.00/M output`                |
 
 ## Basic Verification
 

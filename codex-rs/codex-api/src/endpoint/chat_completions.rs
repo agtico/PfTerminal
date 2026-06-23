@@ -819,9 +819,9 @@ mod tests {
     #[tokio::test]
     async fn parses_text_deltas_and_usage() {
         let events = collect_events(&[
-            br#"data: {"id":"chatcmpl-1","model":"ambient/large","choices":[{"delta":{"role":"assistant","content":"hel"}}],"usage":null}"#,
+            br#"data: {"id":"chatcmpl-1","model":"ambient/large","choices":[{"delta":{"role":"assistant","content":"he"}}],"usage":null}"#,
             b"\n\n",
-            br#"data: {"id":"chatcmpl-1","model":"ambient/large","choices":[{"delta":{"content":"lo"}}],"usage":null}"#,
+            br#"data: {"id":"chatcmpl-1","model":"ambient/large","choices":[{"delta":{"content":"llo"}}],"usage":null}"#,
             b"\n\n",
             br#"data: {"id":"chatcmpl-1","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5,"prompt_tokens_details":{"cached_tokens":1},"completion_tokens_details":{"reasoning_tokens":0}}}"#,
             b"\n\n",
@@ -834,8 +834,8 @@ mod tests {
             &events[1],
             Ok(ResponseEvent::OutputItemAdded(ResponseItem::Message { .. }))
         );
-        assert_matches!(&events[2], Ok(ResponseEvent::OutputTextDelta(delta)) if delta == "hel");
-        assert_matches!(&events[3], Ok(ResponseEvent::OutputTextDelta(delta)) if delta == "lo");
+        assert_matches!(&events[2], Ok(ResponseEvent::OutputTextDelta(delta)) if delta == "he");
+        assert_matches!(&events[3], Ok(ResponseEvent::OutputTextDelta(delta)) if delta == "llo");
         assert_matches!(
             &events[4],
             Ok(ResponseEvent::OutputItemDone(ResponseItem::Message { content, .. }))

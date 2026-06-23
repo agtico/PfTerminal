@@ -10,16 +10,16 @@ has been integrated.
 
 ## What Exists Now
 
-| Area | Current State | Where To Read |
-| --- | --- | --- |
-| Ambient | Built-in provider, API-key onboarding, Ambient GLM 5.2 default model, encrypted vault storage, and GLM request shaping. | [Ambient](integrations/ambient.md) |
-| Z.AI GLM 5.2 | Built-in Z.AI coding-plan provider, direct `glm-5.2` model selection, and vault-backed provider keys. | [Z.AI GLM 5.2](integrations/zai-glm-52.md) |
-| OpenRouter | Built-in metered provider for GLM 5.2, MiniMax M3, Owl Alpha, and Gemini 3.5 Flash. | [OpenRouter](integrations/openrouter.md) |
-| Baseten | Built-in metered provider for GLM 5.2 through Baseten. | [Baseten](integrations/baseten.md) |
-| Vault | Encrypted credential store for provider keys and manually-added secrets. | [Authentication And Vault](authentication.md) |
-| Codex fork | Product command aliases, npm packages, installer names, TUI branding, and model picker behavior. | [Codex Fork](integrations/codex-fork.md) |
-| Runtime | Codex-derived local coding agent with tools, approvals, sandboxing, MCP, exec, and review modes. | [Runtime](exec.md) |
-| Configuration | Provider and model defaults normalize Ambient/Z.AI sessions onto compatible GLM models. | [Configuration](config.md) |
+| Area          | Current State                                                                                                           | Where To Read                                 |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| Ambient       | Built-in provider, API-key onboarding, Ambient GLM 5.2 default model, encrypted vault storage, and GLM request shaping. | [Ambient](integrations/ambient.md)            |
+| Z.AI GLM 5.2  | Built-in Z.AI coding-plan provider, direct `glm-5.2` model selection, and vault-backed provider keys.                   | [Z.AI GLM 5.2](integrations/zai-glm-52.md)    |
+| OpenRouter    | Built-in metered provider for GLM 5.2, MiniMax M3, Owl Alpha, and Gemini 3.5 Flash.                                     | [OpenRouter](integrations/openrouter.md)      |
+| Baseten       | Built-in metered provider for GLM 5.2 through Baseten.                                                                  | [Baseten](integrations/baseten.md)            |
+| Vault         | Encrypted credential store for provider keys and manually-added secrets.                                                | [Authentication And Vault](authentication.md) |
+| Codex fork    | Product command aliases, npm packages, installer names, TUI branding, and model picker behavior.                        | [Codex Fork](integrations/codex-fork.md)      |
+| Runtime       | Codex-derived local coding agent with tools, approvals, sandboxing, MCP, exec, and review modes.                        | [Runtime](exec.md)                            |
+| Configuration | Provider and model defaults normalize Ambient/Z.AI sessions onto compatible GLM models.                                 | [Configuration](config.md)                    |
 
 ## Fast Reading Path
 

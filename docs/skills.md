@@ -34,14 +34,14 @@ Repo-scoped skills can live in:
 PFTerminal currently includes the inherited Codex system skills plus
 PFTerminal's frontend design skill:
 
-| Skill | Purpose |
-| --- | --- |
+| Skill             | Purpose                                             |
+| ----------------- | --------------------------------------------------- |
 | `frontend-design` | Browser frontend design and implementation guidance |
-| `imagegen` | Generate or edit raster images |
-| `openai-docs` | Reference OpenAI/Codex docs |
-| `plugin-creator` | Scaffold Codex plugins |
-| `skill-creator` | Create or update a skill |
-| `skill-installer` | Install curated or GitHub-hosted skills |
+| `imagegen`        | Generate or edit raster images                      |
+| `openai-docs`     | Reference OpenAI/Codex docs                         |
+| `plugin-creator`  | Scaffold Codex plugins                              |
+| `skill-creator`   | Create or update a skill                            |
+| `skill-installer` | Install curated or GitHub-hosted skills             |
 
 Use:
 
