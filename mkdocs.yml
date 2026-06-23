@@ -55,6 +55,8 @@ nav:
       - Overview: integrations/index.md
       - Ambient: integrations/ambient.md
       - Z.AI GLM 5.2: integrations/zai-glm-52.md
+      - OpenRouter: integrations/openrouter.md
+      - Baseten: integrations/baseten.md
       - Codex Fork: integrations/codex-fork.md
   - Runtime:
       - Exec: exec.md

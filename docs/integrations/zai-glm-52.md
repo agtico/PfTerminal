@@ -66,6 +66,15 @@ Z.AI has one extra guard in the Chat Completions path: when native `web_search` 
 
 The onboarding flow can present Z.AI as a provider API-key account alongside Ambient. This is tested in `codex-rs/tui/src/onboarding/auth.rs`.
 
+Z.AI keys saved through onboarding are stored in the encrypted vault at:
+
+```text
+provider/zai_api_key
+```
+
+The environment variable `ZAI_API_KEY` is still supported for temporary shells
+and automation.
+
 ## Source
 
 - `codex-rs/model-provider-info/src/lib.rs`
@@ -74,3 +83,4 @@ The onboarding flow can present Z.AI as a provider API-key account alongside Amb
 - `codex-rs/core/src/client.rs`
 - `codex-rs/tui/src/onboarding/auth.rs`
 - `codex-rs/tui/src/chatwidget/model_popups.rs`
+- `codex-rs/login/src/auth/provider_key_vault.rs`

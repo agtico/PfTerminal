@@ -1,0 +1,4 @@
+interface:
+  display_name: "Frontend Design"
+  short_description: "Design polished browser interfaces"
+  default_prompt: "Use $frontend-design to build a polished, accessible browser interface for this request."

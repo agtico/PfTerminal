@@ -12,30 +12,38 @@ has been integrated.
 
 | Area | Current State | Where To Read |
 | --- | --- | --- |
-| Ambient | Built-in provider, API-key onboarding, Ambient GLM 5.2 default model, and GLM request shaping. | [Ambient](integrations/ambient.md) |
-| Z.AI GLM 5.2 | Built-in Z.AI coding-plan provider and direct `glm-5.2` model selection. | [Z.AI GLM 5.2](integrations/zai-glm-52.md) |
+| Ambient | Built-in provider, API-key onboarding, Ambient GLM 5.2 default model, encrypted vault storage, and GLM request shaping. | [Ambient](integrations/ambient.md) |
+| Z.AI GLM 5.2 | Built-in Z.AI coding-plan provider, direct `glm-5.2` model selection, and vault-backed provider keys. | [Z.AI GLM 5.2](integrations/zai-glm-52.md) |
+| OpenRouter | Built-in metered provider for GLM 5.2, MiniMax M3, Owl Alpha, and Gemini 3.5 Flash. | [OpenRouter](integrations/openrouter.md) |
+| Baseten | Built-in metered provider for GLM 5.2 through Baseten. | [Baseten](integrations/baseten.md) |
+| Vault | Encrypted credential store for provider keys and manually-added secrets. | [Authentication And Vault](authentication.md) |
 | Codex fork | Product command aliases, npm packages, installer names, TUI branding, and model picker behavior. | [Codex Fork](integrations/codex-fork.md) |
 | Runtime | Codex-derived local coding agent with tools, approvals, sandboxing, MCP, exec, and review modes. | [Runtime](exec.md) |
 | Configuration | Provider and model defaults normalize Ambient/Z.AI sessions onto compatible GLM models. | [Configuration](config.md) |
 
 ## Fast Reading Path
 
-1. Read [Install](install.md) for local build and release installation notes.
+1. Read [Install And First Run](install.md) for binary setup, provider keys,
+   vault setup, and model selection.
 2. Read [Ambient](integrations/ambient.md) and
-   [Z.AI GLM 5.2](integrations/zai-glm-52.md) for the provider integrations.
-3. Read [Codex Fork](integrations/codex-fork.md) for product-specific changes
+   [Z.AI GLM 5.2](integrations/zai-glm-52.md) for the coding-plan provider
+   integrations.
+3. Read [OpenRouter](integrations/openrouter.md) and
+   [Baseten](integrations/baseten.md) for metered provider integrations.
+4. Read [Codex Fork](integrations/codex-fork.md) for product-specific changes
    from upstream Codex.
-4. Read [Configuration](config.md), [Authentication](authentication.md), and
+5. Read [Configuration](config.md), [Authentication](authentication.md), and
    [Slash Commands](slash_commands.md) for operator-facing behavior.
-5. Read [Exec](exec.md), [Sandbox](sandbox.md), and [Skills](skills.md) for the
+6. Read [Exec](exec.md), [Sandbox](sandbox.md), and [Skills](skills.md) for the
    inherited runtime surfaces.
 
 ## Core Claim
 
-PFTerminal is currently a Codex-derived terminal agent with Ambient and Z.AI GLM
-models made first-class. The implementation changes are code-level provider,
-model, request-shaping, onboarding, packaging, and branding changes, not just
-prompt text.
+PFTerminal is currently a Codex-derived terminal agent with Ambient, Z.AI,
+OpenRouter, Baseten, and encrypted vault storage made first-class. The
+implementation changes are code-level provider, model, request-shaping,
+onboarding, credential-storage, packaging, and branding changes, not just prompt
+text.
 
 ## Repository layout
 

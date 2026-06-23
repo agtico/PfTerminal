@@ -63,6 +63,15 @@ Tool calls and tool outputs are serialized into assistant/tool chunks so the mod
 
 The onboarding provider picker can show Ambient as an API-key provider account. The relevant code lives in `codex-rs/tui/src/onboarding/auth.rs`.
 
+Ambient keys saved through onboarding are stored in the encrypted vault at:
+
+```text
+provider/ambient_api_key
+```
+
+The environment variable `AMBIENT_API_KEY` is still supported for temporary
+shells and automation.
+
 The model picker recognizes Ambient model slugs from:
 
 - `zai-org/`
@@ -84,3 +93,4 @@ The status line renders those same modes as `standard` and `deep`.
 - `codex-rs/codex-api/src/common.rs`
 - `codex-rs/tui/src/onboarding/auth.rs`
 - `codex-rs/tui/src/chatwidget/model_popups.rs`
+- `codex-rs/login/src/auth/provider_key_vault.rs`
