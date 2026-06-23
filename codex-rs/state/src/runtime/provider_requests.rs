@@ -164,6 +164,10 @@ WHERE provider_id = ? AND model = ? AND key_fingerprint = ?
 UPDATE provider_request_state
 SET lease_owner = ?,
     lease_until_ms = ?,
+    last_status = NULL,
+    last_request_id = NULL,
+    last_provider_input_tokens = 0,
+    last_provider_cached_input_tokens = 0,
     updated_at_ms = ?
 WHERE provider_id = ? AND model = ? AND key_fingerprint = ?
             "#,
@@ -533,10 +537,62 @@ mod tests {
                 assert_eq!(block.reason, ProviderRequestBlockReason::Cooldown);
                 assert_eq!(block.last_input_tokens, 37_492);
                 assert_eq!(block.last_cached_input_tokens, 20_000);
-                assert_eq!(block.last_provider_input_tokens, 17_136);
-                assert_eq!(block.last_provider_cached_input_tokens, 17_088);
+                assert_eq!(block.last_provider_input_tokens, 0);
+                assert_eq!(block.last_provider_cached_input_tokens, 0);
             }
             ProviderRequestLeaseDecision::Acquired(_) => panic!("expected cooldown block"),
+        }
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn acquiring_new_lease_clears_stale_result_fields() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("initialize runtime");
+
+        let ProviderRequestLeaseDecision::Acquired(first) = runtime
+            .try_acquire_provider_request_lease(&key(), &preflight(), "worker-a", 10_000, 1_000)
+            .await
+            .expect("acquire first")
+        else {
+            panic!("expected first lease");
+        };
+        runtime
+            .record_provider_request_result(
+                &first,
+                ProviderRequestResult::Success {
+                    input_tokens: Some(88_303),
+                    cached_input_tokens: Some(0),
+                },
+                2_000,
+            )
+            .await
+            .expect("record cold-cache success");
+
+        let ProviderRequestLeaseDecision::Acquired(_second) = runtime
+            .try_acquire_provider_request_lease(&key(), &preflight(), "worker-b", 10_000, 2_500)
+            .await
+            .expect("acquire second")
+        else {
+            panic!("expected second lease");
+        };
+
+        let blocked = runtime
+            .try_acquire_provider_request_lease(&key(), &preflight(), "worker-c", 10_000, 3_000)
+            .await
+            .expect("blocked by active second lease");
+        match blocked {
+            ProviderRequestLeaseDecision::Blocked(block) => {
+                assert_eq!(block.reason, ProviderRequestBlockReason::Lease);
+                assert_eq!(block.last_status, None);
+                assert_eq!(block.last_request_id, None);
+                assert_eq!(block.last_provider_input_tokens, 0);
+                assert_eq!(block.last_provider_cached_input_tokens, 0);
+            }
+            ProviderRequestLeaseDecision::Acquired(_) => panic!("expected active lease block"),
         }
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;

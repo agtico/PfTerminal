@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use crate::SkillInjections;
+use crate::StateDbHandle;
 use crate::build_skill_injections;
 use crate::client::ModelClientSession;
 use crate::client_common::Prompt;
@@ -2149,12 +2150,12 @@ async fn record_provider_request_result_for_lease(
     sess: &Session,
     lease: Option<&ProviderRequestLease>,
     result: ProviderRequestResult,
-) {
+) -> bool {
     let Some(lease) = lease else {
-        return;
+        return true;
     };
     let Some(state_db) = sess.state_db() else {
-        return;
+        return true;
     };
     if let Err(err) = state_db
         .record_provider_request_result(lease, result, now_unix_timestamp_ms())
@@ -2167,6 +2168,58 @@ async fn record_provider_request_result_for_lease(
             error = %err,
             "failed to record provider request result"
         );
+        return false;
+    }
+    true
+}
+
+struct ProviderRequestLeaseGuard {
+    state_db: Option<StateDbHandle>,
+    runtime_handle: tokio::runtime::Handle,
+    lease: Option<ProviderRequestLease>,
+}
+
+impl ProviderRequestLeaseGuard {
+    fn new(sess: &Session, lease: Option<ProviderRequestLease>) -> Self {
+        Self {
+            state_db: sess.state_db(),
+            runtime_handle: sess.services.runtime_handle.clone(),
+            lease,
+        }
+    }
+
+    async fn record_result(&mut self, sess: &Session, result: ProviderRequestResult) {
+        let Some(lease) = self.lease.clone() else {
+            return;
+        };
+        if record_provider_request_result_for_lease(sess, Some(&lease), result).await {
+            self.lease = None;
+        }
+    }
+}
+
+impl Drop for ProviderRequestLeaseGuard {
+    fn drop(&mut self) {
+        let Some(lease) = self.lease.take() else {
+            return;
+        };
+        let Some(state_db) = self.state_db.clone() else {
+            return;
+        };
+        std::mem::drop(self.runtime_handle.spawn(async move {
+            if let Err(err) = state_db
+                .release_provider_request_lease(&lease, now_unix_timestamp_ms())
+                .await
+            {
+                warn!(
+                    provider = %lease.key.provider_id,
+                    model = %lease.key.model,
+                    key_fingerprint = %lease.key.key_fingerprint,
+                    error = %err,
+                    "failed to release provider request lease on guard drop"
+                );
+            }
+        }));
     }
 }
 
@@ -2330,6 +2383,8 @@ async fn try_run_sampling_request(
         responses_metadata,
     )
     .await?;
+    let mut provider_request_lease_guard =
+        ProviderRequestLeaseGuard::new(sess.as_ref(), provider_request_lease);
     let sampling_timing_guard = turn_context.turn_timing_state.begin_sampling();
     let stream_result = client_session
         .stream(
@@ -2348,22 +2403,16 @@ async fn try_run_sampling_request(
     let mut stream = match stream_result {
         Ok(Ok(stream)) => stream,
         Ok(Err(err)) => {
-            record_provider_request_result_for_lease(
-                sess.as_ref(),
-                provider_request_lease.as_ref(),
-                provider_request_result_from_error(&err),
-            )
-            .await;
+            provider_request_lease_guard
+                .record_result(sess.as_ref(), provider_request_result_from_error(&err))
+                .await;
             return Err(err);
         }
         Err(err) => {
             let err = CodexErr::from(err);
-            record_provider_request_result_for_lease(
-                sess.as_ref(),
-                provider_request_lease.as_ref(),
-                provider_request_result_from_error(&err),
-            )
-            .await;
+            provider_request_lease_guard
+                .record_result(sess.as_ref(), provider_request_result_from_error(&err))
+                .await;
             return Err(err);
         }
     };
@@ -2789,22 +2838,19 @@ async fn try_run_sampling_request(
         Some(turn_context.turn_timing_state.begin_tool_blocking())
     };
     if let Err(err) = drain_in_flight(&mut in_flight, sess.clone(), turn_context.clone()).await {
-        record_provider_request_result_for_lease(
-            sess.as_ref(),
-            provider_request_lease.as_ref(),
-            provider_request_result_from_error(&err),
-        )
-        .await;
+        provider_request_lease_guard
+            .record_result(sess.as_ref(), provider_request_result_from_error(&err))
+            .await;
         return Err(err);
     }
     drop(tool_blocking_timing_guard);
 
-    record_provider_request_result_for_lease(
-        sess.as_ref(),
-        provider_request_lease.as_ref(),
-        provider_request_result_from_outcome(&outcome),
-    )
-    .await;
+    provider_request_lease_guard
+        .record_result(
+            sess.as_ref(),
+            provider_request_result_from_outcome(&outcome),
+        )
+        .await;
 
     if should_emit_token_count {
         // A tool call such as request_user_input can intentionally pause the turn. Emit token

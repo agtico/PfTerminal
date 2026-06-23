@@ -83,6 +83,61 @@ fn token_usage(input_tokens: i64, cached_input_tokens: i64) -> TokenUsage {
     }
 }
 
+#[tokio::test]
+async fn provider_request_lease_guard_releases_on_drop() {
+    let codex_home = tempfile::tempdir().expect("tempdir");
+    let state_db = codex_state::StateRuntime::init(
+        codex_home.path().to_path_buf(),
+        "test-provider".to_string(),
+    )
+    .await
+    .expect("state db");
+    let key = ProviderRequestKey {
+        provider_id: "zai".to_string(),
+        model: "glm-5.2".to_string(),
+        key_fingerprint: "stored:ZAI_API_KEY:test".to_string(),
+    };
+    let preflight = ProviderRequestPreflight {
+        input_tokens: 91_817,
+        cached_input_tokens: 0,
+        request_bytes: 375_150,
+        thread_id: Some("thread-a".to_string()),
+        turn_id: Some("turn-a".to_string()),
+    };
+    let ProviderRequestLeaseDecision::Acquired(lease) = state_db
+        .try_acquire_provider_request_lease(&key, &preflight, "worker-a", 600_000, 1_000)
+        .await
+        .expect("acquire first lease")
+    else {
+        panic!("expected first lease");
+    };
+
+    drop(ProviderRequestLeaseGuard {
+        state_db: Some(state_db.clone()),
+        runtime_handle: tokio::runtime::Handle::current(),
+        lease: Some(lease),
+    });
+
+    for attempt in 0..20 {
+        let decision = state_db
+            .try_acquire_provider_request_lease(
+                &key,
+                &preflight,
+                "worker-b",
+                600_000,
+                2_000 + attempt * 100,
+            )
+            .await
+            .expect("retry lease");
+        if matches!(decision, ProviderRequestLeaseDecision::Acquired(_)) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    panic!("drop guard did not release provider request lease");
+}
+
 #[test]
 fn third_party_cache_health_uses_last_provider_usage() {
     let healthy = token_usage(17_136, 17_088);
