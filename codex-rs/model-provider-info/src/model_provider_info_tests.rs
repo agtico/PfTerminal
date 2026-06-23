@@ -407,6 +407,20 @@ fn test_built_in_model_providers_include_openrouter() {
 }
 
 #[test]
+fn test_built_in_model_providers_include_baseten() {
+    let providers = built_in_model_providers(/*openai_base_url*/ None);
+
+    let baseten = providers
+        .get(BASETEN_PROVIDER_ID)
+        .expect("Baseten provider should be built in");
+    assert!(baseten.is_baseten());
+    assert_eq!(baseten.base_url.as_deref(), Some(BASETEN_BASE_URL));
+    assert_eq!(baseten.env_key.as_deref(), Some(BASETEN_API_KEY_ENV_VAR));
+    assert_eq!(baseten.wire_api, WireApi::Chat);
+    assert!(!baseten.requires_openai_auth);
+}
+
+#[test]
 fn test_merge_configured_model_providers_adds_custom_provider() {
     let custom_provider = ModelProviderInfo {
         name: "Custom".to_string(),

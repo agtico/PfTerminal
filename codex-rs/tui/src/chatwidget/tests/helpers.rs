@@ -142,7 +142,12 @@ pub(super) fn test_model_catalog(_config: &Config) -> Arc<ModelCatalog> {
 
 fn set_config_provider_for_test_model(config: &mut Config, model: &str) {
     let trimmed = model.trim();
-    let provider = if trimmed == codex_model_provider_info::AMBIENT_DEFAULT_MODEL
+    let provider = if trimmed == codex_model_provider_info::BASETEN_DEFAULT_MODEL {
+        Some((
+            codex_model_provider_info::BASETEN_PROVIDER_ID.to_string(),
+            codex_model_provider_info::ModelProviderInfo::create_baseten_provider(),
+        ))
+    } else if trimmed == codex_model_provider_info::AMBIENT_DEFAULT_MODEL
         || trimmed.starts_with("ambient/")
         || trimmed.starts_with("zai-org/")
     {

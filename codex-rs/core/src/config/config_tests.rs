@@ -67,6 +67,8 @@ use codex_features::Feature;
 use codex_features::FeaturesToml;
 use codex_model_provider_info::AMBIENT_DEFAULT_MODEL;
 use codex_model_provider_info::AMBIENT_PROVIDER_ID;
+use codex_model_provider_info::BASETEN_DEFAULT_MODEL;
+use codex_model_provider_info::BASETEN_PROVIDER_ID;
 use codex_model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
 use codex_model_provider_info::OLLAMA_OSS_PROVIDER_ID;
 use codex_model_provider_info::OPENROUTER_DEFAULT_MODEL;
@@ -762,6 +764,31 @@ model = "z-ai/glm-5.2"
 
     assert_eq!(config.model_provider_id, OPENROUTER_PROVIDER_ID);
     assert_eq!(config.model.as_deref(), Some(OPENROUTER_DEFAULT_MODEL));
+    assert_eq!(config.model_provider.wire_api, WireApi::Chat);
+    assert_eq!(config.forced_login_method, Some(ForcedLoginMethod::Api));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_baseten_provider_uses_api_login() -> std::io::Result<()> {
+    let cfg = toml::from_str::<ConfigToml>(
+        r#"
+model_provider = "baseten"
+model = "zai-org/GLM-5.2"
+"#,
+    )
+    .expect("config should deserialize");
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        tempdir()?.abs(),
+    )
+    .await?;
+
+    assert_eq!(config.model_provider_id, BASETEN_PROVIDER_ID);
+    assert_eq!(config.model.as_deref(), Some(BASETEN_DEFAULT_MODEL));
     assert_eq!(config.model_provider.wire_api, WireApi::Chat);
     assert_eq!(config.forced_login_method, Some(ForcedLoginMethod::Api));
 

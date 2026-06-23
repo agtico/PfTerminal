@@ -30,6 +30,8 @@ use ratatui::widgets::WidgetRef;
 
 use codex_model_provider_info::AMBIENT_API_KEY_ENV_VAR;
 use codex_model_provider_info::AMBIENT_PROVIDER_ID;
+use codex_model_provider_info::BASETEN_API_KEY_ENV_VAR;
+use codex_model_provider_info::BASETEN_PROVIDER_ID;
 use codex_model_provider_info::OPENROUTER_API_KEY_ENV_VAR;
 use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
 use codex_model_provider_info::ZAI_API_KEY_ENV_VAR;
@@ -111,6 +113,7 @@ struct ApiKeyEntryContext {
 }
 
 const OPENROUTER_PROVIDER_NAME: &str = "OpenRouter";
+const BASETEN_PROVIDER_NAME: &str = "Baseten";
 
 const RECOMMENDED_PROVIDER_API_KEY_OPTIONS: &[(&str, &str, &str)] = &[
     (AMBIENT_PROVIDER_ID, "Ambient", AMBIENT_API_KEY_ENV_VAR),
@@ -119,6 +122,11 @@ const RECOMMENDED_PROVIDER_API_KEY_OPTIONS: &[(&str, &str, &str)] = &[
         OPENROUTER_PROVIDER_ID,
         OPENROUTER_PROVIDER_NAME,
         OPENROUTER_API_KEY_ENV_VAR,
+    ),
+    (
+        BASETEN_PROVIDER_ID,
+        BASETEN_PROVIDER_NAME,
+        BASETEN_API_KEY_ENV_VAR,
     ),
 ];
 
@@ -171,7 +179,8 @@ fn provider_api_key_sort_rank(provider_id: &str) -> usize {
         AMBIENT_PROVIDER_ID => 0,
         ZAI_PROVIDER_ID => 1,
         OPENROUTER_PROVIDER_ID => 2,
-        _ => 3,
+        BASETEN_PROVIDER_ID => 3,
+        _ => 4,
     }
 }
 
@@ -180,6 +189,7 @@ pub(crate) fn provider_api_key_display_name(provider: &ApiKeyProviderOption) -> 
         AMBIENT_API_KEY_ENV_VAR => "Provider: Ambient API Key".to_string(),
         ZAI_API_KEY_ENV_VAR => "Provider: Z.AI API Key".to_string(),
         OPENROUTER_API_KEY_ENV_VAR => "Provider: OpenRouter API Key".to_string(),
+        BASETEN_API_KEY_ENV_VAR => "Provider: Baseten API Key".to_string(),
         _ => format!("Provider: {} {}", provider.name, provider.env_var),
     }
 }

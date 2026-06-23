@@ -949,8 +949,9 @@ impl ModelClient {
         // GLM chat streams proper tool calls when OpenAI's `strict` function
         // flag is omitted. Keep the JSON schema, but drop that
         // provider-incompatible wrapper bit for Ambient and Z.AI.
-        let strip_strict_from_tools =
+        let uses_zai_reasoning =
             self.state.provider.info().is_ambient() || self.state.provider.info().is_zai();
+        let strip_strict_from_tools = uses_zai_reasoning || self.state.provider.info().is_baseten();
         let mut tools = create_tools_json_for_chat_completions(
             &prompt.tools,
             strip_strict_from_tools,
@@ -971,7 +972,7 @@ impl ModelClient {
                 tools.retain(|tool| tool.get("type").and_then(Value::as_str) != Some("web_search"));
             }
         }
-        let ambient_reasoning_effort = strip_strict_from_tools.then(|| {
+        let ambient_reasoning_effort = uses_zai_reasoning.then(|| {
             Self::ambient_zai_reasoning_effort(
                 effort
                     .as_ref()
@@ -1008,8 +1009,8 @@ impl ModelClient {
             parallel_tool_calls: (!tools.is_empty() && prompt.parallel_tool_calls).then_some(true),
             tools,
             response_format,
-            emit_usage: strip_strict_from_tools.then_some(true),
-            enable_thinking: strip_strict_from_tools.then_some(true),
+            emit_usage: uses_zai_reasoning.then_some(true),
+            enable_thinking: uses_zai_reasoning.then_some(true),
             reasoning_effort: ambient_reasoning_effort,
             reasoning: openrouter_reasoning,
         })

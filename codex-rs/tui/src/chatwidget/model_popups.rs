@@ -9,6 +9,8 @@ use codex_model_provider_info::AMAZON_BEDROCK_GPT_5_5_MODEL_ID;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
 use codex_model_provider_info::AMBIENT_DEFAULT_MODEL;
 use codex_model_provider_info::AMBIENT_PROVIDER_ID;
+use codex_model_provider_info::BASETEN_DEFAULT_MODEL;
+use codex_model_provider_info::BASETEN_PROVIDER_ID;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_model_provider_info::OPENROUTER_DEFAULT_MODEL;
 use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
@@ -174,6 +176,9 @@ impl ChatWidget {
 
     fn model_provider_for_selection(model: &str) -> Option<String> {
         let trimmed = model.trim();
+        if trimmed == BASETEN_DEFAULT_MODEL {
+            return Some(BASETEN_PROVIDER_ID.to_string());
+        }
         if trimmed == AMBIENT_DEFAULT_MODEL
             || trimmed.starts_with("ambient/")
             || trimmed.starts_with("zai-org/")
@@ -238,7 +243,9 @@ impl ChatWidget {
             let item = self.model_picker_item(preset);
             match provider.as_deref() {
                 Some(AMBIENT_PROVIDER_ID | ZAI_PROVIDER_ID) => coding_plan_items.push(item),
-                Some(OPENROUTER_PROVIDER_ID) => pay_per_api_call_items.push(item),
+                Some(BASETEN_PROVIDER_ID | OPENROUTER_PROVIDER_ID) => {
+                    pay_per_api_call_items.push(item)
+                }
                 _ => {}
             }
         }
@@ -254,7 +261,7 @@ impl ChatWidget {
         if !pay_per_api_call_items.is_empty() {
             items.push(Self::model_picker_section_header(
                 "Pay Per API Call",
-                "OpenRouter metered models",
+                "OpenRouter and Baseten metered models",
             ));
             items.append(&mut pay_per_api_call_items);
         }
@@ -312,7 +319,12 @@ impl ChatWidget {
 
         matches!(
             Self::model_provider_for_selection(&preset.model).as_deref(),
-            Some(AMBIENT_PROVIDER_ID | ZAI_PROVIDER_ID | OPENROUTER_PROVIDER_ID)
+            Some(
+                AMBIENT_PROVIDER_ID
+                    | ZAI_PROVIDER_ID
+                    | BASETEN_PROVIDER_ID
+                    | OPENROUTER_PROVIDER_ID
+            )
         )
     }
 
@@ -701,6 +713,10 @@ mod tests {
         assert_eq!(
             ChatWidget::model_provider_for_selection(ZAI_DEFAULT_MODEL).as_deref(),
             Some(ZAI_PROVIDER_ID)
+        );
+        assert_eq!(
+            ChatWidget::model_provider_for_selection(BASETEN_DEFAULT_MODEL).as_deref(),
+            Some(BASETEN_PROVIDER_ID)
         );
         assert_eq!(
             ChatWidget::model_provider_for_selection(OPENROUTER_DEFAULT_MODEL).as_deref(),

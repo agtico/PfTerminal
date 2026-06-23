@@ -50,6 +50,11 @@ pub const OPENROUTER_PROVIDER_ID: &str = "openrouter";
 pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 pub const OPENROUTER_DEFAULT_MODEL: &str = "z-ai/glm-5.2";
 pub const OPENROUTER_API_KEY_ENV_VAR: &str = "OPENROUTER_API_KEY";
+const BASETEN_PROVIDER_NAME: &str = "Baseten";
+pub const BASETEN_PROVIDER_ID: &str = "baseten";
+pub const BASETEN_BASE_URL: &str = "https://inference.baseten.co/v1";
+pub const BASETEN_DEFAULT_MODEL: &str = "zai-org/GLM-5.2";
+pub const BASETEN_API_KEY_ENV_VAR: &str = "BASETEN_API_KEY";
 const AMAZON_BEDROCK_PROVIDER_NAME: &str = "Amazon Bedrock";
 pub const AMAZON_BEDROCK_PROVIDER_ID: &str = "amazon-bedrock";
 pub const AMAZON_BEDROCK_GPT_5_5_MODEL_ID: &str = "openai.gpt-5.5";
@@ -450,6 +455,30 @@ impl ModelProviderInfo {
         }
     }
 
+    pub fn create_baseten_provider() -> ModelProviderInfo {
+        ModelProviderInfo {
+            name: BASETEN_PROVIDER_NAME.into(),
+            base_url: Some(BASETEN_BASE_URL.into()),
+            env_key: Some(BASETEN_API_KEY_ENV_VAR.into()),
+            env_key_instructions: Some(format!(
+                "Set {BASETEN_API_KEY_ENV_VAR} to your Baseten API key."
+            )),
+            experimental_bearer_token: None,
+            auth: None,
+            aws: None,
+            wire_api: WireApi::Chat,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    }
+
     pub fn create_amazon_bedrock_provider(
         aws: Option<ModelProviderAwsAuthInfo>,
     ) -> ModelProviderInfo {
@@ -496,6 +525,10 @@ impl ModelProviderInfo {
         self.name == OPENROUTER_PROVIDER_NAME
     }
 
+    pub fn is_baseten(&self) -> bool {
+        self.name == BASETEN_PROVIDER_NAME
+    }
+
     pub fn is_amazon_bedrock(&self) -> bool {
         self.name == AMAZON_BEDROCK_PROVIDER_NAME
     }
@@ -524,6 +557,7 @@ pub fn built_in_model_providers(
     let ambient_provider = P::create_ambient_provider();
     let zai_provider = P::create_zai_provider();
     let openrouter_provider = P::create_openrouter_provider();
+    let baseten_provider = P::create_baseten_provider();
     let amazon_bedrock_provider = P::create_amazon_bedrock_provider(/*aws*/ None);
 
     // PFTerminal bundles the first-party OpenAI provider, the local OSS
@@ -533,6 +567,7 @@ pub fn built_in_model_providers(
         (AMBIENT_PROVIDER_ID, ambient_provider),
         (ZAI_PROVIDER_ID, zai_provider),
         (OPENROUTER_PROVIDER_ID, openrouter_provider),
+        (BASETEN_PROVIDER_ID, baseten_provider),
         (OPENAI_PROVIDER_ID, openai_provider),
         (AMAZON_BEDROCK_PROVIDER_ID, amazon_bedrock_provider),
         (

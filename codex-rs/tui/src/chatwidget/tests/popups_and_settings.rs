@@ -10,6 +10,7 @@ use codex_app_server_protocol::PluginAvailability;
 use codex_features::Stage;
 use codex_model_provider_info::AMBIENT_DEFAULT_MODEL;
 use codex_model_provider_info::AMBIENT_PROVIDER_ID;
+use codex_model_provider_info::BASETEN_DEFAULT_MODEL;
 use codex_model_provider_info::OPENROUTER_DEFAULT_MODEL;
 use codex_model_provider_info::ZAI_DEFAULT_MODEL;
 use pretty_assertions::assert_eq;
@@ -2643,7 +2644,7 @@ async fn model_picker_hides_fake_openai_models_and_shows_curated_provider_models
         .try_list_models()
         .expect("model catalog should load");
     chat.open_all_models_popup(presets);
-    let popup = render_bottom_popup(&chat, /*width*/ 100);
+    let popup = render_bottom_popup(&chat, /*width*/ 140);
 
     assert!(
         popup.contains(AMBIENT_DEFAULT_MODEL),
@@ -2674,6 +2675,14 @@ async fn model_picker_hides_fake_openai_models_and_shows_curated_provider_models
         "expected OpenRouter GLM price description in /model picker:\n{popup}"
     );
     assert!(
+        popup.contains(BASETEN_DEFAULT_MODEL),
+        "expected Baseten GLM 5.2 in /model picker:\n{popup}"
+    );
+    assert!(
+        popup.contains("Baseten: GLM 5.2 - $1.50/M input, $0.30/M cached input, $4.50/M output."),
+        "expected Baseten GLM price description in /model picker:\n{popup}"
+    );
+    assert!(
         popup.contains("minimax/minimax-m3"),
         "expected MiniMax M3 in /model picker:\n{popup}"
     );
@@ -2684,10 +2693,6 @@ async fn model_picker_hides_fake_openai_models_and_shows_curated_provider_models
     assert!(
         popup.contains("openrouter/owl-alpha"),
         "expected Owl Alpha in /model picker:\n{popup}"
-    );
-    assert!(
-        popup.contains("google/gemini-3.5-flash"),
-        "expected Gemini 3.5 Flash in /model picker:\n{popup}"
     );
     assert!(
         !popup.contains("gpt-"),
@@ -2731,7 +2736,7 @@ async fn model_picker_dismisses_after_selecting_openrouter_model_without_effort_
         .expect("model catalog should load");
     chat.open_all_models_popup(presets);
 
-    for _ in 0..3 {
+    for _ in 0..4 {
         chat.handle_key_event(KeyEvent::from(KeyCode::Down));
     }
     let before = render_bottom_popup(&chat, /*width*/ 100);
@@ -2777,7 +2782,7 @@ async fn model_picker_opens_openrouter_reasoning_options_for_gemini() {
         .expect("model catalog should load");
     chat.open_all_models_popup(presets);
 
-    for _ in 0..5 {
+    for _ in 0..6 {
         chat.handle_key_event(KeyEvent::from(KeyCode::Down));
     }
     let before = render_bottom_popup(&chat, /*width*/ 100);

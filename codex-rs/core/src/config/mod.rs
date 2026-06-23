@@ -78,6 +78,8 @@ use codex_mcp::ResolvedMcpCatalog;
 use codex_memories_read::memory_root;
 use codex_model_provider_info::AMBIENT_DEFAULT_MODEL;
 use codex_model_provider_info::AMBIENT_PROVIDER_ID;
+use codex_model_provider_info::BASETEN_DEFAULT_MODEL;
+use codex_model_provider_info::BASETEN_PROVIDER_ID;
 use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
@@ -2431,7 +2433,9 @@ fn resolve_model_for_provider(model: Option<String>, model_provider_id: &str) ->
     match model_provider_id {
         AMBIENT_PROVIDER_ID => match model {
             Some(model)
-                if model.trim().starts_with("ambient/") || model.trim().starts_with("zai-org/") =>
+                if model.trim().starts_with("ambient/")
+                    || (model.trim().starts_with("zai-org/")
+                        && model.trim() != BASETEN_DEFAULT_MODEL) =>
             {
                 Some(model)
             }
@@ -2440,6 +2444,10 @@ fn resolve_model_for_provider(model: Option<String>, model_provider_id: &str) ->
         ZAI_PROVIDER_ID => match model {
             Some(model) if model.trim().starts_with("glm-") => Some(model),
             _ => Some(ZAI_DEFAULT_MODEL.to_string()),
+        },
+        BASETEN_PROVIDER_ID => match model {
+            Some(model) if model.trim() == BASETEN_DEFAULT_MODEL => Some(model),
+            _ => Some(BASETEN_DEFAULT_MODEL.to_string()),
         },
         _ => model,
     }
@@ -3486,12 +3494,16 @@ impl Config {
             .filter(|values| !values.is_empty());
 
         let ambient_provider_selected = model_provider_id == AMBIENT_PROVIDER_ID;
+        let baseten_provider_selected = model_provider_id == BASETEN_PROVIDER_ID;
         let openrouter_provider_selected = model_provider_id == OPENROUTER_PROVIDER_ID;
         let zai_provider_selected = model_provider_id == ZAI_PROVIDER_ID;
         let forced_login_method = cfg
             .forced_login_method
             .or_else(|| {
-                (ambient_provider_selected || openrouter_provider_selected || zai_provider_selected)
+                (ambient_provider_selected
+                    || baseten_provider_selected
+                    || openrouter_provider_selected
+                    || zai_provider_selected)
                     .then_some(ForcedLoginMethod::Api)
             });
 

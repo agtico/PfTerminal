@@ -9,6 +9,7 @@ use codex_api::SharedAuthProvider;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider_info::AMBIENT_DEFAULT_MODEL;
+use codex_model_provider_info::BASETEN_DEFAULT_MODEL;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OPENROUTER_DEFAULT_MODEL;
 use codex_model_provider_info::ZAI_DEFAULT_MODEL;
@@ -234,7 +235,7 @@ impl ModelProvider for ConfiguredModelProvider {
                 image_generation: false,
                 web_search: true,
             }
-        } else if self.info.is_openrouter() {
+        } else if self.info.is_openrouter() || self.info.is_baseten() {
             ProviderCapabilities {
                 namespace_tools: false,
                 image_generation: false,
@@ -252,6 +253,8 @@ impl ModelProvider for ConfiguredModelProvider {
             ZAI_DEFAULT_MODEL
         } else if self.info.is_openrouter() {
             OPENROUTER_DEFAULT_MODEL
+        } else if self.info.is_baseten() {
+            BASETEN_DEFAULT_MODEL
         } else {
             DEFAULT_APPROVAL_REVIEW_PREFERRED_MODEL
         }
@@ -264,6 +267,8 @@ impl ModelProvider for ConfiguredModelProvider {
             ZAI_DEFAULT_MODEL
         } else if self.info.is_openrouter() {
             OPENROUTER_DEFAULT_MODEL
+        } else if self.info.is_baseten() {
+            BASETEN_DEFAULT_MODEL
         } else {
             DEFAULT_MEMORY_EXTRACTION_PREFERRED_MODEL
         }
@@ -276,6 +281,8 @@ impl ModelProvider for ConfiguredModelProvider {
             ZAI_DEFAULT_MODEL
         } else if self.info.is_openrouter() {
             OPENROUTER_DEFAULT_MODEL
+        } else if self.info.is_baseten() {
+            BASETEN_DEFAULT_MODEL
         } else {
             DEFAULT_MEMORY_CONSOLIDATION_PREFERRED_MODEL
         }
@@ -393,6 +400,7 @@ mod tests {
 
     use codex_login::auth::BedrockApiKeyAuth;
     use codex_model_provider_info::AMBIENT_DEFAULT_MODEL;
+    use codex_model_provider_info::BASETEN_DEFAULT_MODEL;
     use codex_model_provider_info::ModelProviderAwsAuthInfo;
     use codex_model_provider_info::OPENROUTER_DEFAULT_MODEL;
     use codex_model_provider_info::WireApi;
@@ -570,6 +578,35 @@ mod tests {
         assert_eq!(
             provider.memory_consolidation_preferred_model(),
             OPENROUTER_DEFAULT_MODEL
+        );
+    }
+
+    #[test]
+    fn baseten_provider_disables_hosted_tools_and_uses_baseten_defaults() {
+        let provider = create_model_provider(
+            ModelProviderInfo::create_baseten_provider(),
+            /*auth_manager*/ None,
+        );
+
+        assert_eq!(
+            provider.capabilities(),
+            ProviderCapabilities {
+                namespace_tools: false,
+                image_generation: false,
+                web_search: false,
+            }
+        );
+        assert_eq!(
+            provider.approval_review_preferred_model(),
+            BASETEN_DEFAULT_MODEL
+        );
+        assert_eq!(
+            provider.memory_extraction_preferred_model(),
+            BASETEN_DEFAULT_MODEL
+        );
+        assert_eq!(
+            provider.memory_consolidation_preferred_model(),
+            BASETEN_DEFAULT_MODEL
         );
     }
 

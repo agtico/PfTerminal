@@ -1275,13 +1275,25 @@ mod tests {
                 name: "Z.AI".to_string(),
                 env_var: "ZAI_API_KEY".to_string(),
             },
+            ApiKeyProviderOption {
+                id: "openrouter".to_string(),
+                name: "OpenRouter".to_string(),
+                env_var: "OPENROUTER_API_KEY".to_string(),
+            },
+            ApiKeyProviderOption {
+                id: "baseten".to_string(),
+                name: "Baseten".to_string(),
+                env_var: "BASETEN_API_KEY".to_string(),
+            },
         ];
 
         assert_eq!(
             widget.displayed_sign_in_options(),
             vec![
                 SignInOption::ProviderApiKey(0),
-                SignInOption::ProviderApiKey(1)
+                SignInOption::ProviderApiKey(1),
+                SignInOption::ProviderApiKey(2),
+                SignInOption::ProviderApiKey(3)
             ]
         );
 
@@ -1296,6 +1308,14 @@ mod tests {
         );
         assert!(
             rendered.contains("Provider: Z.AI API Key"),
+            "rendered:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("Provider: OpenRouter API Key"),
+            "rendered:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("Provider: Baseten API Key"),
             "rendered:\n{rendered}"
         );
         assert!(!rendered.contains("ChatGPT"), "rendered:\n{rendered}");

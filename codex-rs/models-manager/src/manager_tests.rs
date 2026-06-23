@@ -1046,12 +1046,32 @@ fn bundled_models_json_contains_openrouter_models() {
         "minimax/minimax-m3",
         "openrouter/owl-alpha",
         "google/gemini-3.5-flash",
+        "zai-org/GLM-5.2",
     ] {
         assert!(
             response.models.iter().any(|model| model.slug == slug),
             "bundled models.json should include {slug}"
         );
     }
+
+    let baseten_glm = response
+        .models
+        .iter()
+        .find(|model| model.slug == "zai-org/GLM-5.2")
+        .expect("bundled models.json should include Baseten GLM 5.2");
+
+    assert_eq!(baseten_glm.display_name, "Baseten GLM 5.2");
+    assert_eq!(baseten_glm.context_window, Some(1_048_576));
+    assert_eq!(baseten_glm.default_reasoning_level, None);
+    assert!(baseten_glm.supported_reasoning_levels.is_empty());
+    assert_eq!(baseten_glm.visibility, ModelVisibility::List);
+    assert!(
+        baseten_glm
+            .description
+            .as_deref()
+            .unwrap_or_default()
+            .contains("$1.50/M input, $0.30/M cached input, $4.50/M output")
+    );
 
     let openrouter_gemini = response
         .models

@@ -651,6 +651,65 @@ fn openrouter_chat_completions_request_uses_reasoning_object() {
 }
 
 #[test]
+fn baseten_chat_completions_strips_strict_without_zai_reasoning_fields() {
+    let provider_info = ModelProviderInfo::create_baseten_provider();
+    let client = ModelClient::new(
+        /*auth_manager*/ None,
+        ThreadId::new(),
+        provider_info,
+        SessionSource::Cli,
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*item_ids_enabled*/ false,
+        /*attestation_provider*/ None,
+    );
+    let prompt = super::Prompt {
+        input: vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "Run pwd.".to_string(),
+            }],
+            phase: None,
+            metadata: None,
+        }],
+        tools: vec![ToolSpec::Function(ResponsesApiTool {
+            name: "exec_command".to_string(),
+            description: "Run a command.".to_string(),
+            strict: true,
+            defer_loading: None,
+            parameters: JsonSchema::object(
+                BTreeMap::from([(
+                    "cmd".to_string(),
+                    JsonSchema::string(Some("Command to run.".to_string())),
+                )]),
+                Some(vec!["cmd".to_string()]),
+                Some(false.into()),
+            ),
+            output_schema: None,
+        })],
+        ..Default::default()
+    };
+
+    let request = client
+        .build_chat_completions_request(&prompt, &test_model_info(), None)
+        .expect("Baseten chat request");
+
+    assert_eq!(request.enable_thinking, None);
+    assert_eq!(request.emit_usage, None);
+    assert_eq!(request.reasoning_effort, None);
+    assert_eq!(request.reasoning, None);
+    assert_eq!(
+        request.tools[0]
+            .pointer("/function/strict")
+            .and_then(serde_json::Value::as_bool),
+        None
+    );
+}
+
+#[test]
 fn zai_chat_completions_preserves_function_tools_when_web_search_is_available() {
     let provider_info = ModelProviderInfo::create_zai_provider();
     let client = ModelClient::new(
