@@ -2806,12 +2806,16 @@ async fn model_picker_opens_openrouter_reasoning_options_for_gemini() {
         reasoning_popup.contains("Select Reasoning Level"),
         "expected OpenRouter Gemini to use the generic reasoning picker:\n{reasoning_popup}"
     );
-    for label in ["Minimal (default)", "Low", "Medium", "High"] {
+    for label in ["Minimal", "Low", "Medium", "High"] {
         assert!(
             reasoning_popup.contains(label),
             "expected Gemini reasoning option {label:?} in picker:\n{reasoning_popup}"
         );
     }
+    assert!(
+        !reasoning_popup.contains("(default)"),
+        "expected Gemini reasoning picker not to invent a PFTerminal default:\n{reasoning_popup}"
+    );
 }
 
 #[tokio::test]

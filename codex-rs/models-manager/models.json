@@ -270,7 +270,7 @@
       "slug": "google/gemini-3.5-flash",
       "display_name": "OpenRouter Gemini 3.5 Flash",
       "description": "OpenRouter: Gemini 3.5 Flash - $1.50/M input, $9.00/M output.",
-      "default_reasoning_level": "minimal",
+      "default_reasoning_level": null,
       "supported_reasoning_levels": [
         {
           "effort": "minimal",

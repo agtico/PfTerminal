@@ -520,9 +520,7 @@ impl ChatWidget {
 
         let default_choice = choices
             .contains(&default_effort)
-            .then(|| default_effort.clone())
-            .or_else(|| choices.first().cloned())
-            .or(Some(default_effort));
+            .then(|| default_effort.clone());
 
         let model_slug = preset.model.to_string();
         let is_current_model = self.current_model() == preset.model.as_str();

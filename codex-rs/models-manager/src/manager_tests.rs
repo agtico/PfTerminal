@@ -1059,10 +1059,7 @@ fn bundled_models_json_contains_openrouter_models() {
         .find(|model| model.slug == "google/gemini-3.5-flash")
         .expect("bundled models.json should include OpenRouter Gemini 3.5 Flash");
 
-    assert_eq!(
-        openrouter_gemini.default_reasoning_level,
-        Some(ReasoningEffort::Minimal)
-    );
+    assert_eq!(openrouter_gemini.default_reasoning_level, None);
     assert_eq!(
         openrouter_gemini
             .supported_reasoning_levels

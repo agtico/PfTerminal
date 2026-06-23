@@ -177,7 +177,7 @@ fn test_openrouter_gemini_model_info() -> ModelInfo {
         "slug": "google/gemini-3.5-flash",
         "display_name": "OpenRouter Gemini 3.5 Flash",
         "description": "OpenRouter Gemini 3.5 Flash",
-        "default_reasoning_level": "minimal",
+        "default_reasoning_level": null,
         "supported_reasoning_levels": [
             {"effort": "minimal", "description": "Minimal"},
             {"effort": "low", "description": "Low"},
@@ -623,8 +623,13 @@ fn openrouter_chat_completions_request_uses_reasoning_object() {
     assert_eq!(default_request.enable_thinking, None);
     assert_eq!(default_request.emit_usage, None);
     assert_eq!(default_request.reasoning_effort, None);
+    assert_eq!(default_request.reasoning, None);
+
+    let minimal_request = client
+        .build_chat_completions_request(&prompt, &model_info, Some(ReasoningEffortConfig::Minimal))
+        .expect("minimal OpenRouter chat request");
     assert_eq!(
-        default_request
+        minimal_request
             .reasoning
             .as_ref()
             .and_then(|reasoning| reasoning.get("effort"))
