@@ -195,6 +195,7 @@ fn retry_limit_429_message_tells_user_to_wait() {
     let err = RetryLimitReachedError {
         status: StatusCode::TOO_MANY_REQUESTS,
         request_id: Some("req-429".to_string()),
+        retry_after_ms: None,
     };
 
     assert_eq!(

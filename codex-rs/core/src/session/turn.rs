@@ -64,6 +64,7 @@ use crate::tools::router::extension_tool_executors;
 use crate::tools::spec_plan::search_tool_enabled;
 use crate::tools::spec_plan::tool_suggest_enabled;
 use crate::turn_diff_tracker::TurnDiffTracker;
+use crate::turn_timing::now_unix_timestamp_ms;
 use crate::turn_timing::record_turn_ttft_metric;
 use crate::util::error_or_panic;
 use codex_analytics::AppInvocation;
@@ -103,6 +104,13 @@ use codex_protocol::protocol::ReasoningRawContentDeltaEvent;
 use codex_protocol::protocol::TurnDiffEvent;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
+use codex_state::ProviderRequestBlock;
+use codex_state::ProviderRequestBlockReason;
+use codex_state::ProviderRequestKey;
+use codex_state::ProviderRequestLease;
+use codex_state::ProviderRequestLeaseDecision;
+use codex_state::ProviderRequestPreflight;
+use codex_state::ProviderRequestResult;
 use codex_tools::ToolName;
 use codex_tools::filter_request_plugin_install_discoverable_tools_for_client;
 use codex_utils_stream_parser::AssistantTextChunk;
@@ -114,6 +122,8 @@ use futures::future::BoxFuture;
 use futures::prelude::*;
 use futures::stream::FuturesOrdered;
 use regex_lite::Regex;
+use sha2::Digest;
+use sha2::Sha256;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use tracing::error;
@@ -123,6 +133,10 @@ use tracing::instrument;
 use tracing::trace;
 use tracing::trace_span;
 use tracing::warn;
+
+const PROVIDER_REQUEST_LEASE_TTL_MS: i64 = 10 * 60 * 1000;
+const THIRD_PARTY_PREFLIGHT_WARNING_INPUT_TOKENS: i64 = 32_000;
+const THIRD_PARTY_PREFLIGHT_WARNING_REQUEST_BYTES: i64 = 128 * 1024;
 
 /// Takes initial turn input and runs a loop where, at each sampling request,
 /// the model replies with either:
@@ -1940,6 +1954,272 @@ async fn drain_in_flight(
     Ok(())
 }
 
+async fn acquire_provider_request_lease(
+    sess: &Session,
+    turn_context: &TurnContext,
+    client_session: &ModelClientSession,
+    prompt: &Prompt,
+    responses_metadata: &CodexResponsesMetadata,
+) -> CodexResult<Option<ProviderRequestLease>> {
+    let Some(state_db) = sess.state_db() else {
+        return Ok(None);
+    };
+
+    let key = provider_request_key(sess, turn_context);
+    let token_info = sess.token_usage_info().await;
+    let cached_input_tokens = token_info
+        .as_ref()
+        .map(|info| info.total_token_usage.cached_input())
+        .unwrap_or(0);
+    let input_tokens = match sess.get_estimated_token_count(turn_context).await {
+        Some(tokens) => tokens,
+        None => token_info
+            .as_ref()
+            .map(|info| info.total_token_usage.input_tokens)
+            .unwrap_or_else(|| rough_prompt_token_estimate(prompt)),
+    };
+    let request_bytes = client_session
+        .serialized_request_body_bytes(
+            prompt,
+            &turn_context.model_info,
+            turn_context.reasoning_effort.clone(),
+            turn_context.reasoning_summary,
+            turn_context.config.service_tier.clone(),
+            responses_metadata,
+            sess.services.auth_manager.auth_mode(),
+        )
+        .map(|bytes| i64::try_from(bytes).unwrap_or(i64::MAX))
+        .unwrap_or_else(|err| {
+            warn!(
+                turn_id = %turn_context.sub_id,
+                provider = %key.provider_id,
+                model = %key.model,
+                error = %err,
+                "failed to serialize provider request for hammer-reduction preflight"
+            );
+            0
+        });
+    let preflight = ProviderRequestPreflight {
+        input_tokens,
+        cached_input_tokens,
+        request_bytes,
+        thread_id: Some(sess.thread_id.to_string()),
+        turn_id: Some(turn_context.sub_id.clone()),
+    };
+    maybe_emit_provider_request_pressure_warning(sess, turn_context, &key, &preflight).await;
+    let owner = format!(
+        "pid:{}:thread:{}:turn:{}",
+        std::process::id(),
+        sess.thread_id,
+        turn_context.sub_id
+    );
+    let now_ms = now_unix_timestamp_ms();
+    let decision = state_db
+        .try_acquire_provider_request_lease(
+            &key,
+            &preflight,
+            &owner,
+            PROVIDER_REQUEST_LEASE_TTL_MS,
+            now_ms,
+        )
+        .await
+        .map_err(|err| {
+            CodexErr::Fatal(format!(
+                "failed to check provider request throttle state: {err:#}"
+            ))
+        })?;
+
+    match decision {
+        ProviderRequestLeaseDecision::Acquired(lease) => {
+            info!(
+                turn_id = %turn_context.sub_id,
+                provider = %key.provider_id,
+                model = %key.model,
+                key_fingerprint = %key.key_fingerprint,
+                input_tokens = preflight.input_tokens,
+                cached_input_tokens = preflight.cached_input_tokens,
+                request_bytes = preflight.request_bytes,
+                lease_until_ms = lease.lease_until_ms,
+                "provider request preflight acquired lease"
+            );
+            Ok(Some(lease))
+        }
+        ProviderRequestLeaseDecision::Blocked(block) => {
+            warn!(
+                turn_id = %turn_context.sub_id,
+                provider = %key.provider_id,
+                model = %key.model,
+                key_fingerprint = %key.key_fingerprint,
+                reason = ?block.reason,
+                remaining_ms = block.remaining_ms,
+                last_status = ?block.last_status,
+                last_request_bytes = block.last_request_bytes,
+                "provider request blocked by local hammer-reduction state"
+            );
+            Err(CodexErr::InvalidRequest(format_provider_request_block(
+                &key, &block,
+            )))
+        }
+    }
+}
+
+async fn maybe_emit_provider_request_pressure_warning(
+    sess: &Session,
+    turn_context: &TurnContext,
+    key: &ProviderRequestKey,
+    preflight: &ProviderRequestPreflight,
+) {
+    if turn_context.provider.info().is_openai() {
+        return;
+    }
+    if preflight.input_tokens < THIRD_PARTY_PREFLIGHT_WARNING_INPUT_TOKENS
+        && preflight.request_bytes < THIRD_PARTY_PREFLIGHT_WARNING_REQUEST_BYTES
+    {
+        return;
+    }
+    let message = format!(
+        "Provider preflight: {}/{} is about to send input={} cached_input={} request_bytes={}. This is a hammer risk for third-party providers; compact, switch provider/model, or start a fresh thread if this was a tiny follow-up.",
+        key.provider_id,
+        key.model,
+        preflight.input_tokens,
+        preflight.cached_input_tokens,
+        preflight.request_bytes
+    );
+    sess.send_event(turn_context, EventMsg::Warning(WarningEvent { message }))
+        .await;
+}
+
+async fn record_provider_request_result_for_lease(
+    sess: &Session,
+    lease: Option<&ProviderRequestLease>,
+    result: ProviderRequestResult,
+) {
+    let Some(lease) = lease else {
+        return;
+    };
+    let Some(state_db) = sess.state_db() else {
+        return;
+    };
+    if let Err(err) = state_db
+        .record_provider_request_result(lease, result, now_unix_timestamp_ms())
+        .await
+    {
+        warn!(
+            provider = %lease.key.provider_id,
+            model = %lease.key.model,
+            key_fingerprint = %lease.key.key_fingerprint,
+            error = %err,
+            "failed to record provider request result"
+        );
+    }
+}
+
+fn provider_request_result_from_outcome(
+    outcome: &CodexResult<SamplingRequestResult>,
+) -> ProviderRequestResult {
+    match outcome {
+        Ok(_) => ProviderRequestResult::Success,
+        Err(err) => provider_request_result_from_error(err),
+    }
+}
+
+fn provider_request_result_from_error(err: &CodexErr) -> ProviderRequestResult {
+    ProviderRequestResult::Failed {
+        status: err.http_status_code_value(),
+        request_id: provider_request_error_request_id(err),
+        retry_after_ms: provider_request_error_retry_after_ms(err),
+    }
+}
+
+fn provider_request_error_request_id(err: &CodexErr) -> Option<String> {
+    match err {
+        CodexErr::RetryLimit(err) => err.request_id.clone(),
+        CodexErr::UnexpectedStatus(err) => err.request_id.clone(),
+        CodexErr::ResponseStreamFailed(err) => err.request_id.clone(),
+        _ => None,
+    }
+}
+
+fn provider_request_error_retry_after_ms(err: &CodexErr) -> Option<i64> {
+    match err {
+        CodexErr::RetryLimit(err) => err.retry_after_ms,
+        _ => None,
+    }
+}
+
+fn provider_request_key(sess: &Session, turn_context: &TurnContext) -> ProviderRequestKey {
+    let provider = turn_context.provider.info();
+    let key_fingerprint = if let Some(env_key) = provider.env_key.as_deref() {
+        match std::env::var(env_key)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+        {
+            Some(secret) => format!("env:{env_key}:{}", secret_fingerprint(&secret)),
+            None => match sess.services.auth_manager.provider_api_key(env_key) {
+                Ok(Some(secret)) if !secret.trim().is_empty() => {
+                    format!("stored:{env_key}:{}", secret_fingerprint(&secret))
+                }
+                Ok(_) => format!("env:{env_key}:missing"),
+                Err(_) => format!("stored:{env_key}:unavailable"),
+            },
+        }
+    } else if provider.experimental_bearer_token.is_some() {
+        "config:bearer-token".to_string()
+    } else if provider.auth.is_some() {
+        "config:auth-command".to_string()
+    } else if provider.aws.is_some() {
+        "config:aws".to_string()
+    } else {
+        format!("auth-mode:{:?}", sess.services.auth_manager.auth_mode())
+    };
+
+    ProviderRequestKey {
+        provider_id: turn_context.config.model_provider_id.clone(),
+        model: turn_context.model_info.slug.clone(),
+        key_fingerprint,
+    }
+}
+
+fn secret_fingerprint(secret: &str) -> String {
+    let digest = Sha256::digest(secret.as_bytes());
+    digest
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn rough_prompt_token_estimate(prompt: &Prompt) -> i64 {
+    let input_bytes = serde_json::to_vec(&prompt.input).map_or(0, |bytes| bytes.len());
+    i64::try_from(input_bytes / 4).unwrap_or(i64::MAX)
+}
+
+fn format_provider_request_block(key: &ProviderRequestKey, block: &ProviderRequestBlock) -> String {
+    let reason = match block.reason {
+        ProviderRequestBlockReason::Cooldown => "cooldown",
+        ProviderRequestBlockReason::Lease => "active request lease",
+    };
+    let wait_seconds = (block.remaining_ms.max(0) + 999) / 1000;
+    let status = block
+        .last_status
+        .map(|status| status.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let request_id = block
+        .last_request_id
+        .as_deref()
+        .map(|id| format!(", request id: {id}"))
+        .unwrap_or_default();
+    format!(
+        "provider request blocked by local {reason} for {}/{} ({}) for about {wait_seconds}s. Last status: {status}{request_id}. Last preflight: input={} cached_input={} request_bytes={}. Wait, compact, switch provider/model, or start a fresh thread before retrying.",
+        key.provider_id,
+        key.model,
+        key.key_fingerprint,
+        block.last_input_tokens,
+        block.last_cached_input_tokens,
+        block.last_request_bytes
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 #[instrument(level = "trace",
     skip_all,
@@ -1972,8 +2252,16 @@ async fn try_run_sampling_request(
         turn_context.model_info.slug.as_str(),
         turn_context.provider.info().name.as_str(),
     );
+    let provider_request_lease = acquire_provider_request_lease(
+        sess.as_ref(),
+        turn_context.as_ref(),
+        client_session,
+        prompt,
+        responses_metadata,
+    )
+    .await?;
     let sampling_timing_guard = turn_context.turn_timing_state.begin_sampling();
-    let mut stream = client_session
+    let stream_result = client_session
         .stream(
             prompt,
             &turn_context.model_info,
@@ -1986,7 +2274,29 @@ async fn try_run_sampling_request(
         )
         .instrument(trace_span!("stream_request"))
         .or_cancel(&cancellation_token)
-        .await??;
+        .await;
+    let mut stream = match stream_result {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(err)) => {
+            record_provider_request_result_for_lease(
+                sess.as_ref(),
+                provider_request_lease.as_ref(),
+                provider_request_result_from_error(&err),
+            )
+            .await;
+            return Err(err);
+        }
+        Err(err) => {
+            let err = CodexErr::from(err);
+            record_provider_request_result_for_lease(
+                sess.as_ref(),
+                provider_request_lease.as_ref(),
+                provider_request_result_from_error(&err),
+            )
+            .await;
+            return Err(err);
+        }
+    };
     let mut in_flight: FuturesOrdered<BoxFuture<'static, CodexResult<ResponseInputItem>>> =
         FuturesOrdered::new();
     let mut needs_follow_up = false;
@@ -2405,8 +2715,23 @@ async fn try_run_sampling_request(
     } else {
         Some(turn_context.turn_timing_state.begin_tool_blocking())
     };
-    drain_in_flight(&mut in_flight, sess.clone(), turn_context.clone()).await?;
+    if let Err(err) = drain_in_flight(&mut in_flight, sess.clone(), turn_context.clone()).await {
+        record_provider_request_result_for_lease(
+            sess.as_ref(),
+            provider_request_lease.as_ref(),
+            provider_request_result_from_error(&err),
+        )
+        .await;
+        return Err(err);
+    }
     drop(tool_blocking_timing_guard);
+
+    record_provider_request_result_for_lease(
+        sess.as_ref(),
+        provider_request_lease.as_ref(),
+        provider_request_result_from_outcome(&outcome),
+    )
+    .await;
 
     if should_emit_token_count {
         // A tool call such as request_user_input can intentionally pause the turn. Emit token

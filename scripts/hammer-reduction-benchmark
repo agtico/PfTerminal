@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from http.server import BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer
+from pathlib import Path
+
+
+class RequestLog:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.requests = []
+
+    def append(self, method, path, body_len):
+        with self._lock:
+            self.requests.append(
+                {
+                    "method": method,
+                    "path": path,
+                    "body_bytes": body_len,
+                    "at": time.time(),
+                }
+            )
+
+    def snapshot(self):
+        with self._lock:
+            return list(self.requests)
+
+
+def make_handler(request_log):
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, _fmt, *_args):
+            return
+
+        def do_GET(self):
+            request_log.append("GET", self.path, 0)
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps({"object": "list", "data": [{"id": "fake-hammer-model"}]}).encode()
+            )
+
+        def do_POST(self):
+            length = int(self.headers.get("content-length", "0") or "0")
+            if length:
+                self.rfile.read(length)
+            request_log.append("POST", self.path, length)
+            self.send_response(429)
+            self.send_header("content-type", "application/json")
+            self.send_header("x-request-id", "fake-rate-limit")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "error": {
+                            "message": "fake provider rate limit",
+                            "type": "rate_limit_error",
+                        }
+                    }
+                ).encode()
+            )
+
+    return Handler
+
+
+def run_pfterminal(binary, cwd, env, prompt):
+    cmd = [
+        str(binary),
+        "exec",
+        "--json",
+        "--skip-git-repo-check",
+        "--ignore-rules",
+        "--sandbox",
+        "read-only",
+        "-C",
+        str(cwd),
+        prompt,
+    ]
+    return subprocess.run(
+        cmd,
+        cwd=str(cwd),
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=45,
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--pfterminal",
+        default="codex-rs/target/debug/pfterminal",
+        help="Path to the pfterminal binary relative to repo root or absolute",
+    )
+    args = parser.parse_args()
+
+    repo = Path(__file__).resolve().parents[1]
+    binary = Path(args.pfterminal)
+    if not binary.is_absolute():
+        binary = repo / binary
+    if not binary.exists():
+        print(f"missing pfterminal binary: {binary}", file=sys.stderr)
+        return 2
+
+    request_log = RequestLog()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(request_log))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    with tempfile.TemporaryDirectory(prefix="pfterminal-hammer-bench-") as temp:
+        root = Path(temp)
+        codex_home = root / "codex_home"
+        sqlite_home = root / "sqlite_home"
+        work = root / "work"
+        codex_home.mkdir()
+        sqlite_home.mkdir()
+        work.mkdir()
+        (codex_home / "config.toml").write_text(
+            f"""
+model = "fake-hammer-model"
+model_provider = "fake-hammer"
+approval_policy = "never"
+sandbox_mode = "read-only"
+
+[model_providers.fake-hammer]
+name = "Fake Hammer Provider"
+base_url = "http://127.0.0.1:{server.server_port}/v1"
+env_key = "FAKE_HAMMER_API_KEY"
+wire_api = "chat"
+""".strip()
+            + "\n"
+        )
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["CODEX_SQLITE_HOME"] = str(sqlite_home)
+        env["FAKE_HAMMER_API_KEY"] = "fake-secret"
+        env["RUST_LOG"] = env.get("RUST_LOG", "warn")
+
+        first = run_pfterminal(binary, work, env, "Say hello once.")
+        after_first = request_log.snapshot()
+        second = run_pfterminal(binary, work, env, "continue")
+        after_second = request_log.snapshot()
+
+    server.shutdown()
+    thread.join(timeout=5)
+
+    first_posts = [req for req in after_first if req["method"] == "POST"]
+    second_new = after_second[len(after_first) :]
+    second_new_posts = [req for req in second_new if req["method"] == "POST"]
+    second_output = second.stdout + second.stderr
+    blocked_locally = "provider request blocked by local cooldown" in second_output
+    result = {
+        "ok": len(first_posts) == 1 and len(second_new_posts) == 0 and blocked_locally,
+        "first_exit": first.returncode,
+        "second_exit": second.returncode,
+        "requests_after_first": len(after_first),
+        "requests_after_second": len(after_second),
+        "post_requests_after_first": len(first_posts),
+        "new_post_requests_on_second_run": len(second_new_posts),
+        "blocked_locally_on_second_run": blocked_locally,
+        "first_post_body_bytes": first_posts[0]["body_bytes"] if first_posts else None,
+        "all_requests": after_second,
+        "second_output_tail": second_output[-1200:],
+    }
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result["ok"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

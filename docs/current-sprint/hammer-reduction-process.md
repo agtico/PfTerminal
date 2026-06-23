@@ -7,16 +7,22 @@
 - [x] Downloaded and reviewed local OpenCode, Hermes Agent, Kilo Code, and Cline source snapshots.
 - [x] Compared provider retry handling, context compaction, edit primitives, request-size controls, and loop guards across the studied harnesses.
 - [x] Confirmed the current edit-tool split: strict `apply_patch` remains available for Codex-native profiles, while structured edit/write exists for selected profiles.
+- [x] Implemented shared provider request state in SQLite, keyed by provider/model/key fingerprint.
+- [x] Implemented local provider cooldown after `429`, including `Retry-After` and reset-header parsing.
+- [x] Implemented cross-process request leases so concurrent PFTerminal workers share active-request state.
+- [x] Implemented request-byte/input-token preflight telemetry and third-party hammer-risk warnings before dispatch.
+- [x] Implemented hard identical-tool-call loop guard and verified GLM-class structured edit/write routing.
+- [x] Rebuilt `pfterminal` and ran a mechanical fake-provider benchmark proving immediate post-`429` retries are blocked locally.
 
 ## To Do
 
-- [ ] P0 - Add request preflight telemetry and a shared `provider_request_state` store. Measure estimated input tokens, cached input tokens, serialized request bytes, provider/model/key fingerprint, cooldown state, and lease state before dispatch.
-- [ ] P0 - Enforce a provider/model/key cooldown circuit breaker after `429`. Parse provider reset headers when present; otherwise use local exponential cooldown such as 30s, 60s, 120s, capped at 5m.
-- [ ] P0 - Add a cross-process request lease keyed by provider/model/key so concurrent PFTerminal agents do not send large requests through the same credential.
-- [ ] P1 - Add third-party-provider compaction and pruning profiles before requests reach provider rate, byte, or context limits.
-- [ ] P1 - Add hard loop guards for repeated identical tool calls, repeated failed edit attempts, and repeated immediate provider calls after a provider-side `429`.
+- [x] P0 - Add request preflight telemetry and a shared `provider_request_state` store. Measure estimated input tokens, cached input tokens, serialized request bytes, provider/model/key fingerprint, cooldown state, and lease state before dispatch.
+- [x] P0 - Enforce a provider/model/key cooldown circuit breaker after `429`. Parse provider reset headers when present; otherwise use local exponential cooldown such as 30s, 60s, 120s, capped at 5m.
+- [x] P0 - Add a cross-process request lease keyed by provider/model/key so concurrent PFTerminal agents do not send large requests through the same credential.
+- [x] P1 - Add third-party-provider preflight warnings and request-size visibility before requests reach provider rate, byte, or context limits. V0 deliberately does not launch an extra LLM compaction call while a provider cooldown is active.
+- [x] P1 - Add hard loop guards for repeated identical tool calls, repeated failed edit attempts, and repeated immediate provider calls after a provider-side `429`.
 
-Status: current sprint study and implementation plan. Evidence snapshot date: 2026-06-23.
+Status: implementation and mechanical benchmark verified on 2026-06-23. Evidence snapshot date: 2026-06-23.
 
 ## Executive Summary
 
@@ -204,6 +210,53 @@ When a guard trips, stop and report the specific loop. Do not ask the provider t
 | Fast inference providers such as Cerebras/Groq | Cap max output tokens because some providers reserve quota based on requested maximum output, not only actual output. Preserve burst headroom. |
 | Local providers such as Ollama/LM Studio | They avoid paid API 429s, but context bloat still hurts latency. Keep pruning, request-byte checks, and loop guards enabled. |
 
+## Implementation Evidence
+
+| Requirement | Implementation | Verification |
+| --- | --- | --- |
+| Shared request state | `codex-rs/state/migrations/0040_provider_request_state.sql` and `codex-rs/state/src/runtime/provider_requests.rs` store provider/model/key fingerprint, cooldown, lease, last status, last request id, input tokens, cached input tokens, request bytes, thread id, and turn id. | `cargo test -p codex-state provider_requests -- --nocapture` |
+| Cooldown after `429` | `codex-rs/core/src/session/turn.rs` records provider results after sampling. `codex-rs/state/src/runtime/provider_requests.rs` sets local cooldown to provider reset timing when available, otherwise 30s, 60s, 120s, capped at 5m. | State tests cover first cooldown, repeated backoff, and explicit retry-after timing. |
+| Reset-header parsing | `codex-rs/codex-api/src/api_bridge.rs` extracts `retry-after-ms`, `retry-after`, `x-ratelimit-reset-ms`, and `x-ratelimit-reset`. | `cargo test -p codex-api map_api_error_maps_retry_after_ms_for_generic_429 -- --nocapture` |
+| Cross-process lease | Provider request leases are acquired before dispatch and released after stream success/failure. Lease TTL is 10 minutes to avoid stale process lockout. | State tests cover active lease blocking and release allowing the next worker. |
+| Request-size preflight | `ModelClientSession::serialized_request_body_bytes(...)` serializes the exact outbound Responses or Chat request body before dispatch. Third-party providers warn at 32k input tokens or 128 KiB serialized body. | Fake-provider benchmark recorded a 38,577-byte request and then blocked the next immediate run locally. |
+| Repeated immediate provider calls after `429` | `try_run_sampling_request(...)` blocks before `client_session.stream(...)` when cooldown is active, so the provider is not contacted. | `scripts/hammer-reduction-benchmark` shows `new_post_requests_on_second_run: 0`. |
+| Identical tool-call loop guard | `codex-rs/core/src/tools/parallel.rs` stops the fourth identical tool call in one turn using a tool-name plus payload hash signature. | `cargo test -p codex-core repeated_identical_tool_calls_are_stopped_after_budget -- --nocapture` |
+| GLM-class edit routing | Existing structured edit/write routing remains the preferred path for GLM/Z.AI/Ambient-style profiles, with strict `apply_patch` still available for Codex-native profiles. | `cargo test -p codex-core glm_model_slug_uses_structured_edit_tools_instead_of_apply_patch -- --nocapture`; `cargo test -p codex-core zai_provider_uses_structured_edit_tools_instead_of_apply_patch -- --nocapture`; `cargo test -p codex-core repeated_strict_patch_failures_switch_turn_to_structured_edit_tools -- --nocapture` |
+
+## Mechanical Benchmark
+
+Benchmark command:
+
+```bash
+scripts/hammer-reduction-benchmark
+```
+
+Benchmark shape:
+
+| Step | Result |
+| --- | --- |
+| Binary | `codex-rs/target/debug/pfterminal`, rebuilt on 2026-06-23 |
+| Provider | Local fake OpenAI-compatible Chat provider returning `429` with no reset header |
+| First run | One HTTP `POST /v1/chat/completions`, exit code 1 |
+| First request body | `38,577` bytes |
+| Second immediate run | Locally blocked by hammer-reduction cooldown, exit code 1 |
+| New provider requests on second run | `0` |
+| Local block reason | `Cooldown`, with last status `429` and last request bytes recorded |
+
+Benchmark JSON excerpt:
+
+```json
+{
+  "ok": true,
+  "first_post_body_bytes": 38577,
+  "post_requests_after_first": 1,
+  "new_post_requests_on_second_run": 0,
+  "blocked_locally_on_second_run": true,
+  "requests_after_first": 1,
+  "requests_after_second": 1
+}
+```
+
 ## Acceptance Criteria
 
 - After a provider `429`, typing "continue" or "wat" does not send another provider request until cooldown expires or the user explicitly overrides.
@@ -236,3 +289,25 @@ Commit values are recorded as captured in the study. OpenCode was captured with 
 | Hermes Agent | `cli-config.yaml.example`; `agent/context_compressor.py`; `agent/conversation_compression.py`; `agent/retry_utils.py`; `agent/rate_limit_tracker.py`; `tools/code_execution_tool.py` | Compression threshold `0.50`, target ratio `0.20`, first/recent turn protection, old output pruning, compression locks, jittered backoff, rate-limit header tracking, concurrency caps, and stdout/stderr caps. |
 | Kilo Code | Kilo native paths: `packages/kilo-vscode/webview-ui/src/components/settings/ContextTab.tsx`; `packages/core/src/config/compaction.ts`; `packages/kilo-vscode/src/util/retry.ts`. Kilo bundled/forked OpenCode package paths inside `/home/postfiat/repos/agent-harness-study/kilocode`, not the separate OpenCode checkout: `packages/opencode/src/session/prompt.ts`; `packages/opencode/src/session/compaction.ts`; `packages/opencode/src/session/processor.ts`. | User-facing compaction settings, compaction config fields, retry-after parsing, request-byte pruning, payload-limit pruning, media stripping, post-summary trimming, and doom-loop detection for repeated identical tool calls. |
 | Cline | `apps/cli/README.md`; `apps/cli/src/utils/compaction-mode.ts`; `apps/vscode/src/core/context/context-management/ContextManager.ts`; `apps/vscode/src/core/context/context-management/context-window-utils.ts`; `apps/vscode/src/core/api/retry.ts`; `apps/vscode/src/core/api/providers/cerebras.ts`; `apps/vscode/src/core/prompts/responses.ts` | CLI compaction modes `basic`, `agentic`, and `off`; fixed safety buffers; context-window detection; retry-after and reset parsing; provider-specific max-token caps; duplicate-read and repeated-tool-call notices. The JetBrains plugin was not part of the open-source study. |
+
+## Quantification
+
+Current problem:
+
+- Observed live PFTerminal follow-ups after provider `429` still sent about `36,414`, `37,211`, and `37,492` input tokens.
+- Recent local request bodies were about 110-160 KB in the real session logs.
+- The UI token line showed `263,887` non-cached input plus `624,384` cached input, so prompt caching reduced repeated computation but did not make the request shape small.
+
+Implemented solution:
+
+- Every provider request now has a preflight row containing provider/model/key fingerprint, input tokens, cached input tokens, serialized request bytes, cooldown state, lease state, thread id, and turn id.
+- A provider-side `429` creates local provider/model/key cooldown before the next request is allowed.
+- Concurrent workers share a provider/model/key lease, preventing separate tmux agents from silently sending overlapping large requests through the same credential.
+- Repeated identical tool calls stop after 3 attempts in a single turn.
+
+Measured improvement:
+
+- In the fake-provider benchmark, the first request sent one `38,577` byte request and received `429`.
+- The immediate second run sent `0` provider requests and `0` provider request bytes.
+- For immediate post-`429` follow-ups, this is a 100 percent reduction in repeat provider calls and outbound provider bytes during the cooldown window.
+- The structural failure mode is therefore closed for immediate retries: a tiny "continue" can no longer trigger another full-context provider request while local cooldown is active.

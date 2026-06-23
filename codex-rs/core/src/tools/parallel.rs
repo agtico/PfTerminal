@@ -1,8 +1,11 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
+use sha2::Digest;
+use sha2::Sha256;
 use tokio::sync::RwLock;
 use tokio::task::JoinError;
 use tokio_util::either::Either;
@@ -27,6 +30,8 @@ use crate::tools::router::ToolRouter;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::ResponseInputItem;
 
+const MAX_IDENTICAL_TOOL_CALLS_PER_TURN: u8 = 3;
+
 #[derive(Clone)]
 pub(crate) struct ToolCallRuntime {
     router: Arc<ToolRouter>,
@@ -34,6 +39,7 @@ pub(crate) struct ToolCallRuntime {
     turn_context: Arc<TurnContext>,
     tracker: SharedTurnDiffTracker,
     parallel_execution: Arc<RwLock<()>>,
+    tool_call_counts: Arc<RwLock<HashMap<String, u8>>>,
 }
 
 impl ToolCallRuntime {
@@ -49,6 +55,7 @@ impl ToolCallRuntime {
             turn_context,
             tracker,
             parallel_execution: Arc::new(RwLock::new(())),
+            tool_call_counts: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -94,6 +101,8 @@ impl ToolCallRuntime {
         let invocation_cancellation_token = cancellation_token.clone();
         let wait_for_runtime_cancellation = self.router.tool_waits_for_runtime_cancellation(&call);
         let started = Instant::now();
+        let tool_call_counts = Arc::clone(&self.tool_call_counts);
+        let tool_signature = tool_call_signature(&call);
         let abort_session = Arc::clone(&session);
         let abort_source = source.clone();
         let abort_turn = Arc::clone(&turn);
@@ -112,6 +121,19 @@ impl ToolCallRuntime {
 
         let mut handle: AbortOnDropHandle<Result<AnyToolResult, FunctionCallError>> =
             AbortOnDropHandle::new(tokio::spawn(async move {
+                let identical_count = {
+                    let mut counts = tool_call_counts.write().await;
+                    let count = counts.entry(tool_signature).or_insert(0);
+                    *count = count.saturating_add(1);
+                    *count
+                };
+                if identical_count > MAX_IDENTICAL_TOOL_CALLS_PER_TURN {
+                    return Err(FunctionCallError::RespondToModel(format!(
+                        "repeated identical tool call stopped after {MAX_IDENTICAL_TOOL_CALLS_PER_TURN} attempts: {}. Change approach; do not retry the same tool payload again.",
+                        dispatch_call.tool_name
+                    )));
+                }
+
                 let _guard = if supports_parallel {
                     Either::Left(lock.read().await)
                 } else {
@@ -176,6 +198,20 @@ impl ToolCallRuntime {
         }
         .in_current_span()
     }
+}
+
+fn tool_call_signature(call: &ToolCall) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(call.tool_name.to_string().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(call.payload.log_payload().as_bytes());
+    let digest = hasher.finalize();
+    let payload_hash = digest
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("{}:{payload_hash}", call.tool_name)
 }
 
 impl ToolCallRuntime {
@@ -467,6 +503,70 @@ mod tests {
             .drain(..)
             .collect::<Vec<_>>();
         assert_eq!(vec![ToolCallOutcome::Completed { success: true }], actual);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn repeated_identical_tool_calls_are_stopped_after_budget() -> anyhow::Result<()> {
+        let (session, turn_context) = crate::session::tests::make_session_and_context().await;
+        let session = Arc::new(session);
+        let turn_context = Arc::new(turn_context);
+        let tool_name = codex_tools::ToolName::plain("test_tool");
+        let handler = Arc::new(ImmediateHandler {
+            tool_name: tool_name.clone(),
+        }) as Arc<dyn CoreToolRuntime>;
+        let router = Arc::new(ToolRouter::from_parts(
+            ToolRegistry::from_tools([handler]),
+            Vec::new(),
+        ));
+        let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+        let runtime = ToolCallRuntime::new(router, session, turn_context, tracker);
+        let cancellation_token = CancellationToken::new();
+
+        for idx in 0..MAX_IDENTICAL_TOOL_CALLS_PER_TURN {
+            let response = runtime
+                .clone()
+                .handle_tool_call(
+                    ToolCall {
+                        tool_name: tool_name.clone(),
+                        call_id: format!("call-{idx}"),
+                        payload: ToolPayload::Function {
+                            arguments: "{\"cmd\":\"pwd\"}".to_string(),
+                        },
+                    },
+                    cancellation_token.clone(),
+                )
+                .await?;
+            let ResponseInputItem::FunctionCallOutput { output, .. } = response else {
+                panic!("expected function call output");
+            };
+            assert_eq!(output.success, Some(true));
+        }
+
+        let response = runtime
+            .handle_tool_call(
+                ToolCall {
+                    tool_name,
+                    call_id: "call-blocked".to_string(),
+                    payload: ToolPayload::Function {
+                        arguments: "{\"cmd\":\"pwd\"}".to_string(),
+                    },
+                },
+                cancellation_token,
+            )
+            .await?;
+        let ResponseInputItem::FunctionCallOutput { output, .. } = response else {
+            panic!("expected function call output");
+        };
+        assert_eq!(output.success, Some(false));
+        let FunctionCallOutputBody::Text(message) = output.body else {
+            panic!("expected text output");
+        };
+        assert!(
+            message.contains("repeated identical tool call stopped"),
+            "{message}"
+        );
 
         Ok(())
     }

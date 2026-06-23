@@ -107,6 +107,7 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                     CodexErr::RetryLimit(RetryLimitReachedError {
                         status,
                         request_id: extract_request_tracking_id(headers.as_ref()),
+                        retry_after_ms: extract_retry_after_ms(headers.as_ref()),
                     })
                 } else {
                     CodexErr::UnexpectedStatus(UnexpectedResponseError {
@@ -126,6 +127,7 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
             TransportError::RetryLimit => CodexErr::RetryLimit(RetryLimitReachedError {
                 status: http::StatusCode::INTERNAL_SERVER_ERROR,
                 request_id: None,
+                retry_after_ms: None,
             }),
             TransportError::Timeout => CodexErr::RequestTimeout,
             TransportError::Network(msg) | TransportError::Build(msg) => {
@@ -140,6 +142,10 @@ const ACTIVE_LIMIT_HEADER: &str = "x-codex-active-limit";
 const REQUEST_ID_HEADER: &str = "x-request-id";
 const OAI_REQUEST_ID_HEADER: &str = "x-oai-request-id";
 const CF_RAY_HEADER: &str = "cf-ray";
+const RETRY_AFTER_HEADER: &str = "retry-after";
+const RETRY_AFTER_MS_HEADER: &str = "retry-after-ms";
+const X_RATELIMIT_RESET_HEADER: &str = "x-ratelimit-reset";
+const X_RATELIMIT_RESET_MS_HEADER: &str = "x-ratelimit-reset-ms";
 const X_OPENAI_AUTHORIZATION_ERROR_HEADER: &str = "x-openai-authorization-error";
 const X_ERROR_JSON_HEADER: &str = "x-error-json";
 const CYBER_POLICY_ERROR_CODE: &str = "cyber_policy";
@@ -165,6 +171,47 @@ fn extract_header(headers: Option<&HeaderMap>, name: &str) -> Option<String> {
             .and_then(|value| value.to_str().ok())
             .map(str::to_string)
     })
+}
+
+fn extract_retry_after_ms(headers: Option<&HeaderMap>) -> Option<i64> {
+    extract_header_millis_delta(headers, RETRY_AFTER_MS_HEADER)
+        .or_else(|| extract_retry_after_seconds_or_date(headers))
+        .or_else(|| extract_header_reset_delta_ms(headers, X_RATELIMIT_RESET_MS_HEADER))
+        .or_else(|| extract_header_reset_delta_ms(headers, X_RATELIMIT_RESET_HEADER))
+}
+
+fn extract_header_millis_delta(headers: Option<&HeaderMap>, name: &str) -> Option<i64> {
+    let value = extract_header(headers, name)?;
+    value.trim().parse::<i64>().ok().filter(|ms| *ms > 0)
+}
+
+fn extract_retry_after_seconds_or_date(headers: Option<&HeaderMap>) -> Option<i64> {
+    let value = extract_header(headers, RETRY_AFTER_HEADER)?;
+    let value = value.trim();
+    if let Ok(seconds) = value.parse::<i64>() {
+        return (seconds > 0).then_some(seconds.saturating_mul(1000));
+    }
+    let retry_at = DateTime::parse_from_rfc2822(value)
+        .ok()?
+        .with_timezone(&Utc);
+    Some(
+        retry_at
+            .timestamp_millis()
+            .saturating_sub(Utc::now().timestamp_millis())
+            .max(0),
+    )
+    .filter(|ms| *ms > 0)
+}
+
+fn extract_header_reset_delta_ms(headers: Option<&HeaderMap>, name: &str) -> Option<i64> {
+    let value = extract_header(headers, name)?;
+    let reset = value.trim().parse::<i64>().ok()?;
+    let reset_ms = if reset > 10_000_000_000 {
+        reset
+    } else {
+        reset.saturating_mul(1000)
+    };
+    Some(reset_ms.saturating_sub(Utc::now().timestamp_millis())).filter(|ms| *ms > 0)
 }
 
 fn extract_x_error_json_code(headers: Option<&HeaderMap>) -> Option<String> {

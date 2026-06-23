@@ -1161,6 +1161,46 @@ impl ModelClientSession {
         Arc::clone(&self.turn_state)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn serialized_request_body_bytes(
+        &self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        effort: Option<ReasoningEffortConfig>,
+        summary: ReasoningSummaryConfig,
+        service_tier: Option<String>,
+        responses_metadata: &CodexResponsesMetadata,
+        auth_mode: Option<AuthMode>,
+    ) -> Result<usize> {
+        let body = match self.client.state.provider.info().wire_api {
+            WireApi::Responses => {
+                let api_provider = self
+                    .client
+                    .state
+                    .provider
+                    .info()
+                    .to_api_provider(auth_mode)?;
+                let request = self.client.build_responses_request(
+                    &api_provider,
+                    prompt,
+                    model_info,
+                    effort,
+                    summary,
+                    service_tier,
+                    responses_metadata,
+                )?;
+                serde_json::to_vec(&request)?
+            }
+            WireApi::Chat => {
+                let request = self
+                    .client
+                    .build_chat_completions_request(prompt, model_info, effort)?;
+                serde_json::to_vec(&request)?
+            }
+        };
+        Ok(body.len())
+    }
+
     fn reset_websocket_session(&mut self) {
         self.websocket_session.connection = None;
         self.websocket_session.last_request = None;

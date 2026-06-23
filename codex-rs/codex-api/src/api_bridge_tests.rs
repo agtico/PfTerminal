@@ -162,6 +162,36 @@ fn map_api_error_maps_usage_limit_limit_name_header() {
 }
 
 #[test]
+fn map_api_error_maps_retry_after_ms_for_generic_429() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        RETRY_AFTER_MS_HEADER,
+        http::HeaderValue::from_static("12500"),
+    );
+    headers.insert(REQUEST_ID_HEADER, http::HeaderValue::from_static("req-429"));
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::TOO_MANY_REQUESTS,
+        url: Some("http://example.com/v1/chat/completions".to_string()),
+        headers: Some(headers),
+        body: Some(
+            serde_json::json!({
+                "error": {
+                    "message": "provider rate limit",
+                    "type": "rate_limit_error",
+                }
+            })
+            .to_string(),
+        ),
+    }));
+
+    let CodexErr::RetryLimit(retry_limit) = err else {
+        panic!("expected CodexErr::RetryLimit, got {err:?}");
+    };
+    assert_eq!(retry_limit.request_id.as_deref(), Some("req-429"));
+    assert_eq!(retry_limit.retry_after_ms, Some(12_500));
+}
+
+#[test]
 fn map_api_error_does_not_fallback_limit_name_to_limit_id() {
     let mut headers = HeaderMap::new();
     headers.insert(

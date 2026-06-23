@@ -430,6 +430,7 @@ fn truncate_text(content: &str, policy: TruncationPolicy) -> String {
 pub struct RetryLimitReachedError {
     pub status: StatusCode,
     pub request_id: Option<String>,
+    pub retry_after_ms: Option<i64>,
 }
 
 impl std::fmt::Display for RetryLimitReachedError {
