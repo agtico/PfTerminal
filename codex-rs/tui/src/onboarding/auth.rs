@@ -96,8 +96,14 @@ pub(crate) enum SignInOption {
 }
 
 const API_KEY_DISABLED_MESSAGE: &str = "API key login is disabled.";
+const API_KEY_MASK_CHAR: char = '•';
+
 fn onboarding_request_id() -> codex_app_server_protocol::RequestId {
     codex_app_server_protocol::RequestId::String(Uuid::new_v4().to_string())
+}
+
+fn masked_api_key(value: &str) -> String {
+    std::iter::repeat_n(API_KEY_MASK_CHAR, value.chars().count()).collect()
 }
 
 fn read_non_empty_env_var(env_var: &str) -> Option<String> {
@@ -773,7 +779,7 @@ impl AuthModeWidget {
                 .bold(),
             ]),
             "".into(),
-            "  Paste or type your API key below. It will be stored in your configured credential store.".into(),
+            "  Paste or type your API key below. It will be stored in your vault.".into(),
             "".into(),
         ];
         if let Some(env_var) = state.prepopulated_env_var.as_ref() {
@@ -792,7 +798,7 @@ impl AuthModeWidget {
         let content_line: Line = if state.value.is_empty() {
             vec!["Paste or type your API key".dim()].into()
         } else {
-            Line::from(state.value.clone())
+            Line::from(masked_api_key(&state.value))
         };
         Paragraph::new(content_line)
             .wrap(Wrap { trim: false })
@@ -1284,6 +1290,33 @@ mod tests {
         assert!(rendered.contains("Z.AI"), "rendered:\n{rendered}");
         assert!(!rendered.contains("ChatGPT"), "rendered:\n{rendered}");
         assert!(!rendered.contains("Device Code"), "rendered:\n{rendered}");
+    }
+
+    #[tokio::test]
+    async fn api_key_entry_masks_entered_key_when_rendered() {
+        let (widget, _tmp) = widget_forced_chatgpt().await;
+        let area = Rect::new(0, 0, 80, 12);
+        let mut buf = Buffer::empty(area);
+        let state = ApiKeyInputState {
+            value: "sk-visible-secret".to_string(),
+            prepopulated_env_var: None,
+        };
+
+        widget.render_api_key_entry(area, &mut buf, &state);
+        let rendered = buffer_text(&buf, area);
+
+        assert!(
+            !rendered.contains("sk-visible-secret"),
+            "rendered:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("•••••••••••••••••"),
+            "rendered:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("stored in your vault"),
+            "rendered:\n{rendered}"
+        );
     }
 
     #[tokio::test]

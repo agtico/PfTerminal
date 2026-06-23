@@ -19,11 +19,15 @@ use anyhow::Context;
 use anyhow::Result;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use codex_keyring_store::CredentialStoreError;
+use codex_keyring_store::DefaultKeyringStore;
 use codex_keyring_store::KeyringStore;
 use rand::TryRngCore;
 use rand::rngs::OsRng;
 use serde::Deserialize;
 use serde::Serialize;
+use sha2::Digest;
+use sha2::Sha256;
 use tracing::warn;
 
 use super::SecretListEntry;
@@ -73,6 +77,12 @@ pub struct LocalSecretsBackend {
 }
 
 impl LocalSecretsBackend {
+    pub(crate) fn new_with_default_keyring(codex_home: PathBuf) -> Self {
+        let keyring_store: Arc<dyn KeyringStore> =
+            Arc::new(LocalFallbackKeyringStore::new(codex_home.clone()));
+        Self::new(codex_home, keyring_store)
+    }
+
     pub fn new(codex_home: PathBuf, keyring_store: Arc<dyn KeyringStore>) -> Self {
         Self::new_with_namespace(
             codex_home,
@@ -153,6 +163,9 @@ impl LocalSecretsBackend {
         if !path.exists() {
             return Ok(SecretsFile::new_empty());
         }
+        set_private_file_permissions(&path)
+            .map_err(|err| anyhow::anyhow!(err.message()))
+            .with_context(|| format!("failed to harden permissions on {}", path.display()))?;
 
         let ciphertext = fs::read(&path)
             .with_context(|| format!("failed to read secrets file at {}", path.display()))?;
@@ -180,6 +193,9 @@ impl LocalSecretsBackend {
         let dir = self.secrets_dir();
         fs::create_dir_all(&dir)
             .with_context(|| format!("failed to create secrets dir {}", dir.display()))?;
+        set_private_dir_permissions(&dir)
+            .map_err(|err| anyhow::anyhow!(err.message()))
+            .with_context(|| format!("failed to harden permissions on {}", dir.display()))?;
 
         let passphrase = self.load_or_create_passphrase()?;
         let plaintext = serde_json::to_vec(file).context("failed to serialize secrets file")?;
@@ -210,6 +226,140 @@ impl LocalSecretsBackend {
                 Ok(generated)
             }
         }
+    }
+}
+
+#[derive(Debug)]
+struct LocalFallbackKeyringStore {
+    codex_home: PathBuf,
+    primary: Arc<dyn KeyringStore>,
+}
+
+impl LocalFallbackKeyringStore {
+    fn new(codex_home: PathBuf) -> Self {
+        Self::new_with_primary(codex_home, Arc::new(DefaultKeyringStore))
+    }
+
+    fn new_with_primary(codex_home: PathBuf, primary: Arc<dyn KeyringStore>) -> Self {
+        Self {
+            codex_home,
+            primary,
+        }
+    }
+
+    fn fallback_dir(&self) -> PathBuf {
+        self.codex_home.join("secrets").join("keyring-fallback")
+    }
+
+    fn fallback_path(&self, service: &str, account: &str) -> PathBuf {
+        let mut hasher = Sha256::new();
+        hasher.update(service.as_bytes());
+        hasher.update([0]);
+        hasher.update(account.as_bytes());
+        let digest = hasher.finalize();
+        let filename = digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        self.fallback_dir().join(format!("{filename}.key"))
+    }
+
+    fn load_fallback(
+        &self,
+        service: &str,
+        account: &str,
+    ) -> Result<Option<String>, CredentialStoreError> {
+        let path = self.fallback_path(service, account);
+        match fs::read_to_string(&path) {
+            Ok(value) => Ok(Some(value)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(CredentialStoreError::from_message(format!(
+                "failed to read local keyring fallback {}: {err}",
+                path.display()
+            ))),
+        }
+    }
+
+    fn save_fallback(
+        &self,
+        service: &str,
+        account: &str,
+        value: &str,
+    ) -> Result<(), CredentialStoreError> {
+        let dir = self.fallback_dir();
+        fs::create_dir_all(&dir).map_err(|err| {
+            CredentialStoreError::from_message(format!(
+                "failed to create local keyring fallback dir {}: {err}",
+                dir.display()
+            ))
+        })?;
+        set_private_dir_permissions(&dir)?;
+        let path = self.fallback_path(service, account);
+        write_keyring_fallback_file_atomically(&path, value.as_bytes())
+    }
+
+    fn delete_fallback(&self, service: &str, account: &str) -> Result<bool, CredentialStoreError> {
+        let path = self.fallback_path(service, account);
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(true),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(CredentialStoreError::from_message(format!(
+                "failed to delete local keyring fallback {}: {err}",
+                path.display()
+            ))),
+        }
+    }
+}
+
+impl KeyringStore for LocalFallbackKeyringStore {
+    fn load(&self, service: &str, account: &str) -> Result<Option<String>, CredentialStoreError> {
+        match self.primary.load(service, account) {
+            Ok(Some(value)) => Ok(Some(value)),
+            Ok(None) => self.load_fallback(service, account),
+            Err(err) => {
+                warn!(
+                    service,
+                    account,
+                    error = %err,
+                    "OS keyring unavailable; using local file-backed keyring fallback"
+                );
+                self.load_fallback(service, account)
+            }
+        }
+    }
+
+    fn save(&self, service: &str, account: &str, value: &str) -> Result<(), CredentialStoreError> {
+        match self.primary.save(service, account, value) {
+            Ok(()) => {
+                let _ = self.delete_fallback(service, account);
+                Ok(())
+            }
+            Err(err) => {
+                warn!(
+                    service,
+                    account,
+                    error = %err,
+                    "OS keyring unavailable; storing local encrypted-secrets passphrase in file-backed fallback"
+                );
+                self.save_fallback(service, account, value)
+            }
+        }
+    }
+
+    fn delete(&self, service: &str, account: &str) -> Result<bool, CredentialStoreError> {
+        let primary_removed = match self.primary.delete(service, account) {
+            Ok(removed) => removed,
+            Err(err) => {
+                warn!(
+                    service,
+                    account,
+                    error = %err,
+                    "OS keyring unavailable while deleting keyring entry; deleting local fallback"
+                );
+                false
+            }
+        };
+        Ok(self.delete_fallback(service, account)? || primary_removed)
     }
 }
 
@@ -254,16 +404,19 @@ fn write_file_atomically(path: &Path, contents: &[u8]) -> Result<()> {
     ));
 
     {
-        let mut tmp_file = fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&tmp_path)
-            .with_context(|| {
-                format!(
-                    "failed to create temp secrets file at {}",
-                    tmp_path.display()
-                )
-            })?;
+        let mut options = fs::OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut tmp_file = options.open(&tmp_path).with_context(|| {
+            format!(
+                "failed to create temp secrets file at {}",
+                tmp_path.display()
+            )
+        })?;
         tmp_file.write_all(contents).with_context(|| {
             format!(
                 "failed to write temp secrets file at {}",
@@ -308,6 +461,105 @@ fn write_file_atomically(path: &Path, contents: &[u8]) -> Result<()> {
             })
         }
     }
+}
+
+fn set_private_file_permissions(path: &Path) -> Result<(), CredentialStoreError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|err| {
+            CredentialStoreError::from_message(format!(
+                "failed to set private permissions on {}: {err}",
+                path.display()
+            ))
+        })?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
+fn set_private_dir_permissions(path: &Path) -> Result<(), CredentialStoreError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|err| {
+            CredentialStoreError::from_message(format!(
+                "failed to set private permissions on {}: {err}",
+                path.display()
+            ))
+        })?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
+fn write_keyring_fallback_file_atomically(
+    path: &Path,
+    contents: &[u8],
+) -> Result<(), CredentialStoreError> {
+    let dir = path.parent().ok_or_else(|| {
+        CredentialStoreError::from_message(format!(
+            "failed to compute parent directory for fallback key at {}",
+            path.display()
+        ))
+    })?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    let filename = path.file_name().ok_or_else(|| {
+        CredentialStoreError::from_message(format!(
+            "failed to compute filename for fallback key at {}",
+            path.display()
+        ))
+    })?;
+    let tmp_path = dir.join(format!(
+        ".{}.tmp-{}-{nonce}",
+        filename.to_string_lossy(),
+        std::process::id()
+    ));
+
+    {
+        let mut options = fs::OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut tmp_file = options.open(&tmp_path).map_err(|err| {
+            CredentialStoreError::from_message(format!(
+                "failed to create temp fallback key file {}: {err}",
+                tmp_path.display()
+            ))
+        })?;
+        tmp_file.write_all(contents).map_err(|err| {
+            CredentialStoreError::from_message(format!(
+                "failed to write temp fallback key file {}: {err}",
+                tmp_path.display()
+            ))
+        })?;
+        tmp_file.sync_all().map_err(|err| {
+            CredentialStoreError::from_message(format!(
+                "failed to sync temp fallback key file {}: {err}",
+                tmp_path.display()
+            ))
+        })?;
+    }
+
+    fs::rename(&tmp_path, path).map_err(|err| {
+        let _ = fs::remove_file(&tmp_path);
+        CredentialStoreError::from_message(format!(
+            "failed to replace fallback key file {} with {}: {err}",
+            path.display(),
+            tmp_path.display()
+        ))
+    })
 }
 
 fn generate_passphrase() -> Result<SecretString> {
@@ -376,6 +628,32 @@ mod tests {
     use keyring::Error as KeyringError;
     use pretty_assertions::assert_eq;
 
+    #[derive(Debug)]
+    struct AlwaysFailingKeyringStore;
+
+    impl KeyringStore for AlwaysFailingKeyringStore {
+        fn load(
+            &self,
+            _service: &str,
+            _account: &str,
+        ) -> Result<Option<String>, CredentialStoreError> {
+            Err(CredentialStoreError::from_message("forced load failure"))
+        }
+
+        fn save(
+            &self,
+            _service: &str,
+            _account: &str,
+            _value: &str,
+        ) -> Result<(), CredentialStoreError> {
+            Err(CredentialStoreError::from_message("forced save failure"))
+        }
+
+        fn delete(&self, _service: &str, _account: &str) -> Result<bool, CredentialStoreError> {
+            Err(CredentialStoreError::from_message("forced delete failure"))
+        }
+    }
+
     #[test]
     fn load_file_rejects_newer_schema_versions() -> Result<()> {
         let codex_home = tempfile::tempdir().expect("tempdir");
@@ -420,6 +698,50 @@ mod tests {
                 .contains("failed to load secrets key from keyring"),
             "unexpected error: {error:#}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn default_keyring_fallback_persists_when_os_keyring_is_unavailable() -> Result<()> {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        let fallback = Arc::new(LocalFallbackKeyringStore::new_with_primary(
+            codex_home.path().to_path_buf(),
+            Arc::new(AlwaysFailingKeyringStore),
+        ));
+        let backend = LocalSecretsBackend::new(codex_home.path().to_path_buf(), fallback);
+        let scope = SecretScope::Global;
+        let name = SecretName::new("TEST_SECRET")?;
+
+        backend.set(&scope, &name, "secret-value")?;
+        assert_eq!(
+            backend.get(&scope, &name)?,
+            Some("secret-value".to_string())
+        );
+
+        let secrets_path = codex_home
+            .path()
+            .join("secrets")
+            .join(LOCAL_SECRETS_FILENAME);
+        assert!(secrets_path.exists(), "encrypted secrets file should exist");
+
+        let fallback_dir = codex_home.path().join("secrets").join("keyring-fallback");
+        let fallback_files = fs::read_dir(&fallback_dir)
+            .with_context(|| format!("failed to read {}", fallback_dir.display()))?
+            .collect::<std::io::Result<Vec<_>>>()
+            .with_context(|| format!("failed to enumerate {}", fallback_dir.display()))?;
+        assert_eq!(fallback_files.len(), 1);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(secrets_path.metadata()?.permissions().mode() & 0o777, 0o600);
+            assert_eq!(fallback_dir.metadata()?.permissions().mode() & 0o777, 0o700);
+            assert_eq!(
+                fallback_files[0].metadata()?.permissions().mode() & 0o777,
+                0o600
+            );
+        }
+
         Ok(())
     }
 

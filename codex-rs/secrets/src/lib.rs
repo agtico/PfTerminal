@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use codex_git_utils::get_git_repo_root;
-use codex_keyring_store::DefaultKeyringStore;
 use codex_keyring_store::KeyringStore;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -103,8 +102,7 @@ impl SecretsManager {
     pub fn new(codex_home: PathBuf, backend_kind: SecretsBackendKind) -> Self {
         let backend: Arc<dyn SecretsBackend> = match backend_kind {
             SecretsBackendKind::Local => {
-                let keyring_store: Arc<dyn KeyringStore> = Arc::new(DefaultKeyringStore);
-                Arc::new(LocalSecretsBackend::new(codex_home, keyring_store))
+                Arc::new(LocalSecretsBackend::new_with_default_keyring(codex_home))
             }
         };
         Self { backend }

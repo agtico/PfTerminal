@@ -8,6 +8,7 @@ use tracing::trace;
 #[derive(Debug)]
 pub enum CredentialStoreError {
     Other(KeyringError),
+    Message(String),
 }
 
 impl CredentialStoreError {
@@ -18,13 +19,21 @@ impl CredentialStoreError {
     pub fn message(&self) -> String {
         match self {
             Self::Other(error) => error.to_string(),
+            Self::Message(message) => message.clone(),
         }
     }
 
     pub fn into_error(self) -> KeyringError {
         match self {
             Self::Other(error) => error,
+            Self::Message(message) => {
+                KeyringError::PlatformFailure(Box::new(std::io::Error::other(message)))
+            }
         }
+    }
+
+    pub fn from_message(message: impl Into<String>) -> Self {
+        Self::Message(message.into())
     }
 }
 
@@ -32,6 +41,7 @@ impl fmt::Display for CredentialStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Other(error) => write!(f, "{error}"),
+            Self::Message(message) => write!(f, "{message}"),
         }
     }
 }

@@ -2,26 +2,27 @@
 //!
 //! This is the migration-compatible bridge between the legacy plaintext `provider_auth.json`
 //! and the new encrypted [`codex_vault::Vault`] substrate. New provider keys are written to the
-//! vault (encrypted at rest via the age-encrypted secrets store keyed by the OS keyring). Reads
-//! check the vault first and fall back to `provider_auth.json` so existing installations keep
-//! working until the key is re-saved.
+//! vault (encrypted at rest via the age-encrypted secrets store keyed by the configured keyring).
+//! Reads check the vault first and fall back to `provider_auth.json` so existing installations
+//! keep working until the key is re-saved.
 //!
 //! Provider keys are stored as vault credentials labeled `provider/<provider_key_id>`, where
 //! `provider_key_id` is the provider's env-key name (for example `AMBIENT_API_KEY`).
 //!
-//! # Plaintext fallback policy (intentional degradation)
+//! # Fallback policy
 //!
-//! If the OS keyring is unavailable (common in CI/headless containers), vault operations cannot
-//! decrypt/encrypt and are skipped. In that case the legacy plaintext `provider_auth.json` is
-//! used instead. This fallback is **intentional**: without it, provider login would fail outright
-//! on keyring-less hosts. Read and write fallbacks emit a `tracing::warn!` so they are never silent, and
-//! the legacy file retains its `0600` permissions. On hosts with a working keyring, new keys are
-//! written to encrypted vault storage only and the plaintext file is not touched.
+//! The production vault uses the OS keyring when available. On headless Linux hosts without a
+//! FreeDesktop Secret Service, the secrets layer stores only the vault encryption passphrase in a
+//! local `0600` keyring-fallback file so provider keys can still live in the encrypted vault and
+//! appear under `/vault`. Legacy plaintext `provider_auth.json` is used only if the vault itself
+//! fails for some other reason. Those read/write fallbacks emit `tracing::warn!` so they are never
+//! silent, and the legacy file retains its `0600` permissions.
 
 use std::path::Path;
+#[cfg(test)]
 use std::sync::Arc;
 
-use codex_keyring_store::DefaultKeyringStore;
+#[cfg(test)]
 use codex_keyring_store::KeyringStore;
 use codex_vault::AddCredential;
 use codex_vault::CredentialType;
@@ -39,16 +40,26 @@ pub(crate) fn read_provider_key(
     codex_home: &Path,
     provider_key_id: &str,
 ) -> std::io::Result<Option<String>> {
-    read_provider_key_with_store(codex_home, provider_key_id, Arc::new(DefaultKeyringStore))
+    let vault = Vault::new(codex_home.to_path_buf());
+    read_provider_key_with_vault(codex_home, provider_key_id, vault)
 }
 
+#[cfg(test)]
 fn read_provider_key_with_store(
     codex_home: &Path,
     provider_key_id: &str,
     keyring_store: Arc<dyn KeyringStore>,
 ) -> std::io::Result<Option<String>> {
-    let label = provider_label(provider_key_id);
     let vault = Vault::new_with_keyring_store(codex_home.to_path_buf(), keyring_store);
+    read_provider_key_with_vault(codex_home, provider_key_id, vault)
+}
+
+fn read_provider_key_with_vault(
+    codex_home: &Path,
+    provider_key_id: &str,
+    vault: Vault,
+) -> std::io::Result<Option<String>> {
+    let label = provider_label(provider_key_id);
     match vault.reveal(&label) {
         Ok(value) if !value.trim().is_empty() => return Ok(Some(value)),
         Ok(_) => {} // empty value: fall through to legacy store
@@ -78,22 +89,28 @@ pub(crate) fn write_provider_key(
     provider_key_id: &str,
     api_key: &str,
 ) -> std::io::Result<()> {
-    write_provider_key_with_store(
-        codex_home,
-        provider_key_id,
-        api_key,
-        Arc::new(DefaultKeyringStore),
-    )
+    let vault = Vault::new(codex_home.to_path_buf());
+    write_provider_key_with_vault(codex_home, provider_key_id, api_key, vault)
 }
 
+#[cfg(test)]
 fn write_provider_key_with_store(
     codex_home: &Path,
     provider_key_id: &str,
     api_key: &str,
     keyring_store: Arc<dyn KeyringStore>,
 ) -> std::io::Result<()> {
-    let label = provider_label(provider_key_id);
     let vault = Vault::new_with_keyring_store(codex_home.to_path_buf(), keyring_store);
+    write_provider_key_with_vault(codex_home, provider_key_id, api_key, vault)
+}
+
+fn write_provider_key_with_vault(
+    codex_home: &Path,
+    provider_key_id: &str,
+    api_key: &str,
+    vault: Vault,
+) -> std::io::Result<()> {
+    let label = provider_label(provider_key_id);
     let entry = AddCredential {
         label: label.clone(),
         credential_type: CredentialType::ApiKey,
@@ -156,14 +173,20 @@ fn write_provider_key_with_store(
 /// Returns `true` if any vault provider credential was removed. Best-effort: a vault failure
 /// (for example an unavailable keyring) simply returns `Ok(false)`.
 pub(crate) fn delete_all_provider_keys(codex_home: &Path) -> std::io::Result<bool> {
-    delete_all_provider_keys_with_store(codex_home, Arc::new(DefaultKeyringStore))
+    let vault = Vault::new(codex_home.to_path_buf());
+    delete_all_provider_keys_with_vault(vault)
 }
 
+#[cfg(test)]
 fn delete_all_provider_keys_with_store(
     codex_home: &Path,
     keyring_store: Arc<dyn KeyringStore>,
 ) -> std::io::Result<bool> {
     let vault = Vault::new_with_keyring_store(codex_home.to_path_buf(), keyring_store);
+    delete_all_provider_keys_with_vault(vault)
+}
+
+fn delete_all_provider_keys_with_vault(vault: Vault) -> std::io::Result<bool> {
     let listing = match vault.list() {
         Ok(listing) => listing,
         Err(err) => {
