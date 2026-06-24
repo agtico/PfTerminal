@@ -24,11 +24,12 @@ irrelevant red checks on this fork, so they are manual-only here.
 
 ## Manual Release Builds
 
-- `pfterminal-macos-release.yml` is the narrow macOS package builder for the
+- `pfterminal-release.yml` is the narrow package builder for the
   standalone PFTerminal installer. It is manual-only, builds
-  `aarch64-apple-darwin` and `x86_64-apple-darwin`, and uploads the exact
-  `pfterminal-package-*.tar.gz` archives plus `pfterminal-package_SHA256SUMS` consumed by
-  `scripts/install/install.sh`.
+  `aarch64-apple-darwin`, `x86_64-apple-darwin`, and
+  `x86_64-unknown-linux-gnu`, and uploads the exact
+  `pfterminal-package-*.tar.gz` archives plus `pfterminal-package_SHA256SUMS`
+  consumed by `scripts/install/install.sh`.
 - Run it in build-only mode for compatibility checks. Use `publish_release`
   only when the current Cargo version is ready to become a GitHub release.
 

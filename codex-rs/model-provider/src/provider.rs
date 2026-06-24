@@ -235,7 +235,13 @@ impl ModelProvider for ConfiguredModelProvider {
                 image_generation: false,
                 web_search: true,
             }
-        } else if self.info.is_openrouter() || self.info.is_baseten() {
+        } else if self.info.is_openrouter() {
+            ProviderCapabilities {
+                namespace_tools: false,
+                image_generation: false,
+                web_search: true,
+            }
+        } else if self.info.is_baseten() {
             ProviderCapabilities {
                 namespace_tools: false,
                 image_generation: false,
@@ -553,7 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn openrouter_provider_disables_hosted_tools_and_uses_openrouter_defaults() {
+    fn openrouter_provider_enables_server_web_search_and_uses_openrouter_defaults() {
         let provider = create_model_provider(
             ModelProviderInfo::create_openrouter_provider(),
             /*auth_manager*/ None,
@@ -564,7 +570,7 @@ mod tests {
             ProviderCapabilities {
                 namespace_tools: false,
                 image_generation: false,
-                web_search: false,
+                web_search: true,
             }
         );
         assert_eq!(

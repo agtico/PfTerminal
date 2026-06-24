@@ -880,7 +880,7 @@ else
     platform_label="Linux (ARM64)"
   else
     npm_tag="linux-x64"
-    vendor_target="x86_64-unknown-linux-musl"
+    vendor_target="x86_64-unknown-linux-gnu"
     platform_label="Linux (x64)"
   fi
 fi

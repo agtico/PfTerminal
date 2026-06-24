@@ -41,7 +41,7 @@ verifies the release artifact digest. This is the preferred path for normal
 users because it avoids a full Rust source build.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/agticorp/PfTerminal/main/scripts/install/install.sh | sh
+curl -fsSL https://github.com/agticorp/PfTerminal/releases/latest/download/install.sh | sh
 ```
 
 The release installer creates a `pfterminal` launcher and leaves any existing
@@ -50,7 +50,7 @@ stock `codex` command alone. By default that launcher stores PFTerminal state in
 only when you need a custom install location:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/agticorp/PfTerminal/main/scripts/install/install.sh |
+curl -fsSL https://github.com/agticorp/PfTerminal/releases/latest/download/install.sh |
   PFTERMINAL_INSTALL_DIR="$HOME/.local/bin" \
   PFTERMINAL_HOME="$HOME/.pfterminal" \
   sh
@@ -61,16 +61,16 @@ release yet, use the source build fallback below.
 
 ### Release Build For Maintainers
 
-Mac release artifacts are built by the manual
-`pfterminal-macos-release` GitHub Actions workflow. It does not run on every
-push. Run it only when you want installer-ready macOS artifacts for the current
-Cargo version.
+Release artifacts are built by the manual `pfterminal-release` GitHub Actions
+workflow. It does not run on every push. Run it only when you want
+installer-ready macOS and Linux artifacts for the current Cargo version.
 
-The workflow builds and smoke-tests both macOS package archives:
+The workflow builds and smoke-tests these package archives:
 
 ```text
 pfterminal-package-aarch64-apple-darwin.tar.gz
 pfterminal-package-x86_64-apple-darwin.tar.gz
+pfterminal-package-x86_64-unknown-linux-gnu.tar.gz
 pfterminal-package_SHA256SUMS
 ```
 

@@ -27,6 +27,7 @@ use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
+use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
@@ -234,6 +235,7 @@ fn chat_completions_wraps_freeform_tools_as_functions() {
         })],
         false,
         false,
+        false,
     )
     .expect("chat tools");
 
@@ -292,6 +294,7 @@ fn ambient_chat_completions_strips_strict_from_tools() {
         &[freeform, function],
         /*strip_strict*/ true,
         /*zai_native_web_search*/ false,
+        /*openrouter_server_web_search*/ false,
     )
     .expect("chat tools");
 
@@ -329,6 +332,7 @@ fn zai_chat_completions_serializes_native_web_search_tool() {
         }],
         /*strip_strict*/ true,
         /*zai_native_web_search*/ true,
+        /*openrouter_server_web_search*/ false,
     )
     .expect("chat tools");
 
@@ -355,6 +359,37 @@ fn zai_chat_completions_serializes_native_web_search_tool() {
     assert!(search_prompt.contains("{{search_result}}"));
     assert!(search_prompt.contains("provider-native web_search"));
     assert!(search_prompt.contains("Do not say you cannot browse"));
+}
+
+#[test]
+fn openrouter_chat_completions_serializes_server_web_search_tool() {
+    let tools = super::create_tools_json_for_chat_completions(
+        &[ToolSpec::WebSearch {
+            external_web_access: Some(true),
+            index_gated_web_access: None,
+            filters: None,
+            user_location: None,
+            search_context_size: Some(WebSearchContextSize::High),
+            search_content_types: None,
+        }],
+        /*strip_strict*/ false,
+        /*zai_native_web_search*/ false,
+        /*openrouter_server_web_search*/ true,
+    )
+    .expect("chat tools");
+
+    assert_eq!(
+        tools,
+        vec![json!({
+            "type": "openrouter:web_search",
+            "parameters": {
+                "engine": "auto",
+                "max_results": 5,
+                "max_total_results": 10,
+                "search_context_size": "high",
+            },
+        })]
+    );
 }
 
 #[test]
@@ -648,6 +683,86 @@ fn openrouter_chat_completions_request_uses_reasoning_object() {
             .and_then(|effort| effort.as_str()),
         Some("high")
     );
+}
+
+#[test]
+fn openrouter_chat_completions_request_preserves_function_tools_with_web_search() {
+    let provider_info = ModelProviderInfo::create_openrouter_provider();
+    let client = ModelClient::new(
+        /*auth_manager*/ None,
+        ThreadId::new(),
+        provider_info,
+        SessionSource::Cli,
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*item_ids_enabled*/ false,
+        /*attestation_provider*/ None,
+    );
+    let prompt = super::Prompt {
+        input: vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "Find current Rust release notes and edit the summary.".to_string(),
+            }],
+            phase: None,
+            metadata: None,
+        }],
+        tools: vec![
+            ToolSpec::Function(ResponsesApiTool {
+                name: "exec_command".to_string(),
+                description: "Run a command.".to_string(),
+                strict: true,
+                defer_loading: None,
+                parameters: JsonSchema::object(
+                    BTreeMap::from([(
+                        "cmd".to_string(),
+                        JsonSchema::string(Some("Command to run.".to_string())),
+                    )]),
+                    Some(vec!["cmd".to_string()]),
+                    Some(false.into()),
+                ),
+                output_schema: None,
+            }),
+            ToolSpec::WebSearch {
+                external_web_access: Some(true),
+                index_gated_web_access: None,
+                filters: None,
+                user_location: None,
+                search_context_size: Some(WebSearchContextSize::Low),
+                search_content_types: None,
+            },
+        ],
+        ..Default::default()
+    };
+    let model_info = test_openrouter_gemini_model_info();
+
+    let request = client
+        .build_chat_completions_request(&prompt, &model_info, None)
+        .expect("OpenRouter chat request");
+
+    assert_eq!(
+        request
+            .tools
+            .iter()
+            .map(|tool| {
+                (
+                    tool.get("type").and_then(serde_json::Value::as_str),
+                    tool.pointer("/function/name")
+                        .and_then(serde_json::Value::as_str),
+                    tool.pointer("/parameters/search_context_size")
+                        .and_then(serde_json::Value::as_str),
+                )
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            (Some("function"), Some("exec_command"), None),
+            (Some("openrouter:web_search"), None, Some("low")),
+        ]
+    );
+    assert_eq!(request.tool_choice.as_deref(), Some("auto"));
 }
 
 #[test]

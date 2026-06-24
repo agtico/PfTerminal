@@ -295,10 +295,11 @@ fn spec_for_model_request(
 fn hosted_model_tool_specs(context: &CoreToolPlanContext<'_>) -> Vec<ToolSpec> {
     let turn_context = context.turn_context;
     // Responses Lite accepts schemas for client-executed tools, not hosted
-    // Responses tools. Z.AI is Chat Completions-based and serializes its
-    // provider-native web_search object from ToolSpec::WebSearch later.
-    let is_zai_provider = turn_context.provider.info().is_zai();
-    if turn_context.model_info.use_responses_lite && !is_zai_provider {
+    // Responses tools. Some Chat Completions providers serialize
+    // ToolSpec::WebSearch into provider-native server tools later.
+    let provider_serializes_native_web_search =
+        turn_context.provider.info().is_zai() || turn_context.provider.info().is_openrouter();
+    if turn_context.model_info.use_responses_lite && !provider_serializes_native_web_search {
         return Vec::new();
     }
 

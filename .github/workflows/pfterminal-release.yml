@@ -1,4 +1,4 @@
-name: pfterminal-macos-release
+name: pfterminal-release
 
 on:
   workflow_dispatch:
@@ -133,10 +133,91 @@ jobs:
           path: dist/${{ matrix.target }}/pfterminal-package-${{ matrix.target }}.tar.gz
           if-no-files-found: error
 
+  build-linux:
+    needs: validate
+    name: Build Linux package - ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      CARGO_PROFILE_RELEASE_DEBUG: "0"
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_STRIP: "symbols"
+      TARGET: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux package prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            pkg-config \
+            libcap-dev
+
+      - name: Build pfterminal package binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build \
+            --manifest-path codex-rs/Cargo.toml \
+            --target "$TARGET" \
+            --release \
+            --bin pfterminal
+
+      - name: Build standalone package archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/${TARGET}"
+          python3 scripts/build_codex_package.py \
+            --target "$TARGET" \
+            --variant pfterminal \
+            --entrypoint-bin "codex-rs/target/${TARGET}/release/pfterminal" \
+            --extra-bin "codex=codex-rs/target/${TARGET}/release/pfterminal" \
+            --cargo-profile release \
+            --package-dir "${RUNNER_TEMP}/pfterminal-package-${TARGET}" \
+            --archive-output "dist/${TARGET}/pfterminal-package-${TARGET}.tar.gz" \
+            --force
+
+      - name: Smoke test package archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="dist/${TARGET}/pfterminal-package-${TARGET}.tar.gz"
+          package_dir="${RUNNER_TEMP}/smoke-${TARGET}"
+          mkdir -p "$package_dir"
+          tar -xzf "$archive" -C "$package_dir"
+          "$package_dir/bin/pfterminal" --version
+          test -x "$package_dir/bin/codex"
+          test -x "$package_dir/codex-path/rg"
+          test -x "$package_dir/codex-resources/bwrap"
+
+      - name: Upload Linux package archive
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: pfterminal-package-${{ matrix.target }}
+          path: dist/${{ matrix.target }}/pfterminal-package-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
   assemble-release-assets:
     needs:
       - validate
       - build-macos
+      - build-linux
     name: Assemble release assets
     runs-on: ubuntu-latest
     steps:
@@ -165,7 +246,7 @@ jobs:
                 awk -v name="$(basename "$archive")" '{ print $1 "  " name }'
             done > release-dist/pfterminal-package_SHA256SUMS
 
-          expected_count=2
+          expected_count=3
           actual_count="$(find release-dist -maxdepth 1 -type f -name 'pfterminal-package-*.tar.gz' | wc -l | tr -d ' ')"
           if [[ "$actual_count" != "$expected_count" ]]; then
             echo "Expected ${expected_count} package archives, found ${actual_count}"
@@ -178,7 +259,7 @@ jobs:
       - name: Upload release asset bundle
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: pfterminal-macos-release-assets
+          name: pfterminal-release-assets
           path: release-dist/*
           if-no-files-found: error
 

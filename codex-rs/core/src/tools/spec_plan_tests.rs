@@ -9,6 +9,7 @@ use codex_model_provider::create_model_provider;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
+use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
 use codex_model_provider_info::ZAI_PROVIDER_ID;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
@@ -285,6 +286,15 @@ fn use_zai_provider(turn: &mut TurnContext) {
     let provider_info = ModelProviderInfo::create_zai_provider();
     update_config(turn, |config| {
         config.model_provider_id = ZAI_PROVIDER_ID.to_string();
+        config.model_provider = provider_info.clone();
+    });
+    turn.provider = create_model_provider(provider_info, turn.auth_manager.clone());
+}
+
+fn use_openrouter_provider(turn: &mut TurnContext) {
+    let provider_info = ModelProviderInfo::create_openrouter_provider();
+    update_config(turn, |config| {
+        config.model_provider_id = OPENROUTER_PROVIDER_ID.to_string();
         config.model_provider = provider_info.clone();
     });
     turn.provider = create_model_provider(provider_info, turn.auth_manager.clone());
@@ -1593,6 +1603,15 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
     })
     .await;
     zai_native_web_search_for_responses_lite.assert_visible_contains(&["web_search"]);
+
+    let openrouter_server_web_search_for_chat = probe(|turn| {
+        use_openrouter_provider(turn);
+        set_web_search_mode(turn, WebSearchMode::Live);
+        turn.model_info.supports_search_tool = false;
+        turn.model_info.use_responses_lite = true;
+    })
+    .await;
+    openrouter_server_web_search_for_chat.assert_visible_contains(&["web_search"]);
 
     let code_mode_only = probe(|turn| {
         use_chatgpt_auth(turn);
