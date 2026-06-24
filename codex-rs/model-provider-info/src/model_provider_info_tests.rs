@@ -288,9 +288,7 @@ fn test_create_ambient_provider() {
             name: "Ambient".to_string(),
             base_url: Some(AMBIENT_BASE_URL.to_string()),
             env_key: Some(AMBIENT_API_KEY_ENV_VAR.to_string()),
-            env_key_instructions: Some(format!(
-                "Set {AMBIENT_API_KEY_ENV_VAR} to your Ambient API key."
-            )),
+            env_key_instructions: Some(provider_api_key_vault_instructions()),
             experimental_bearer_token: None,
             auth: None,
             aws: None,
@@ -317,9 +315,7 @@ fn test_create_zai_provider() {
             name: "Z.AI".to_string(),
             base_url: Some(ZAI_BASE_URL.to_string()),
             env_key: Some(ZAI_API_KEY_ENV_VAR.to_string()),
-            env_key_instructions: Some(format!(
-                "Set {ZAI_API_KEY_ENV_VAR} to your Z.AI Plan API key."
-            )),
+            env_key_instructions: Some(provider_api_key_vault_instructions()),
             experimental_bearer_token: None,
             auth: None,
             aws: None,

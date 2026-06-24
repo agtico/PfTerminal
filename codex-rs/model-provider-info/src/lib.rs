@@ -55,6 +55,23 @@ pub const BASETEN_PROVIDER_ID: &str = "baseten";
 pub const BASETEN_BASE_URL: &str = "https://inference.baseten.co/v1";
 pub const BASETEN_DEFAULT_MODEL: &str = "zai-org/GLM-5.2";
 pub const BASETEN_API_KEY_ENV_VAR: &str = "BASETEN_API_KEY";
+
+fn provider_api_key_vault_instructions() -> String {
+    [
+        "Run `/providers` and select the matching provider key:",
+        "",
+        "Providers",
+        "  Add or replace provider API keys. Keys are stored in the vault.",
+        "",
+        "  Search providers",
+        "> Provider: Ambient API Key     Store AMBIENT_API_KEY in the vault",
+        "  Provider: Z.AI API Key        Store ZAI_API_KEY in the vault",
+        "  Provider: OpenRouter API Key  Store OPENROUTER_API_KEY in the vault",
+        "  Provider: Baseten API Key     Store BASETEN_API_KEY in the vault",
+    ]
+    .join("\n")
+}
+
 const AMAZON_BEDROCK_PROVIDER_NAME: &str = "Amazon Bedrock";
 pub const AMAZON_BEDROCK_PROVIDER_ID: &str = "amazon-bedrock";
 pub const AMAZON_BEDROCK_GPT_5_5_MODEL_ID: &str = "openai.gpt-5.5";
@@ -388,9 +405,7 @@ impl ModelProviderInfo {
             name: AMBIENT_PROVIDER_NAME.into(),
             base_url: Some(AMBIENT_BASE_URL.into()),
             env_key: Some(AMBIENT_API_KEY_ENV_VAR.into()),
-            env_key_instructions: Some(format!(
-                "Set {AMBIENT_API_KEY_ENV_VAR} to your Ambient API key."
-            )),
+            env_key_instructions: Some(provider_api_key_vault_instructions()),
             experimental_bearer_token: None,
             auth: None,
             aws: None,
@@ -412,9 +427,7 @@ impl ModelProviderInfo {
             name: ZAI_PROVIDER_NAME.into(),
             base_url: Some(ZAI_BASE_URL.into()),
             env_key: Some(ZAI_API_KEY_ENV_VAR.into()),
-            env_key_instructions: Some(format!(
-                "Set {ZAI_API_KEY_ENV_VAR} to your Z.AI Plan API key."
-            )),
+            env_key_instructions: Some(provider_api_key_vault_instructions()),
             experimental_bearer_token: None,
             auth: None,
             aws: None,
@@ -436,9 +449,7 @@ impl ModelProviderInfo {
             name: OPENROUTER_PROVIDER_NAME.into(),
             base_url: Some(OPENROUTER_BASE_URL.into()),
             env_key: Some(OPENROUTER_API_KEY_ENV_VAR.into()),
-            env_key_instructions: Some(format!(
-                "Set {OPENROUTER_API_KEY_ENV_VAR} to your OpenRouter API key."
-            )),
+            env_key_instructions: Some(provider_api_key_vault_instructions()),
             experimental_bearer_token: None,
             auth: None,
             aws: None,
@@ -460,9 +471,7 @@ impl ModelProviderInfo {
             name: BASETEN_PROVIDER_NAME.into(),
             base_url: Some(BASETEN_BASE_URL.into()),
             env_key: Some(BASETEN_API_KEY_ENV_VAR.into()),
-            env_key_instructions: Some(format!(
-                "Set {BASETEN_API_KEY_ENV_VAR} to your Baseten API key."
-            )),
+            env_key_instructions: Some(provider_api_key_vault_instructions()),
             experimental_bearer_token: None,
             auth: None,
             aws: None,
