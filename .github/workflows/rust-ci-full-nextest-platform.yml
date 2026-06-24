@@ -68,7 +68,7 @@ jobs:
       ARCHIVE_CACHE_RUNNER: ${{ inputs.archive_runner != '' && inputs.archive_runner || inputs.runner }}
       USE_SCCACHE: ${{ inputs.use_sccache && 'true' || 'false' }}
       CARGO_INCREMENTAL: "0"
-      SCCACHE_CACHE_SIZE: 10G
+      SCCACHE_CACHE_SIZE: 512M
       NEXTEST_ARCHIVE_FILE: nextest-${{ inputs.artifact_id }}.tar.zst
       TEST_HELPERS_ARTIFACT: nextest-test-helpers-${{ inputs.artifact_id }}
     steps:
@@ -145,7 +145,7 @@ jobs:
             if [[ -n "${DEV_DRIVE:-}" ]]; then
               echo "SCCACHE_DIR=${DEV_DRIVE}\\.sccache" >> "$GITHUB_ENV"
             else
-              echo "SCCACHE_DIR=${{ github.workspace }}/.sccache" >> "$GITHUB_ENV"
+              echo "SCCACHE_DIR=${RUNNER_TEMP}/sccache" >> "$GITHUB_ENV"
             fi
             echo "Using sccache local disk + actions/cache fallback"
           fi
@@ -185,6 +185,17 @@ jobs:
           if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
+
+      - name: Free fallback sccache before archiving tests
+        if: ${{ env.USE_SCCACHE == 'true' && env.SCCACHE_GHA_ENABLED != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sccache --stop-server || true
+          rm -rf "${SCCACHE_DIR}"
+          mkdir -p "${SCCACHE_DIR}"
+          df -h .
+          df -h "${RUNNER_TEMP}"
 
       - name: Build nextest archive
         shell: bash

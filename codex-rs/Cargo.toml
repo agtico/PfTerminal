@@ -538,10 +538,11 @@ lto = false
 strip = false
 
 [profile.ci-test]
-# Reduce binary size to reduce disk pressure.
-debug = "limited"
 inherits = "test"
+# Keep full-CI nextest archives small enough for standard GitHub runners.
+debug = "none"
 opt-level = 0
+strip = "symbols"
 
 [patch.crates-io]
 # Uncomment to debug local changes.

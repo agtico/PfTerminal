@@ -149,9 +149,9 @@ def resolve_extra_output_path(
     extra,
     spec: TargetSpec,
 ) -> Path | None:
-    return explicit_extra_bins.get(extra.entrypoint_name(spec)) or explicit_extra_bins.get(
-        extra.executable_stem
-    )
+    return explicit_extra_bins.get(
+        extra.entrypoint_name(spec)
+    ) or explicit_extra_bins.get(extra.executable_stem)
 
 
 def validate_prebuilt_resource_inputs(
