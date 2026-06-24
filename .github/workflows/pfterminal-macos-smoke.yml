@@ -1,0 +1,95 @@
+name: pfterminal-macos-smoke
+
+on:
+  push:
+    branches:
+      - "**"
+    paths:
+      - ".github/workflows/pfterminal-macos-smoke.yml"
+      - ".github/workflows/pfterminal-macos-release.yml"
+      - "scripts/build_codex_package.py"
+      - "scripts/codex_package/**"
+      - "scripts/install/**"
+      - "codex-rs/**"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/pfterminal-macos-smoke.yml"
+      - ".github/workflows/pfterminal-macos-release.yml"
+      - "scripts/build_codex_package.py"
+      - "scripts/codex_package/**"
+      - "scripts/install/**"
+      - "codex-rs/**"
+  workflow_dispatch:
+
+env:
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+jobs:
+  macos-package-smoke:
+    name: Build and smoke-test macOS PFTerminal package
+    runs-on: macos-15-xlarge
+    timeout-minutes: 60
+    env:
+      TARGET: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Install DotSlash
+        uses: facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a # v2
+
+      - name: Validate package helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh -n scripts/install/install.sh
+          python3 -m unittest discover -s scripts/codex_package -p 'test_*.py'
+
+      - name: Build PFTerminal macOS binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build \
+            --manifest-path codex-rs/Cargo.toml \
+            --target "$TARGET" \
+            --profile dev-small \
+            --bin codex \
+            --bin pfterminal
+          "codex-rs/target/${TARGET}/dev-small/pfterminal" --version
+
+      - name: Build and smoke-test macOS package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          python3 scripts/build_codex_package.py \
+            --target "$TARGET" \
+            --variant pfterminal \
+            --entrypoint-bin "codex-rs/target/${TARGET}/dev-small/pfterminal" \
+            --extra-bin "codex=codex-rs/target/${TARGET}/dev-small/codex" \
+            --cargo-profile dev-small \
+            --package-dir "${RUNNER_TEMP}/pfterminal-package-${TARGET}" \
+            --archive-output "dist/pfterminal-package-${TARGET}.tar.gz" \
+            --force
+
+          package_dir="${RUNNER_TEMP}/pfterminal-macos-smoke"
+          mkdir -p "$package_dir"
+          tar -xzf "dist/pfterminal-package-${TARGET}.tar.gz" -C "$package_dir"
+          "$package_dir/bin/pfterminal" --version
+          test -x "$package_dir/bin/codex"
+          test -x "$package_dir/codex-path/rg"
+          test -x "$package_dir/codex-resources/zsh/bin/zsh"
+
+      - name: Upload macOS smoke artifact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: pfterminal-package-macos-aarch64-smoke
+          path: dist/pfterminal-package-aarch64-apple-darwin.tar.gz
+          if-no-files-found: error
