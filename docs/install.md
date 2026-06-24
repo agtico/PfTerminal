@@ -51,6 +51,26 @@ curl -fsSL https://raw.githubusercontent.com/agticorp/PfTerminal/main/scripts/in
 The installer requires a published GitHub release. If a fresh clone has no
 release yet, use the source build fallback below.
 
+### Release Build For Maintainers
+
+Mac release artifacts are built by the manual
+`pfterminal-macos-release` GitHub Actions workflow. It does not run on every
+push. Run it only when you want installer-ready macOS artifacts for the current
+Cargo version.
+
+The workflow builds and smoke-tests both macOS package archives:
+
+```text
+codex-package-aarch64-apple-darwin.tar.gz
+codex-package-x86_64-apple-darwin.tar.gz
+codex-package_SHA256SUMS
+```
+
+Leave `publish_release` disabled to do a build-only validation. Enable it to
+create or update the matching `rust-vX.Y.Z` GitHub release. Enable
+`make_latest` only when that release should become the default target for the
+installer's `latest` resolution.
+
 ### Source Build
 
 ```bash

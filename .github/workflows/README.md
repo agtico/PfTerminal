@@ -27,6 +27,16 @@ The workflows in this directory are split so that pull requests get fast, review
   - cross-platform `argument-comment-lint`
   - Linux remote-env tests
 
+## Manual Release Builds
+
+- `pfterminal-macos-release.yml` is the narrow macOS package builder for the
+  standalone PFTerminal installer. It is manual-only, builds
+  `aarch64-apple-darwin` and `x86_64-apple-darwin`, and uploads the exact
+  `codex-package-*.tar.gz` archives plus `codex-package_SHA256SUMS` consumed by
+  `scripts/install/install.sh`.
+- Run it in build-only mode for compatibility checks. Use `publish_release`
+  only when the current Cargo version is ready to become a GitHub release.
+
 ## Rule Of Thumb
 
 - If a build/test/clippy check can be expressed in Bazel, prefer putting the PR-time version in `bazel.yml`.
