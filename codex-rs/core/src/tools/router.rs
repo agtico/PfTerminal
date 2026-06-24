@@ -5,6 +5,8 @@ use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::handlers::ToolSearchHandlerCache;
+use crate::tools::handlers::parse_arguments_for_tool;
+use crate::tools::handlers::validate_structured_write_arguments;
 use crate::tools::registry::AnyToolResult;
 use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::registry::ToolRegistry;
@@ -120,6 +122,11 @@ impl ToolRouter {
                 ..
             } => {
                 let tool_name = ToolName::new(namespace, name);
+                let tool_name_text = tool_name.to_string();
+                let _: serde_json::Value = parse_arguments_for_tool(&tool_name_text, &arguments)?;
+                if tool_name.namespace.is_none() && tool_name.name == "structured_write" {
+                    validate_structured_write_arguments(&arguments)?;
+                }
                 Ok(Some(ToolCall {
                     tool_name,
                     call_id,

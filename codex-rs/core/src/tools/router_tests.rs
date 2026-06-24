@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::config::Config;
+use crate::function_tool::FunctionCallError;
 use crate::session::tests::make_session_and_context;
 use crate::tools::context::ToolPayload;
 use crate::turn_diff_tracker::TurnDiffTracker;
@@ -174,6 +175,32 @@ async fn build_tool_call_uses_namespace_for_registry_name() -> anyhow::Result<()
     }
 
     Ok(())
+}
+
+#[test]
+fn truncated_structured_write_is_non_retriable_before_dispatch() {
+    let arguments = format!(
+        "{{\"path\":\"dashboard/shielded-navswap-flow-rail-mock.html\",\"mode\":\"overwrite\",\"content\":\"{}",
+        "x".repeat(8192)
+    );
+
+    let result = ToolRouter::build_tool_call(ResponseItem::FunctionCall {
+        id: None,
+        name: "structured_write".to_string(),
+        namespace: None,
+        arguments,
+        call_id: "call-truncated-structured-write".to_string(),
+        metadata: None,
+    });
+
+    let Err(FunctionCallError::MalformedToolCallTruncated(diagnostic)) = result else {
+        panic!("expected non-retriable malformed tool call, got {result:?}");
+    };
+
+    assert_eq!(diagnostic.tool, "structured_write");
+    assert_eq!(diagnostic.category, "Eof");
+    assert!(diagnostic.byte_len > 8192);
+    assert!(diagnostic.finish_reason.is_none());
 }
 
 #[tokio::test]

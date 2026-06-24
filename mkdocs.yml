@@ -51,6 +51,7 @@ nav:
       - Credential Store: current-sprint/authentication.md
       - GLM 5.2 Tool Compatibility: current-sprint/glm-52-tool-compatibility.md
       - Hammer Reduction Process: current-sprint/hammer-reduction-process.md
+      - Tool Call Runaway Remedy: current-sprint/tool-call-runaway-remedy.md
   - Integrations:
       - Overview: integrations/index.md
       - Ambient: integrations/ambient.md

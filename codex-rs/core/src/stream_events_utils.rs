@@ -505,6 +505,9 @@ pub(crate) async fn handle_output_item_done(
 
             output.needs_follow_up = true;
         }
+        Err(FunctionCallError::MalformedToolCallTruncated(diagnostic)) => {
+            return Err(CodexErr::Fatal(diagnostic.to_string()));
+        }
         // A fatal error occurred; surface it back into history.
         Err(FunctionCallError::Fatal(message)) => {
             return Err(CodexErr::Fatal(message));

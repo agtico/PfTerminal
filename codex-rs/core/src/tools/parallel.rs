@@ -79,6 +79,9 @@ impl ToolCallRuntime {
             match future.await {
                 Ok(response) => Ok(response.into_response()),
                 Err(FunctionCallError::Fatal(message)) => Err(CodexErr::Fatal(message)),
+                Err(FunctionCallError::MalformedToolCallTruncated(diagnostic)) => {
+                    Err(CodexErr::Fatal(diagnostic.to_string()))
+                }
                 Err(other) => Ok(Self::failure_response(error_call, other)),
             }
         }

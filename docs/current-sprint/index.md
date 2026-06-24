@@ -17,6 +17,7 @@ credentials, created automatically on login/startup and usable through
 | Vault/auth design | Active sprint spec defines automatic vault initialization, secure credential entry, labels, lock/unlock behavior, and provider-key use by label. | [Credential Store](authentication.md) |
 | GLM 5.2 tool compatibility | Current sprint logs and OpenCode source show GLM-class models should be routed to structured edit/write tools instead of forced through strict `apply_patch`. | [GLM 5.2 Tool Compatibility](glm-52-tool-compatibility.md) |
 | Hammer reduction | Current sprint study compares PFTerminal/Codex, OpenCode, Hermes Agent, Kilo Code, and Cline to reduce repeated large provider requests, 429 loops, and context bloat. | [Hammer Reduction Process](hammer-reduction-process.md) |
+| Tool-call runaway remedy | Live worker logs show malformed oversized `structured_write` calls looping through normal follow-up handling. The remedy is a non-retriable malformed-tool boundary plus bounded/chunked write mechanics. | [Tool Call Runaway Remedy](tool-call-runaway-remedy.md) |
 
 ## Sprint Reading Path
 
@@ -32,6 +33,8 @@ credentials, created automatically on login/startup and usable through
 5. Read [Hammer Reduction Process](hammer-reduction-process.md) for the current
    sprint plan to reduce provider hammering, context bloat, and repeated
    high-input retries.
+6. Read [Tool Call Runaway Remedy](tool-call-runaway-remedy.md) for the
+   structural fix needed before editing the runtime loop.
 
 ## Boundary
 

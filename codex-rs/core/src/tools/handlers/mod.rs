@@ -45,6 +45,7 @@ use codex_utils_absolute_path::AbsolutePathBufGuard;
 use serde::Deserialize;
 use serde_json::Map;
 use serde_json::Value;
+use serde_json::error::Category;
 use std::path::Path;
 
 use crate::function_tool::FunctionCallError;
@@ -78,6 +79,7 @@ pub(crate) use structured_edit::StructuredWriteHandler;
 pub(crate) use structured_edit::emit_model_edit_compat_metric;
 pub(crate) use structured_edit::reject_source_write_heredoc_when_structured_edit_enabled;
 pub(crate) use structured_edit::structured_edit_protocol_enabled;
+pub(crate) use structured_edit::validate_structured_write_arguments;
 pub use test_sync::TestSyncHandler;
 pub(crate) use tool_search::ToolSearchHandlerCache;
 pub use unified_exec::ExecCommandHandler;
@@ -89,9 +91,68 @@ pub(crate) fn parse_arguments<T>(arguments: &str) -> Result<T, FunctionCallError
 where
     T: for<'de> Deserialize<'de>,
 {
+    parse_arguments_for_tool("unknown", arguments)
+}
+
+pub(crate) fn parse_arguments_for_tool<T>(
+    tool_name: &str,
+    arguments: &str,
+) -> Result<T, FunctionCallError>
+where
+    T: for<'de> Deserialize<'de>,
+{
     serde_json::from_str(arguments).map_err(|err| {
-        FunctionCallError::RespondToModel(format!("failed to parse function arguments: {err}"))
+        let category = err.classify();
+        match category {
+            Category::Eof => malformed_tool_call_error(tool_name, arguments, category, None),
+            Category::Syntax | Category::Data
+                if is_oversized_malformed_tool_arguments(arguments) =>
+            {
+                malformed_tool_call_error(tool_name, arguments, category, None)
+            }
+            Category::Io | Category::Syntax | Category::Data => FunctionCallError::RespondToModel(
+                format!("failed to parse function arguments: {err}"),
+            ),
+        }
     })
+}
+
+const OVERSIZED_MALFORMED_TOOL_ARGUMENT_BYTES: usize = 4 * 1024;
+const MALFORMED_TOOL_ARGUMENT_EXCERPT_CHARS: usize = 240;
+
+fn is_oversized_malformed_tool_arguments(arguments: &str) -> bool {
+    arguments.len() >= OVERSIZED_MALFORMED_TOOL_ARGUMENT_BYTES
+}
+
+fn malformed_tool_call_error(
+    tool_name: &str,
+    arguments: &str,
+    category: Category,
+    finish_reason: Option<String>,
+) -> FunctionCallError {
+    FunctionCallError::MalformedToolCallTruncated(codex_tools::MalformedToolCallDiagnostic {
+        tool: tool_name.to_string(),
+        byte_len: arguments.len(),
+        category: serde_json_category_name(category).to_string(),
+        excerpt: safe_argument_excerpt(arguments),
+        finish_reason,
+    })
+}
+
+fn serde_json_category_name(category: Category) -> &'static str {
+    match category {
+        Category::Io => "Io",
+        Category::Syntax => "Syntax",
+        Category::Data => "Data",
+        Category::Eof => "Eof",
+    }
+}
+
+fn safe_argument_excerpt(arguments: &str) -> String {
+    arguments
+        .chars()
+        .take(MALFORMED_TOOL_ARGUMENT_EXCERPT_CHARS)
+        .collect()
 }
 
 fn updated_hook_command(updated_input: &Value) -> Result<&str, FunctionCallError> {

@@ -8,7 +8,7 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::apply_patch::intercept_apply_patch;
-use crate::tools::handlers::parse_arguments;
+use crate::tools::handlers::parse_arguments_for_tool;
 use crate::tools::handlers::resolve_tool_environment;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
@@ -155,6 +155,13 @@ impl StructuredWriteHandler {
     pub(crate) fn new(multi_environment: bool) -> Self {
         Self { multi_environment }
     }
+}
+
+pub(crate) fn validate_structured_write_arguments(
+    arguments: &str,
+) -> Result<(), FunctionCallError> {
+    let _: StructuredWriteArgs = parse_arguments_for_tool(STRUCTURED_WRITE_TOOL_NAME, arguments)?;
+    Ok(())
 }
 
 impl ToolExecutor<ToolInvocation> for StructuredEditHandler {
@@ -310,7 +317,7 @@ async fn handle_structured_edit(
             "{STRUCTURED_EDIT_TOOL_NAME} handler received unsupported payload"
         )));
     };
-    let args: StructuredEditArgs = parse_arguments(&arguments)?;
+    let args: StructuredEditArgs = parse_arguments_for_tool(STRUCTURED_EDIT_TOOL_NAME, &arguments)?;
     validate_relative_path(&args.path)?;
     validate_environment_id(args.environment_id.as_deref(), multi_environment)?;
     if args.old_string.is_empty() {
@@ -450,7 +457,8 @@ async fn handle_structured_write(
             "{STRUCTURED_WRITE_TOOL_NAME} handler received unsupported payload"
         )));
     };
-    let args: StructuredWriteArgs = parse_arguments(&arguments)?;
+    let args: StructuredWriteArgs =
+        parse_arguments_for_tool(STRUCTURED_WRITE_TOOL_NAME, &arguments)?;
     validate_relative_path(&args.path)?;
     validate_environment_id(args.environment_id.as_deref(), multi_environment)?;
     if args.content.len() > MAX_STRUCTURED_WRITE_BYTES {
