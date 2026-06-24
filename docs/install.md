@@ -25,6 +25,13 @@ sudo apt-get install -y git curl ca-certificates bubblewrap libsecret-1-0
 `bubblewrap` is used by the Linux sandbox. If it is missing, PFTerminal can use
 its bundled fallback, but installing the OS package removes the startup warning.
 
+On macOS, the release installer only needs the system `curl`, `tar`, and shell
+tools that ship with macOS. Source builds also need Apple's command line tools:
+
+```bash
+xcode-select --install
+```
+
 ## Install Options
 
 ### Release Installer
@@ -43,9 +50,10 @@ stock `codex` command alone. By default that launcher stores PFTerminal state in
 only when you need a custom install location:
 
 ```bash
-PFTERMINAL_INSTALL_DIR="$HOME/.local/bin" \
-PFTERMINAL_HOME="$HOME/.pfterminal" \
-curl -fsSL https://raw.githubusercontent.com/agticorp/PfTerminal/main/scripts/install/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/agticorp/PfTerminal/main/scripts/install/install.sh |
+  PFTERMINAL_INSTALL_DIR="$HOME/.local/bin" \
+  PFTERMINAL_HOME="$HOME/.pfterminal" \
+  sh
 ```
 
 The installer requires a published GitHub release. If a fresh clone has no
