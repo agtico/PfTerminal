@@ -5,7 +5,8 @@ expression: popup
   Select Model and Effort
   Access hidden models by running pfterminal -m <model_name> or in your config
 
-     Coding Plans                   Ambient and Z.AI plan-backed models
+     Coding Plans                   OpenAI Codex, Ambient, and Z.AI plan-
+                                    backed models
 › 1. zai-org/GLM-5.2-FP8 (current)  zai-org/GLM-5.2-FP8 description
 
   Press enter to confirm or esc to go back

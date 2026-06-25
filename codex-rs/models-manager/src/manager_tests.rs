@@ -378,7 +378,7 @@ async fn refresh_available_models_sorts_by_priority() {
 }
 
 #[tokio::test]
-async fn refresh_available_models_uses_remote_only_catalog_for_chatgpt_auth() {
+async fn refresh_available_models_merges_chatgpt_remote_with_bundled_catalog() {
     let remote_models = vec![remote_model(
         "chatgpt-visible-source-of-truth",
         "ChatGPT Visible",
@@ -387,18 +387,20 @@ async fn refresh_available_models_uses_remote_only_catalog_for_chatgpt_auth() {
     let codex_home = tempdir().expect("temp dir");
     let endpoint = TestModelsEndpoint::new(vec![remote_models.clone()]);
     let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint.clone());
+    let mut expected = load_remote_models_from_file().expect("bundled models should parse");
+    expected.extend(remote_models);
 
     manager
         .refresh_available_models(RefreshStrategy::OnlineIfUncached)
         .await
         .expect("refresh succeeds");
 
-    assert_eq!(manager.get_remote_models().await, remote_models);
+    assert_eq!(manager.get_remote_models().await, expected);
     assert_eq!(endpoint.fetch_count(), 1, "expected a single model fetch");
 }
 
 #[tokio::test]
-async fn refresh_available_models_uses_cached_remote_only_catalog_for_chatgpt_auth() {
+async fn refresh_available_models_merges_cached_chatgpt_remote_with_bundled_catalog() {
     let remote_models = vec![remote_model(
         "chatgpt-cached-source-of-truth",
         "ChatGPT Cached",
@@ -417,13 +419,15 @@ async fn refresh_available_models_uses_cached_remote_only_catalog_for_chatgpt_au
     let cache_endpoint = TestModelsEndpoint::new(Vec::new());
     let cache_manager =
         openai_manager_for_tests(codex_home.path().to_path_buf(), cache_endpoint.clone());
+    let mut expected = load_remote_models_from_file().expect("bundled models should parse");
+    expected.extend(remote_models);
 
     cache_manager
         .refresh_available_models(RefreshStrategy::OnlineIfUncached)
         .await
         .expect("cached refresh succeeds");
 
-    assert_eq!(cache_manager.get_remote_models().await, remote_models);
+    assert_eq!(cache_manager.get_remote_models().await, expected);
     assert_eq!(
         cache_endpoint.fetch_count(),
         0,
@@ -432,9 +436,39 @@ async fn refresh_available_models_uses_cached_remote_only_catalog_for_chatgpt_au
 }
 
 #[tokio::test]
-async fn get_model_info_uses_fallback_for_bundled_models_when_chatgpt_remote_is_authoritative() {
+async fn chatgpt_cache_does_not_evict_pfterminal_provider_models() {
+    let remote_models = vec![remote_model("gpt-5.5", "GPT-5.5", /*priority*/ 0)];
+    let codex_home = tempdir().expect("temp dir");
+    let fetch_endpoint = TestModelsEndpoint::new(vec![remote_models]);
+    let fetch_manager =
+        openai_manager_for_tests(codex_home.path().to_path_buf(), fetch_endpoint.clone());
+
+    fetch_manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("initial refresh succeeds");
+
+    let cache_endpoint = TestModelsEndpoint::new(Vec::new());
+    let cache_manager = openai_manager_for_tests(codex_home.path().to_path_buf(), cache_endpoint);
+    let available = cache_manager
+        .list_models(RefreshStrategy::OnlineIfUncached)
+        .await;
+    let slugs = available
+        .iter()
+        .map(|model| model.model.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(slugs.contains(&"gpt-5.5"));
+    assert!(slugs.contains(&"zai-org/GLM-5.2-FP8"));
+    assert!(slugs.contains(&"glm-5.2"));
+    assert!(slugs.contains(&"z-ai/glm-5.2"));
+    assert!(slugs.contains(&"zai-org/GLM-5.2"));
+}
+
+#[tokio::test]
+async fn get_model_info_keeps_bundled_models_when_chatgpt_remote_is_present() {
     let remote_models = vec![remote_model(
-        "chatgpt-authoritative-model-info",
+        "chatgpt-merged-model-info",
         "ChatGPT Model Info",
         /*priority*/ 0,
     )];
@@ -458,7 +492,7 @@ async fn get_model_info_uses_fallback_for_bundled_models_when_chatgpt_remote_is_
         .await;
 
     assert_eq!(model_info.slug, bundled_slug);
-    assert!(model_info.used_fallback_model_metadata);
+    assert!(!model_info.used_fallback_model_metadata);
 }
 
 #[tokio::test]

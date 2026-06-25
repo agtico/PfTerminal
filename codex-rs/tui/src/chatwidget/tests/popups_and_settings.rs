@@ -2740,7 +2740,7 @@ async fn model_picker_dismisses_after_selecting_openrouter_model_without_effort_
         .expect("model catalog should load");
     chat.open_all_models_popup(presets);
 
-    for _ in 0..4 {
+    for _ in 0..5 {
         chat.handle_key_event(KeyEvent::from(KeyCode::Down));
     }
     let before = render_bottom_popup(&chat, /*width*/ 100);
@@ -2786,7 +2786,7 @@ async fn model_picker_opens_openrouter_reasoning_options_for_gemini() {
         .expect("model catalog should load");
     chat.open_all_models_popup(presets);
 
-    for _ in 0..6 {
+    for _ in 0..7 {
         chat.handle_key_event(KeyEvent::from(KeyCode::Down));
     }
     let before = render_bottom_popup(&chat, /*width*/ 100);
