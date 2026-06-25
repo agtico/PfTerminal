@@ -2361,8 +2361,8 @@ mod tests {
     #[test]
     fn parse_stream_json_output_prefers_final_result() {
         let parsed = parse_claude_output(
-            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hel"}],"usage":{"input_tokens":1}}}
-{"type":"assistant","message":{"content":[{"type":"text","text":"lo"}]}}
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"he"}],"usage":{"input_tokens":1}}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"llo"}]}}
 {"type":"result","result":"hello","session_id":"22222222-2222-4222-8222-222222222222"}"#,
         )
         .expect("parse");
