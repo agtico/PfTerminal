@@ -2,10 +2,9 @@
 
 Status: Ambient parity workflow suite passed on June 25, 2026 for wrapped
 Claude Code panes after the hidden local tool-call ceiling was removed. A later
-streaming protocol patch has live smoke/tool-loop/substantive-review evidence,
-but the full four-workflow rerun after that protocol patch is still pending.
-Z.AI, Baseten, OpenRouter, and Claude Plan remain experimental until they pass
-the same workflow suite.
+streaming protocol patch also passed the full four-workflow Ambient rerun. Z.AI,
+Baseten, OpenRouter, and Claude Plan remain experimental until they pass the
+same workflow suite.
 
 The Ambient path runs real `claude -p` headless turns against a local
 PFTerminal Anthropic Messages bridge. The bridge translates Claude Code

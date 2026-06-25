@@ -1,11 +1,10 @@
 # Claude Code Pane Completion Spec
 
 Status: Ambient parity workflow suite passed on June 25, 2026 after removing
-the hidden local tool-call ceiling. A later protocol patch fixed streaming
-usage/error handling and has live smoke/tool-loop/substantive-review evidence,
-but a full four-workflow rerun after that patch is still pending. The prior
-Ambient completion claim was wrong because the pane runner had a hidden local
-tool-call ceiling that a real Claude Code TUI session does not have.
+the hidden local tool-call ceiling and after the later streaming protocol
+fixes. The prior Ambient completion claim was wrong because the pane runner had
+a hidden local tool-call ceiling that a real Claude Code TUI session does not
+have.
 
 ## Hard Completion Bar
 
@@ -89,9 +88,10 @@ Additional June 25, 2026 evidence:
   `live_ambient_bridge_runs_claude_headless_for_two_turns`,
   `live_ambient_bridge_runs_claude_tool_loop`, and
   `live_ambient_bridge_runs_substantive_code_review`.
-- A full four-workflow rerun after the protocol fixes was interrupted because
-  the code-review resume turn stopped making artifact progress for several
-  minutes after an already long first turn. That is not recorded as a pass.
+- Final full Ambient workflow-suite rerun after the protocol fixes passed:
+  `/home/postfiat/.pfterminal/panes/workflow-reports/claude-pane-workflow-suite-1782412617.json`.
+  It recorded 4 passed / 4 checked: mock website, NumPy vs Pandas benchmark,
+  code review with resumed turn, and auditability.
 
 The Ambient bridge must not impose a local tool-call budget, max-turn budget, or
 wall-clock turn timeout that is absent from a real Claude Code session. Cleanup
