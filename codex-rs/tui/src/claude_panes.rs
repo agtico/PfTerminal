@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::io::Write as _;
 use std::net::SocketAddr;
 use std::net::TcpListener as StdTcpListener;
 use std::path::Path;
@@ -19,18 +20,22 @@ use codex_vault::Vault;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
+use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
+use tokio::io::BufReader;
 use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::sync::OwnedMutexGuard;
-use tokio::time::timeout;
+use tokio::time::MissedTickBehavior;
+use tokio::time::interval;
 use uuid::Uuid;
 
 use crate::app::App;
 use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
+use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
 use crate::bottom_pane::popup_consts::standard_popup_hint_line;
@@ -39,8 +44,9 @@ use crate::multi_agents::agent_picker_status_dot_spans;
 use crate::multi_agents::format_agent_picker_item_name;
 
 pub(crate) const CODEX_MAIN_PANE_ID: &str = "codex-main";
-const CLAUDE_PANE_TURN_TIMEOUT: Duration = Duration::from_secs(150);
-const CLAUDE_PANE_MAX_TURNS: &str = "24";
+const CLAUDE_PANE_TURN_TIMEOUT: Duration = Duration::from_secs(600);
+const CLAUDE_PANE_MAX_TURNS: &str = "80";
+const AMBIENT_BRIDGE_TOOL_CALL_BUDGET: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -160,6 +166,7 @@ pub(crate) enum ClaudePaneStatus {
 pub enum ClaudePaneTurnStatus {
     Success,
     MaxTurnsPause,
+    TimeoutPause,
     ProviderError,
     ParseFailure,
 }
@@ -169,6 +176,7 @@ impl ClaudePaneTurnStatus {
         match self {
             Self::Success => "success",
             Self::MaxTurnsPause => "max-turn-pause",
+            Self::TimeoutPause => "timeout-pause",
             Self::ProviderError => "provider-error",
             Self::ParseFailure => "parse-failure",
         }
@@ -176,6 +184,26 @@ impl ClaudePaneTurnStatus {
 
     fn is_success(self) -> bool {
         self == Self::Success
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ClaudePaneUsageStatus {
+    Reported,
+    Missing,
+    Unknown,
+    Untrusted,
+}
+
+impl ClaudePaneUsageStatus {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Reported => "reported",
+            Self::Missing => "missing",
+            Self::Unknown => "unknown",
+            Self::Untrusted => "untrusted",
+        }
     }
 }
 
@@ -204,6 +232,7 @@ pub(crate) struct ClaudePane {
     pub(crate) claude_session_id: Option<String>,
     pub(crate) status: ClaudePaneStatus,
     pub(crate) latest_usage_summary: Option<String>,
+    pub(crate) latest_usage_status: Option<ClaudePaneUsageStatus>,
     pub(crate) latest_turn_status: Option<ClaudePaneTurnStatus>,
     pub(crate) latest_audit_path: Option<PathBuf>,
     pub(crate) artifact_dir: PathBuf,
@@ -286,6 +315,7 @@ impl ClaudePaneRegistry {
             claude_session_id: None,
             status: ClaudePaneStatus::Idle,
             latest_usage_summary: None,
+            latest_usage_status: None,
             latest_turn_status: None,
             latest_audit_path: None,
             artifact_dir,
@@ -340,6 +370,7 @@ impl ClaudePaneRegistry {
                 pane.claude_session_id = Some(session_id.clone());
             }
             pane.latest_usage_summary = output.usage_summary.clone();
+            pane.latest_usage_status = Some(output.usage_status);
             pane.latest_turn_status = Some(output.status);
             pane.latest_audit_path = Some(output.audit_path.clone());
             pane.next_turn_index = pane.next_turn_index.saturating_add(1);
@@ -365,13 +396,32 @@ pub(crate) struct ClaudePaneTurnOutput {
     pub(crate) status: ClaudePaneTurnStatus,
     pub(crate) session_id: Option<String>,
     pub(crate) usage_summary: Option<String>,
+    pub(crate) usage_status: ClaudePaneUsageStatus,
     pub(crate) artifact_path: PathBuf,
     pub(crate) audit_path: PathBuf,
     pub(crate) duration_ms: i64,
     pub(crate) terminal_reason: Option<String>,
     pub(crate) error_summary: Option<String>,
     pub(crate) tool_names: Vec<String>,
+    pub(crate) tool_events: Vec<ClaudePaneToolEvent>,
     pub(crate) command_mode: ClaudeCommandMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ClaudePaneToolEvent {
+    pub(crate) name: String,
+    pub(crate) preview: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ClaudePaneTurnProgress {
+    pub(crate) pane_id: String,
+    pub(crate) phase: String,
+    pub(crate) summary: String,
+    pub(crate) hint: Option<String>,
+    pub(crate) elapsed_ms: i64,
+    pub(crate) artifact_path: PathBuf,
+    pub(crate) audit_path: PathBuf,
 }
 
 pub(crate) struct ClaudeCommandPlan {
@@ -388,6 +438,7 @@ pub(crate) struct ClaudeCommandPlan {
     max_turns: String,
     artifact_path: PathBuf,
     audit_path: PathBuf,
+    timeout_ms: u64,
     bridge: Option<ClaudeBridgePlan>,
 }
 
@@ -403,13 +454,19 @@ pub(crate) struct ClaudePaneTurnAudit {
     max_turns: String,
     artifact_path: PathBuf,
     audit_path: PathBuf,
+    timeout_ms: u64,
+    started_at_unix_ms: u128,
+    ended_at_unix_ms: u128,
+    last_progress_elapsed_ms: Option<i64>,
     duration_ms: i64,
     usage: Option<Value>,
+    usage_status: ClaudePaneUsageStatus,
     terminal_reason: Option<String>,
     status: ClaudePaneTurnStatus,
     error_summary: Option<String>,
     tool_use_count: usize,
     tool_names: Vec<String>,
+    tool_events: Vec<ClaudePaneToolEvent>,
 }
 
 impl ClaudePaneTurnOutput {
@@ -425,8 +482,7 @@ impl ClaudePaneTurnOutput {
             .map(|reason| format!("; terminal_reason: {reason}"))
             .unwrap_or_default();
         let usage = self
-            .usage_summary
-            .as_deref()
+            .usage_hint()
             .map(|usage| format!("; usage: {usage}"))
             .unwrap_or_default();
         format!(
@@ -447,6 +503,9 @@ impl ClaudePaneTurnOutput {
             ClaudePaneTurnStatus::MaxTurnsPause => format!(
                 "Claude pane paused at max turns. Type `continue` in this pane to resume the same Claude session. {summary}"
             ),
+            ClaudePaneTurnStatus::TimeoutPause => format!(
+                "Claude pane timed out locally. Type `continue` in this pane to resume if the audit captured a Claude session id. {summary}"
+            ),
             ClaudePaneTurnStatus::ProviderError => {
                 format!("Claude pane provider error. {summary}")
             }
@@ -454,6 +513,17 @@ impl ClaudePaneTurnOutput {
                 format!("Claude pane output could not be parsed. {summary}")
             }
             ClaudePaneTurnStatus::Success => summary.to_string(),
+        }
+    }
+
+    fn usage_hint(&self) -> Option<String> {
+        match self.usage_status {
+            ClaudePaneUsageStatus::Reported => self.usage_summary.clone(),
+            ClaudePaneUsageStatus::Missing => Some("missing".to_string()),
+            ClaudePaneUsageStatus::Unknown => Some("unknown".to_string()),
+            ClaudePaneUsageStatus::Untrusted => {
+                Some("untrusted provider-reported zero or incomplete usage".to_string())
+            }
         }
     }
 }
@@ -487,6 +557,7 @@ impl std::fmt::Debug for ClaudeCommandPlan {
             .field("command_mode", &self.command_mode)
             .field("artifact_path", &self.artifact_path)
             .field("audit_path", &self.audit_path)
+            .field("timeout_ms", &self.timeout_ms)
             .field(
                 "bridge_addr",
                 &self.bridge.as_ref().map(|bridge| bridge.bind_addr),
@@ -542,6 +613,7 @@ fn build_claude_command_plan(
     let audit_path = pane
         .artifact_dir
         .join(format!("turn-{turn_index:04}.audit.json"));
+    let timeout_ms = u64::try_from(CLAUDE_PANE_TURN_TIMEOUT.as_millis()).unwrap_or(u64::MAX);
     let mut bridge = None;
     let mut base_url_override = None;
     if profile.transport == ClaudeProviderTransport::AmbientChatBridge {
@@ -690,6 +762,7 @@ fn build_claude_command_plan(
         max_turns: CLAUDE_PANE_MAX_TURNS.to_string(),
         artifact_path,
         audit_path,
+        timeout_ms,
         bridge,
     })
 }
@@ -796,8 +869,9 @@ pub(crate) fn prompt_from_user_turn(op: &AppCommand) -> Result<Option<String>> {
 
 pub(crate) async fn run_prepared_claude_turn(
     prepared: PreparedClaudePaneTurn,
+    progress_tx: Option<AppEventSender>,
 ) -> Result<ClaudePaneTurnOutput, String> {
-    run_claude_command_plan(prepared.plan)
+    run_claude_command_plan(prepared.plan, progress_tx)
         .await
         .map_err(|err| format!("{err:#}"))
 }
@@ -827,6 +901,35 @@ pub struct ClaudePaneSmokeEntry {
     pub artifact_path: Option<PathBuf>,
     pub audit_path: Option<PathBuf>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClaudePaneWorkflowOptions {
+    pub codex_home: PathBuf,
+    pub cwd: PathBuf,
+    pub providers: Vec<String>,
+    pub workflows: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudePaneWorkflowReport {
+    pub report_path: PathBuf,
+    pub passed: bool,
+    pub summary: String,
+    pub entries: Vec<ClaudePaneWorkflowEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudePaneWorkflowEntry {
+    pub provider: String,
+    pub profile: Option<String>,
+    pub workflow: String,
+    pub status: String,
+    pub artifact_path: Option<PathBuf>,
+    pub audit_path: Option<PathBuf>,
+    pub fixture_path: Option<PathBuf>,
+    pub error: Option<String>,
+    pub output_excerpt: Option<String>,
 }
 
 pub async fn run_claude_pane_smoke(
@@ -893,6 +996,541 @@ pub async fn run_claude_pane_smoke(
         )
     })?;
     Ok(report)
+}
+
+pub async fn run_claude_pane_workflow_suite(
+    options: ClaudePaneWorkflowOptions,
+) -> Result<ClaudePaneWorkflowReport> {
+    let provider_names = if options.providers.is_empty() {
+        vec!["ambient".to_string()]
+    } else {
+        options.providers
+    };
+    let workflow_names = if options.workflows.is_empty() {
+        vec![
+            "mock-website".to_string(),
+            "numpy-pandas-benchmark".to_string(),
+            "code-review".to_string(),
+            "auditability".to_string(),
+        ]
+    } else {
+        options.workflows
+    };
+    let report_root = options.codex_home.join("panes").join("workflow-reports");
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let fixture_root = report_root.join(format!("fixtures-{timestamp}"));
+    std::fs::create_dir_all(&fixture_root).with_context(|| {
+        format!(
+            "failed to create Claude pane workflow fixture directory `{}`",
+            fixture_root.display()
+        )
+    })?;
+
+    let mut entries = Vec::new();
+    for provider_name in provider_names {
+        for workflow_name in &workflow_names {
+            entries.push(
+                run_single_workflow(
+                    &options.codex_home,
+                    &options.cwd,
+                    &fixture_root,
+                    provider_name.trim().to_string(),
+                    workflow_name.trim().to_string(),
+                )
+                .await,
+            );
+        }
+    }
+    let passed = entries.iter().all(|entry| entry.status == "passed");
+    let report_path = report_root.join(format!("claude-pane-workflow-suite-{timestamp}.json"));
+    let summary = format!(
+        "Claude pane workflow suite: {} passed, {} checked; report: {}",
+        entries
+            .iter()
+            .filter(|entry| entry.status == "passed")
+            .count(),
+        entries.len(),
+        report_path.display()
+    );
+    let report = ClaudePaneWorkflowReport {
+        report_path: report_path.clone(),
+        passed,
+        summary,
+        entries,
+    };
+    let bytes =
+        serde_json::to_vec_pretty(&report).context("failed to serialize workflow report")?;
+    std::fs::write(&report_path, bytes).with_context(|| {
+        format!(
+            "failed to write Claude pane workflow report `{}`",
+            report_path.display()
+        )
+    })?;
+    Ok(report)
+}
+
+async fn run_single_workflow(
+    codex_home: &Path,
+    cwd: &Path,
+    fixture_root: &Path,
+    provider_name: String,
+    workflow_name: String,
+) -> ClaudePaneWorkflowEntry {
+    let Some(profile) = smoke_provider_profile(&provider_name) else {
+        return workflow_entry_error(
+            provider_name,
+            None,
+            workflow_name,
+            None,
+            None,
+            None,
+            "unknown workflow provider".to_string(),
+        );
+    };
+    let profile_title = Some(profile.profile().title.to_string());
+    match workflow_name.as_str() {
+        "mock-website" => {
+            run_mock_website_workflow(codex_home, fixture_root, provider_name, profile).await
+        }
+        "numpy-pandas-benchmark" => {
+            run_numpy_pandas_benchmark_workflow(codex_home, fixture_root, provider_name, profile)
+                .await
+        }
+        "code-review" => run_code_review_workflow(codex_home, cwd, provider_name, profile).await,
+        "auditability" => {
+            run_auditability_workflow(codex_home, fixture_root, provider_name, profile).await
+        }
+        _ => workflow_entry_error(
+            provider_name,
+            profile_title,
+            workflow_name,
+            None,
+            None,
+            None,
+            "unknown workflow".to_string(),
+        ),
+    }
+}
+
+async fn run_mock_website_workflow(
+    codex_home: &Path,
+    fixture_root: &Path,
+    provider_name: String,
+    profile: ClaudeProviderProfileKind,
+) -> ClaudePaneWorkflowEntry {
+    let workflow = "mock-website".to_string();
+    let fixture_path = workflow_fixture_path(fixture_root, &provider_name, &workflow);
+    if let Err(err) = std::fs::create_dir_all(&fixture_path) {
+        return workflow_entry_error(
+            provider_name,
+            Some(profile.profile().title.to_string()),
+            workflow,
+            None,
+            None,
+            Some(fixture_path),
+            format!("failed to create fixture: {err}"),
+        );
+    }
+    let prompt = concat!(
+        "Build a tiny mock website in the current directory for a product named ",
+        "PFT Pane Observatory. Create index.html plus either styles.css or script.js. ",
+        "The page must include the exact text PFT Pane Observatory and one styled or ",
+        "interactive element. After writing files, reply with marker PFT_MOCK_SITE_DONE ",
+        "and list the files you created."
+    )
+    .to_string();
+    let mut registry = ClaudePaneRegistry::new();
+    let pane_id = match registry.create_pane(profile, fixture_path.clone(), codex_home) {
+        Ok(id) => id,
+        Err(err) => {
+            return workflow_entry_error(
+                provider_name,
+                Some(profile.profile().title.to_string()),
+                workflow,
+                None,
+                None,
+                Some(fixture_path),
+                err.to_string(),
+            );
+        }
+    };
+    let output = match run_smoke_turn(&mut registry, &pane_id, prompt, codex_home).await {
+        Ok(output) => output,
+        Err(err) => {
+            return workflow_entry_error(
+                provider_name,
+                Some(profile.profile().title.to_string()),
+                workflow,
+                None,
+                None,
+                Some(fixture_path),
+                err,
+            );
+        }
+    };
+    let index_path = fixture_path.join("index.html");
+    let index = std::fs::read_to_string(&index_path).unwrap_or_default();
+    let has_asset =
+        fixture_path.join("styles.css").exists() || fixture_path.join("script.js").exists();
+    if output.status.is_success()
+        && output.text.contains("PFT_MOCK_SITE_DONE")
+        && index.contains("PFT Pane Observatory")
+        && has_asset
+    {
+        workflow_entry_pass(provider_name, profile, workflow, output, Some(fixture_path))
+    } else {
+        workflow_entry_from_output(
+            provider_name,
+            profile,
+            workflow,
+            output,
+            Some(fixture_path),
+            "mock website verification failed".to_string(),
+        )
+    }
+}
+
+async fn run_numpy_pandas_benchmark_workflow(
+    codex_home: &Path,
+    fixture_root: &Path,
+    provider_name: String,
+    profile: ClaudeProviderProfileKind,
+) -> ClaudePaneWorkflowEntry {
+    let workflow = "numpy-pandas-benchmark".to_string();
+    let fixture_path = workflow_fixture_path(fixture_root, &provider_name, &workflow);
+    if let Err(err) = std::fs::create_dir_all(&fixture_path) {
+        return workflow_entry_error(
+            provider_name,
+            Some(profile.profile().title.to_string()),
+            workflow,
+            None,
+            None,
+            Some(fixture_path),
+            format!("failed to create fixture: {err}"),
+        );
+    }
+    let prompt = concat!(
+        "Create and run a Python benchmark comparing NumPy vs Pandas for filtering ",
+        "and aggregating numeric rows. Use a deterministic random seed and a data size ",
+        "small enough to finish quickly. Output a markdown table with columns ",
+        "Implementation, Mean time, Fastest run, and Notes. Include marker ",
+        "PFT_NUMPY_PANDAS_BENCH_DONE. If numpy or pandas is missing, report the missing ",
+        "dependency clearly instead of hanging."
+    )
+    .to_string();
+    let mut registry = ClaudePaneRegistry::new();
+    let pane_id = match registry.create_pane(profile, fixture_path.clone(), codex_home) {
+        Ok(id) => id,
+        Err(err) => {
+            return workflow_entry_error(
+                provider_name,
+                Some(profile.profile().title.to_string()),
+                workflow,
+                None,
+                None,
+                Some(fixture_path),
+                err.to_string(),
+            );
+        }
+    };
+    let output = match run_smoke_turn(&mut registry, &pane_id, prompt, codex_home).await {
+        Ok(output) => output,
+        Err(err) => {
+            return workflow_entry_error(
+                provider_name,
+                Some(profile.profile().title.to_string()),
+                workflow,
+                None,
+                None,
+                Some(fixture_path),
+                err,
+            );
+        }
+    };
+    let has_table = output.text.contains('|')
+        && output.text.to_lowercase().contains("numpy")
+        && output.text.to_lowercase().contains("pandas")
+        && output.text.contains("PFT_NUMPY_PANDAS_BENCH_DONE");
+    if output.status.is_success() && has_table {
+        workflow_entry_pass(provider_name, profile, workflow, output, Some(fixture_path))
+    } else {
+        workflow_entry_from_output(
+            provider_name,
+            profile,
+            workflow,
+            output,
+            Some(fixture_path),
+            "NumPy vs Pandas benchmark verification failed".to_string(),
+        )
+    }
+}
+
+async fn run_code_review_workflow(
+    codex_home: &Path,
+    cwd: &Path,
+    provider_name: String,
+    profile: ClaudeProviderProfileKind,
+) -> ClaudePaneWorkflowEntry {
+    let workflow = "code-review".to_string();
+    let mut registry = ClaudePaneRegistry::new();
+    let pane_id = match registry.create_pane(profile, cwd.to_path_buf(), codex_home) {
+        Ok(id) => id,
+        Err(err) => {
+            return workflow_entry_error(
+                provider_name,
+                Some(profile.profile().title.to_string()),
+                workflow,
+                None,
+                None,
+                None,
+                err.to_string(),
+            );
+        }
+    };
+    let prompt = concat!(
+        "Perform a read-only code review of codex-rs/tui/src/app_event_sender.rs in this repo. ",
+        "Use filesystem tools to inspect that file and, if needed, one nearby caller. ",
+        "Keep the review bounded and stop after you have enough evidence. ",
+        "Return marker PFT_CODE_REVIEW_DONE and either concrete findings with file references ",
+        "or say no findings with a short rationale. Do not edit files."
+    )
+    .to_string();
+    let first_output = match run_smoke_turn(&mut registry, &pane_id, prompt, codex_home).await {
+        Ok(output) => output,
+        Err(err) => {
+            return workflow_entry_error(
+                provider_name,
+                Some(profile.profile().title.to_string()),
+                workflow,
+                None,
+                None,
+                None,
+                err,
+            );
+        }
+    };
+    let has_review = first_output.text.contains("PFT_CODE_REVIEW_DONE")
+        && first_output
+            .text
+            .contains("codex-rs/tui/src/app_event_sender.rs");
+    if !(first_output.status.is_success() && has_review && !first_output.tool_names.is_empty()) {
+        return workflow_entry_from_output(
+            provider_name,
+            profile,
+            workflow,
+            first_output,
+            None,
+            "fresh code review verification failed".to_string(),
+        );
+    }
+
+    let resume_prompt = concat!(
+        "Continue the same read-only code review. Use the context already gathered. ",
+        "Use at most one more filesystem tool only if necessary. Return marker ",
+        "PFT_CODE_REVIEW_RESUME_DONE and either one additional concrete finding ",
+        "with a file reference or say no additional findings with a short rationale. ",
+        "Do not edit files."
+    )
+    .to_string();
+    let resume_output =
+        match run_smoke_turn(&mut registry, &pane_id, resume_prompt, codex_home).await {
+            Ok(output) => output,
+            Err(err) => {
+                return workflow_entry_error(
+                    provider_name,
+                    Some(profile.profile().title.to_string()),
+                    workflow,
+                    None,
+                    None,
+                    None,
+                    err,
+                );
+            }
+        };
+    let has_resume_review = resume_output.text.contains("PFT_CODE_REVIEW_RESUME_DONE");
+    if resume_output.status.is_success()
+        && has_resume_review
+        && matches!(resume_output.command_mode, ClaudeCommandMode::Resume)
+    {
+        workflow_entry_pass(provider_name, profile, workflow, resume_output, None)
+    } else {
+        workflow_entry_from_output(
+            provider_name,
+            profile,
+            workflow,
+            resume_output,
+            None,
+            "resumed code review verification failed".to_string(),
+        )
+    }
+}
+
+async fn run_auditability_workflow(
+    codex_home: &Path,
+    fixture_root: &Path,
+    provider_name: String,
+    profile: ClaudeProviderProfileKind,
+) -> ClaudePaneWorkflowEntry {
+    let workflow = "auditability".to_string();
+    let fixture_path = workflow_fixture_path(fixture_root, &provider_name, &workflow);
+    if let Err(err) = std::fs::create_dir_all(&fixture_path) {
+        return workflow_entry_error(
+            provider_name,
+            Some(profile.profile().title.to_string()),
+            workflow,
+            None,
+            None,
+            Some(fixture_path),
+            format!("failed to create fixture: {err}"),
+        );
+    }
+    let mut registry = ClaudePaneRegistry::new();
+    let pane_id = match registry.create_pane(profile, fixture_path.clone(), codex_home) {
+        Ok(id) => id,
+        Err(err) => {
+            return workflow_entry_error(
+                provider_name,
+                Some(profile.profile().title.to_string()),
+                workflow,
+                None,
+                None,
+                Some(fixture_path),
+                err.to_string(),
+            );
+        }
+    };
+    let prompts = [
+        "Reply exactly PFT_AUDIT_TURN_1.",
+        "Use Bash to run `printf PFT_AUDIT_TURN_2` and then reply with PFT_AUDIT_TURN_2.",
+        "Use Bash to run `false`; then explain that the command failed and include marker PFT_AUDIT_FAILURE_PATH.",
+    ];
+    let mut last_output = None;
+    for prompt in prompts {
+        let output =
+            match run_smoke_turn(&mut registry, &pane_id, prompt.to_string(), codex_home).await {
+                Ok(output) => output,
+                Err(err) => {
+                    return workflow_entry_error(
+                        provider_name,
+                        Some(profile.profile().title.to_string()),
+                        workflow,
+                        None,
+                        None,
+                        Some(fixture_path),
+                        err,
+                    );
+                }
+            };
+        if !output.audit_path.exists() {
+            return workflow_entry_from_output(
+                provider_name,
+                profile,
+                workflow,
+                output,
+                Some(fixture_path),
+                "audit file was not written".to_string(),
+            );
+        }
+        last_output = Some(output);
+    }
+    let Some(output) = last_output else {
+        return workflow_entry_error(
+            provider_name,
+            Some(profile.profile().title.to_string()),
+            workflow,
+            None,
+            None,
+            Some(fixture_path),
+            "audit workflow did not run any turns".to_string(),
+        );
+    };
+    if output.status.is_success()
+        && output.text.contains("PFT_AUDIT_FAILURE_PATH")
+        && !output.tool_names.is_empty()
+    {
+        workflow_entry_pass(provider_name, profile, workflow, output, Some(fixture_path))
+    } else {
+        workflow_entry_from_output(
+            provider_name,
+            profile,
+            workflow,
+            output,
+            Some(fixture_path),
+            "auditability workflow verification failed".to_string(),
+        )
+    }
+}
+
+fn workflow_fixture_path(fixture_root: &Path, provider: &str, workflow: &str) -> PathBuf {
+    fixture_root.join(provider).join(workflow)
+}
+
+fn workflow_entry_pass(
+    provider: String,
+    profile: ClaudeProviderProfileKind,
+    workflow: String,
+    output: ClaudePaneTurnOutput,
+    fixture_path: Option<PathBuf>,
+) -> ClaudePaneWorkflowEntry {
+    ClaudePaneWorkflowEntry {
+        provider,
+        profile: Some(profile.profile().title.to_string()),
+        workflow,
+        status: "passed".to_string(),
+        artifact_path: Some(output.artifact_path),
+        audit_path: Some(output.audit_path),
+        fixture_path,
+        error: None,
+        output_excerpt: Some(truncate_for_display(&output.text, 1_000)),
+    }
+}
+
+fn workflow_entry_from_output(
+    provider: String,
+    profile: ClaudeProviderProfileKind,
+    workflow: String,
+    output: ClaudePaneTurnOutput,
+    fixture_path: Option<PathBuf>,
+    error: String,
+) -> ClaudePaneWorkflowEntry {
+    let failure = output.failure_message();
+    let excerpt = truncate_for_display(&output.text, 1_000);
+    ClaudePaneWorkflowEntry {
+        provider,
+        profile: Some(profile.profile().title.to_string()),
+        workflow,
+        status: "failed".to_string(),
+        artifact_path: Some(output.artifact_path),
+        audit_path: Some(output.audit_path),
+        fixture_path,
+        error: Some(format!("{error}: {failure}")),
+        output_excerpt: Some(excerpt),
+    }
+}
+
+fn workflow_entry_error(
+    provider: String,
+    profile: Option<String>,
+    workflow: String,
+    artifact_path: Option<PathBuf>,
+    audit_path: Option<PathBuf>,
+    fixture_path: Option<PathBuf>,
+    error: String,
+) -> ClaudePaneWorkflowEntry {
+    ClaudePaneWorkflowEntry {
+        provider,
+        profile,
+        workflow,
+        status: "failed".to_string(),
+        artifact_path,
+        audit_path,
+        fixture_path,
+        error: Some(error),
+        output_excerpt: None,
+    }
 }
 
 async fn run_single_smoke_provider(
@@ -1021,7 +1659,7 @@ async fn run_smoke_turn(
     let prepared = registry
         .prepare_turn(pane_id, prompt, codex_home)
         .map_err(|err| err.to_string())?;
-    let result = run_prepared_claude_turn(prepared).await;
+    let result = run_prepared_claude_turn(prepared, None).await;
     registry.finish_turn(pane_id, &result);
     result
 }
@@ -1051,57 +1689,203 @@ fn smoke_first_turn_prompt() -> String {
     .to_string()
 }
 
-async fn run_claude_command_plan(mut plan: ClaudeCommandPlan) -> Result<ClaudePaneTurnOutput> {
+async fn run_claude_command_plan(
+    mut plan: ClaudeCommandPlan,
+    progress_tx: Option<AppEventSender>,
+) -> Result<ClaudePaneTurnOutput> {
     let started_at = Instant::now();
+    let started_at_unix_ms = unix_epoch_ms();
+    let mut last_progress_elapsed_ms = Some(0);
+    emit_claude_progress(
+        &progress_tx,
+        &plan,
+        &started_at,
+        "starting",
+        "Claude pane starting.",
+        Some(format!(
+            "mode: {}; artifact: {}; audit: {}",
+            plan.command_mode.label(),
+            plan.artifact_path.display(),
+            plan.audit_path.display()
+        )),
+    );
     let bridge_handle = plan
         .bridge
         .take()
         .map(|bridge| tokio::spawn(run_ambient_chat_bridge(bridge)));
-    let output_result = timeout(
-        CLAUDE_PANE_TURN_TIMEOUT,
-        Command::new(&plan.executable)
-            .args(&plan.args)
-            .envs(&plan.env)
-            .current_dir(&plan.cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output(),
-    )
-    .await;
-    if let Some(handle) = bridge_handle {
-        handle.abort();
+    let mut child = Command::new(&plan.executable)
+        .args(&plan.args)
+        .envs(&plan.env)
+        .current_dir(&plan.cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to run `{}`", plan.executable))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("Claude stdout pipe was not available"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("Claude stderr pipe was not available"))?;
+    let stderr_task = tokio::spawn(async move {
+        let mut stderr_reader = BufReader::new(stderr);
+        let mut stderr_text = String::new();
+        let _ = stderr_reader.read_to_string(&mut stderr_text).await;
+        stderr_text
+    });
+
+    let mut artifact = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&plan.artifact_path)
+        .with_context(|| {
+            format!(
+                "failed to open Claude pane artifact `{}`",
+                plan.artifact_path.display()
+            )
+        })?;
+    let mut stdout_lines = BufReader::new(stdout).lines();
+    let mut stdout_text = String::new();
+    let mut heartbeat = interval(Duration::from_secs(30));
+    heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    heartbeat.tick().await;
+    let timeout_sleep = tokio::time::sleep(CLAUDE_PANE_TURN_TIMEOUT);
+    tokio::pin!(timeout_sleep);
+    let mut timed_out = false;
+    let mut last_progress_key: Option<String> = None;
+    loop {
+        tokio::select! {
+            _ = &mut timeout_sleep => {
+                timed_out = true;
+                let _ = child.kill().await;
+                break;
+            }
+            line = stdout_lines.next_line() => {
+                let Some(line) = line.context("failed to read Claude stdout")? else {
+                    break;
+                };
+                stdout_text.push_str(&line);
+                stdout_text.push('\n');
+                use std::io::Write as _;
+                writeln!(artifact, "{line}").with_context(|| {
+                    format!(
+                        "failed to append Claude pane artifact `{}`",
+                        plan.artifact_path.display()
+                    )
+                })?;
+                if let Ok(value) = serde_json::from_str::<Value>(&line)
+                    && let Some(progress) = progress_from_claude_value(&plan, &started_at, &value)
+                {
+                    last_progress_elapsed_ms = Some(progress.elapsed_ms);
+                    let key = progress_key(&progress);
+                    if last_progress_key.as_deref() != Some(key.as_str())
+                        && let Some(tx) = progress_tx.as_ref()
+                    {
+                        tx.send(AppEvent::ClaudePaneTurnProgress { progress });
+                    }
+                    last_progress_key = Some(key);
+                }
+            }
+            _ = heartbeat.tick() => {
+                last_progress_elapsed_ms = Some(elapsed_ms(&started_at));
+                emit_claude_progress(
+                    &progress_tx,
+                    &plan,
+                    &started_at,
+                    "waiting",
+                    "Claude pane still running.",
+                    Some(format!(
+                        "elapsed={}ms; mode: {}; artifact: {}",
+                        elapsed_ms(&started_at),
+                        plan.command_mode.label(),
+                        plan.artifact_path.display()
+                    )),
+                );
+            }
+        }
     }
-    let duration_ms = i64::try_from(started_at.elapsed().as_millis()).unwrap_or(i64::MAX);
-
-    let output = match output_result {
-        Ok(Ok(output)) => output,
-        Ok(Err(err)) => {
-            return Err(anyhow!("failed to run `{}`: {err}", plan.executable));
-        }
-        Err(_) => {
-            let output = failed_turn_output(
-                &plan,
-                duration_ms,
-                ClaudePaneTurnStatus::ProviderError,
-                Some("timeout".to_string()),
-                format!("Claude pane turn timed out after {CLAUDE_PANE_TURN_TIMEOUT:?}"),
-            );
-            write_turn_audit(&plan, &output)?;
-            return Ok(output);
-        }
-    };
-
-    std::fs::write(&plan.artifact_path, &output.stdout).with_context(|| {
+    artifact.flush().with_context(|| {
         format!(
-            "failed to write Claude pane artifact `{}`",
+            "failed to flush Claude pane artifact `{}`",
             plan.artifact_path.display()
         )
     })?;
 
-    let stdout = String::from_utf8(output.stdout).context("Claude output was not UTF-8")?;
-    if !stdout.trim().is_empty() {
-        let output = match parse_claude_output(&stdout) {
+    let wait_result = if timed_out {
+        None
+    } else {
+        Some(
+            tokio::time::timeout(Duration::from_secs(5), child.wait())
+                .await
+                .unwrap_or_else(|_| {
+                    timed_out = true;
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "Claude process did not exit after stdout closed",
+                    ))
+                }),
+        )
+    };
+    if timed_out {
+        let _ = child.kill().await;
+    }
+    let stderr = stderr_task.await.unwrap_or_default();
+    if let Some(handle) = bridge_handle {
+        handle.abort();
+    }
+    let duration_ms = elapsed_ms(&started_at);
+    let ended_at_unix_ms = unix_epoch_ms();
+
+    if timed_out {
+        let output = partial_failed_turn_output(
+            &plan,
+            duration_ms,
+            ClaudePaneTurnStatus::TimeoutPause,
+            Some("timeout".to_string()),
+            format!(
+                "Claude pane turn hit PFTerminal's wall-clock timeout after {CLAUDE_PANE_TURN_TIMEOUT:?}. Type `continue` in this pane to resume if a Claude session id was captured."
+            ),
+            &stdout_text,
+        );
+        write_turn_audit(
+            &plan,
+            &output,
+            started_at_unix_ms,
+            ended_at_unix_ms,
+            last_progress_elapsed_ms,
+        )?;
+        return Ok(output);
+    }
+
+    let status = match wait_result {
+        Some(Ok(status)) => status,
+        Some(Err(err)) => {
+            let output = partial_failed_turn_output(
+                &plan,
+                duration_ms,
+                ClaudePaneTurnStatus::ProviderError,
+                Some("process_wait".to_string()),
+                format!("failed to wait for Claude process: {err}"),
+                &stdout_text,
+            );
+            write_turn_audit(
+                &plan,
+                &output,
+                started_at_unix_ms,
+                ended_at_unix_ms,
+                last_progress_elapsed_ms,
+            )?;
+            return Ok(output);
+        }
+        None => unreachable!("timeout branch returned earlier"),
+    };
+
+    if !stdout_text.trim().is_empty() {
+        let output = match parse_claude_output(&stdout_text) {
             Ok(parsed) => turn_output_from_parsed(&plan, parsed, duration_ms),
             Err(err) => failed_turn_output(
                 &plan,
@@ -1111,12 +1895,17 @@ async fn run_claude_command_plan(mut plan: ClaudeCommandPlan) -> Result<ClaudePa
                 format!("{err:#}"),
             ),
         };
-        write_turn_audit(&plan, &output)?;
+        write_turn_audit(
+            &plan,
+            &output,
+            started_at_unix_ms,
+            ended_at_unix_ms,
+            last_progress_elapsed_ms,
+        )?;
         return Ok(output);
     }
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !status.success() {
         let output = failed_turn_output(
             &plan,
             duration_ms,
@@ -1124,11 +1913,17 @@ async fn run_claude_command_plan(mut plan: ClaudeCommandPlan) -> Result<ClaudePa
             Some("process_exit".to_string()),
             format!(
                 "Claude exited with status {}: {}",
-                output.status,
+                status,
                 truncate_for_display(stderr.trim(), 1_000)
             ),
         );
-        write_turn_audit(&plan, &output)?;
+        write_turn_audit(
+            &plan,
+            &output,
+            started_at_unix_ms,
+            ended_at_unix_ms,
+            last_progress_elapsed_ms,
+        )?;
         return Ok(output);
     }
 
@@ -1139,7 +1934,13 @@ async fn run_claude_command_plan(mut plan: ClaudeCommandPlan) -> Result<ClaudePa
         Some("empty_output".to_string()),
         "Claude returned empty output".to_string(),
     );
-    write_turn_audit(&plan, &output)?;
+    write_turn_audit(
+        &plan,
+        &output,
+        started_at_unix_ms,
+        ended_at_unix_ms,
+        last_progress_elapsed_ms,
+    )?;
     Ok(output)
 }
 
@@ -1152,6 +1953,7 @@ fn turn_output_from_parsed(
         text: parsed.text,
         status: parsed.status,
         session_id: parsed.session_id,
+        usage_status: usage_status_from_summary(parsed.usage_summary.as_deref()),
         usage_summary: parsed.usage_summary,
         artifact_path: plan.artifact_path.clone(),
         audit_path: plan.audit_path.clone(),
@@ -1159,6 +1961,7 @@ fn turn_output_from_parsed(
         terminal_reason: parsed.terminal_reason,
         error_summary: parsed.error_summary,
         tool_names: parsed.tool_names,
+        tool_events: parsed.tool_events,
         command_mode: plan.command_mode,
     }
 }
@@ -1175,17 +1978,59 @@ fn failed_turn_output(
         status,
         session_id: None,
         usage_summary: None,
+        usage_status: ClaudePaneUsageStatus::Missing,
         artifact_path: plan.artifact_path.clone(),
         audit_path: plan.audit_path.clone(),
         duration_ms,
         terminal_reason,
         error_summary: Some(error_summary),
         tool_names: Vec::new(),
+        tool_events: Vec::new(),
         command_mode: plan.command_mode,
     }
 }
 
-fn write_turn_audit(plan: &ClaudeCommandPlan, output: &ClaudePaneTurnOutput) -> Result<()> {
+fn partial_failed_turn_output(
+    plan: &ClaudeCommandPlan,
+    duration_ms: i64,
+    status: ClaudePaneTurnStatus,
+    terminal_reason: Option<String>,
+    error_summary: String,
+    stdout: &str,
+) -> ClaudePaneTurnOutput {
+    let mut output = failed_turn_output(plan, duration_ms, status, terminal_reason, error_summary);
+    if let Ok(parsed) = parse_claude_output(stdout) {
+        if !parsed.text.trim().is_empty() {
+            output.text = parsed.text;
+        }
+        output.session_id = parsed.session_id;
+        output.usage_status = usage_status_from_summary(parsed.usage_summary.as_deref());
+        output.usage_summary = parsed.usage_summary;
+        if output.terminal_reason.is_none() {
+            output.terminal_reason = parsed.terminal_reason;
+        }
+        output.tool_names = parsed.tool_names;
+        output.tool_events = parsed.tool_events;
+    } else {
+        output.tool_events = tool_events_from_stdout(stdout);
+        output.tool_names = dedupe_tool_names(
+            output
+                .tool_events
+                .iter()
+                .map(|event| event.name.clone())
+                .collect(),
+        );
+    }
+    output
+}
+
+fn write_turn_audit(
+    plan: &ClaudeCommandPlan,
+    output: &ClaudePaneTurnOutput,
+    started_at_unix_ms: u128,
+    ended_at_unix_ms: u128,
+    last_progress_elapsed_ms: Option<i64>,
+) -> Result<()> {
     let audit = ClaudePaneTurnAudit {
         pane_id: plan.pane_id.clone(),
         pane_title: plan.pane_title.clone(),
@@ -1197,16 +2042,22 @@ fn write_turn_audit(plan: &ClaudeCommandPlan, output: &ClaudePaneTurnOutput) -> 
         max_turns: plan.max_turns.clone(),
         artifact_path: output.artifact_path.clone(),
         audit_path: output.audit_path.clone(),
+        timeout_ms: plan.timeout_ms,
+        started_at_unix_ms,
+        ended_at_unix_ms,
+        last_progress_elapsed_ms,
         duration_ms: output.duration_ms,
         usage: output
             .usage_summary
             .as_deref()
             .and_then(|usage| serde_json::from_str::<Value>(usage).ok()),
+        usage_status: output.usage_status,
         terminal_reason: output.terminal_reason.clone(),
         status: output.status,
         error_summary: output.error_summary.clone(),
-        tool_use_count: output.tool_names.len(),
+        tool_use_count: output.tool_events.len(),
         tool_names: output.tool_names.clone(),
+        tool_events: output.tool_events.clone(),
     };
     let bytes =
         serde_json::to_vec_pretty(&audit).context("failed to serialize Claude turn audit")?;
@@ -1308,8 +2159,20 @@ async fn handle_ambient_bridge_connection(
         .and_then(Value::as_u64)
         .unwrap_or(1024)
         .clamp(64, 4096);
-    let chat_messages = ambient_chat_messages_from_claude_request(&request)?;
-    let chat_tools = ambient_chat_tools_from_claude_request(&request);
+    let mut chat_messages = ambient_chat_messages_from_claude_request(&request)?;
+    let prior_tool_calls = claude_tool_use_count(&request);
+    let tool_budget_exhausted = prior_tool_calls >= AMBIENT_BRIDGE_TOOL_CALL_BUDGET;
+    if tool_budget_exhausted {
+        chat_messages.push(serde_json::json!({
+            "role": "user",
+            "content": "PFTerminal has reached the local Claude pane tool-call budget for this turn. Do not call more tools. Produce the final answer now using the evidence already gathered. Preserve any required completion marker from the original user request."
+        }));
+    }
+    let chat_tools = if tool_budget_exhausted {
+        Vec::new()
+    } else {
+        ambient_chat_tools_from_claude_request(&request)
+    };
     let mut upstream_body = serde_json::json!({
         "model": upstream_model.as_str(),
         "messages": chat_messages,
@@ -1477,6 +2340,19 @@ fn ambient_chat_tools_from_claude_request(request: &Value) -> Vec<Value> {
             }))
         })
         .collect()
+}
+
+fn claude_tool_use_count(request: &Value) -> usize {
+    request
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|message| message.get("role").and_then(Value::as_str) == Some("assistant"))
+        .filter_map(|message| message.get("content").and_then(Value::as_array))
+        .flatten()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("tool_use"))
+        .count()
 }
 
 fn ambient_assistant_tool_calls_from_claude_content(content: &Value) -> Vec<Value> {
@@ -1813,6 +2689,7 @@ pub(crate) struct ParsedClaudeOutput {
     pub(crate) terminal_reason: Option<String>,
     pub(crate) error_summary: Option<String>,
     pub(crate) tool_names: Vec<String>,
+    pub(crate) tool_events: Vec<ClaudePaneToolEvent>,
 }
 
 pub(crate) fn parse_claude_output(stdout: &str) -> Result<ParsedClaudeOutput> {
@@ -1831,6 +2708,7 @@ pub(crate) fn parse_claude_output(stdout: &str) -> Result<ParsedClaudeOutput> {
     let mut usage_summary = None;
     let mut error_value = None;
     let mut tool_names = Vec::new();
+    let mut tool_events = Vec::new();
     for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
         let value: Value = serde_json::from_str(line)
             .with_context(|| format!("Claude stream-json line was not valid JSON: {line}"))?;
@@ -1839,6 +2717,7 @@ pub(crate) fn parse_claude_output(stdout: &str) -> Result<ParsedClaudeOutput> {
         }
         collect_text_chunks(&value, &mut assistant_chunks);
         collect_tool_names(&value, &mut tool_names);
+        collect_tool_events(&value, &mut tool_events);
         if let Some(result) = value.get("result").and_then(Value::as_str) {
             final_result = Some(result.to_string());
         }
@@ -1867,6 +2746,7 @@ pub(crate) fn parse_claude_output(stdout: &str) -> Result<ParsedClaudeOutput> {
                 .map(ToString::to_string),
             error_summary: Some(claude_error_summary(&error_value)),
             tool_names: dedupe_tool_names(tool_names),
+            tool_events,
         });
     }
 
@@ -1884,13 +2764,16 @@ pub(crate) fn parse_claude_output(stdout: &str) -> Result<ParsedClaudeOutput> {
         terminal_reason: None,
         error_summary: None,
         tool_names: dedupe_tool_names(tool_names),
+        tool_events,
     })
 }
 
 fn parsed_from_value(value: &Value) -> Result<ParsedClaudeOutput> {
     if value.get("is_error").and_then(Value::as_bool) == Some(true) {
         let mut tool_names = Vec::new();
+        let mut tool_events = Vec::new();
         collect_tool_names(value, &mut tool_names);
+        collect_tool_events(value, &mut tool_events);
         return Ok(ParsedClaudeOutput {
             text: String::new(),
             status: claude_error_status(value),
@@ -1905,12 +2788,15 @@ fn parsed_from_value(value: &Value) -> Result<ParsedClaudeOutput> {
                 .map(ToString::to_string),
             error_summary: Some(claude_error_summary(value)),
             tool_names: dedupe_tool_names(tool_names),
+            tool_events,
         });
     }
     let mut assistant_chunks = Vec::new();
     collect_text_chunks(value, &mut assistant_chunks);
     let mut tool_names = Vec::new();
+    let mut tool_events = Vec::new();
     collect_tool_names(value, &mut tool_names);
+    collect_tool_events(value, &mut tool_events);
     let text = value
         .get("result")
         .and_then(Value::as_str)
@@ -1931,6 +2817,7 @@ fn parsed_from_value(value: &Value) -> Result<ParsedClaudeOutput> {
         terminal_reason: None,
         error_summary: None,
         tool_names: dedupe_tool_names(tool_names),
+        tool_events,
     })
 }
 
@@ -2013,6 +2900,47 @@ fn collect_tool_names(value: &Value, tool_names: &mut Vec<String>) {
     }
 }
 
+fn collect_tool_events(value: &Value, tool_events: &mut Vec<ClaudePaneToolEvent>) {
+    if value.get("type").and_then(Value::as_str) == Some("tool_use")
+        && let Some(name) = value.get("name").and_then(Value::as_str)
+    {
+        let preview = value
+            .get("input")
+            .map(|input| truncate_for_display(&input.to_string(), 240))
+            .unwrap_or_default();
+        tool_events.push(ClaudePaneToolEvent {
+            name: name.to_string(),
+            preview,
+        });
+    }
+    if let Some(content) = value.pointer("/message/content").and_then(Value::as_array) {
+        for item in content {
+            if item.get("type").and_then(Value::as_str) == Some("tool_use")
+                && let Some(name) = item.get("name").and_then(Value::as_str)
+            {
+                let preview = item
+                    .get("input")
+                    .map(|input| truncate_for_display(&input.to_string(), 240))
+                    .unwrap_or_default();
+                tool_events.push(ClaudePaneToolEvent {
+                    name: name.to_string(),
+                    preview,
+                });
+            }
+        }
+    }
+}
+
+fn tool_events_from_stdout(stdout: &str) -> Vec<ClaudePaneToolEvent> {
+    let mut tool_events = Vec::new();
+    for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+        if let Ok(value) = serde_json::from_str::<Value>(line) {
+            collect_tool_events(&value, &mut tool_events);
+        }
+    }
+    tool_events
+}
+
 fn dedupe_tool_names(tool_names: Vec<String>) -> Vec<String> {
     let mut deduped = Vec::new();
     for name in tool_names {
@@ -2033,12 +2961,150 @@ fn usage_summary_from_value(value: &Value) -> Option<String> {
     Some(usage.to_string())
 }
 
+fn usage_status_from_summary(summary: Option<&str>) -> ClaudePaneUsageStatus {
+    let Some(summary) = summary else {
+        return ClaudePaneUsageStatus::Missing;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(summary) else {
+        return ClaudePaneUsageStatus::Unknown;
+    };
+    let Some(object) = value.as_object() else {
+        return ClaudePaneUsageStatus::Unknown;
+    };
+    let mut saw_numeric = false;
+    let mut saw_output_metric = false;
+    let mut saw_positive_output_metric = false;
+    for (key, value) in object {
+        if let Some(number) = value.as_u64() {
+            saw_numeric = true;
+            if matches!(
+                key.as_str(),
+                "output_tokens" | "completion_tokens" | "completion"
+            ) {
+                saw_output_metric = true;
+                if number > 0 {
+                    saw_positive_output_metric = true;
+                }
+            }
+        }
+    }
+    if saw_positive_output_metric {
+        ClaudePaneUsageStatus::Reported
+    } else if saw_numeric || saw_output_metric {
+        ClaudePaneUsageStatus::Untrusted
+    } else {
+        ClaudePaneUsageStatus::Unknown
+    }
+}
+
 fn truncate_for_display(value: &str, max_chars: usize) -> String {
     let mut out = value.chars().take(max_chars).collect::<String>();
     if value.chars().count() > max_chars {
         out.push_str("...");
     }
     out
+}
+
+fn elapsed_ms(started_at: &Instant) -> i64 {
+    i64::try_from(started_at.elapsed().as_millis()).unwrap_or(i64::MAX)
+}
+
+fn unix_epoch_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn emit_claude_progress(
+    progress_tx: &Option<AppEventSender>,
+    plan: &ClaudeCommandPlan,
+    started_at: &Instant,
+    phase: &str,
+    summary: &str,
+    hint: Option<String>,
+) {
+    if let Some(tx) = progress_tx.as_ref() {
+        tx.send(AppEvent::ClaudePaneTurnProgress {
+            progress: ClaudePaneTurnProgress {
+                pane_id: plan.pane_id.clone(),
+                phase: phase.to_string(),
+                summary: summary.to_string(),
+                hint,
+                elapsed_ms: elapsed_ms(started_at),
+                artifact_path: plan.artifact_path.clone(),
+                audit_path: plan.audit_path.clone(),
+            },
+        });
+    }
+}
+
+fn progress_from_claude_value(
+    plan: &ClaudeCommandPlan,
+    started_at: &Instant,
+    value: &Value,
+) -> Option<ClaudePaneTurnProgress> {
+    let value_type = value.get("type").and_then(Value::as_str).unwrap_or("event");
+    let mut tool_events = Vec::new();
+    collect_tool_events(value, &mut tool_events);
+    if let Some(event) = tool_events.last() {
+        return Some(ClaudePaneTurnProgress {
+            pane_id: plan.pane_id.clone(),
+            phase: "tool-call".to_string(),
+            summary: format!("Claude tool call: {}", event.name),
+            hint: Some(format!(
+                "preview: {}; artifact: {}",
+                event.preview,
+                plan.artifact_path.display()
+            )),
+            elapsed_ms: elapsed_ms(started_at),
+            artifact_path: plan.artifact_path.clone(),
+            audit_path: plan.audit_path.clone(),
+        });
+    }
+    if value.get("is_error").and_then(Value::as_bool) == Some(true) {
+        return Some(ClaudePaneTurnProgress {
+            pane_id: plan.pane_id.clone(),
+            phase: "error".to_string(),
+            summary: "Claude reported an error result.".to_string(),
+            hint: Some(claude_error_summary(value)),
+            elapsed_ms: elapsed_ms(started_at),
+            artifact_path: plan.artifact_path.clone(),
+            audit_path: plan.audit_path.clone(),
+        });
+    }
+    if value.get("result").and_then(Value::as_str).is_some() {
+        return Some(ClaudePaneTurnProgress {
+            pane_id: plan.pane_id.clone(),
+            phase: "assistant-result".to_string(),
+            summary: "Claude returned a result.".to_string(),
+            hint: Some(format!("artifact: {}", plan.artifact_path.display())),
+            elapsed_ms: elapsed_ms(started_at),
+            artifact_path: plan.artifact_path.clone(),
+            audit_path: plan.audit_path.clone(),
+        });
+    }
+    (value_type == "system").then(|| ClaudePaneTurnProgress {
+        pane_id: plan.pane_id.clone(),
+        phase: "system".to_string(),
+        summary: "Claude session initialized.".to_string(),
+        hint: value
+            .get("session_id")
+            .and_then(Value::as_str)
+            .map(|session_id| format!("session_id: {session_id}")),
+        elapsed_ms: elapsed_ms(started_at),
+        artifact_path: plan.artifact_path.clone(),
+        audit_path: plan.audit_path.clone(),
+    })
+}
+
+fn progress_key(progress: &ClaudePaneTurnProgress) -> String {
+    format!(
+        "{}\n{}\n{}",
+        progress.phase,
+        progress.summary,
+        progress.hint.as_deref().unwrap_or_default()
+    )
 }
 
 impl App {
@@ -2053,6 +3119,10 @@ impl App {
             items.push(SelectionItem {
                 name: format!("+ {}", profile_config.title),
                 description: Some(profile_config.description.to_string()),
+                search_value: Some(format!(
+                    "{} {}",
+                    profile_config.title, profile_config.description
+                )),
                 actions: vec![Box::new(move |tx| {
                     tx.send(AppEvent::CreateClaudePane { profile: kind });
                 })],
@@ -2150,10 +3220,27 @@ impl App {
         let tx = self.app_event_tx.clone();
         tokio::spawn(async move {
             let pane_id = prepared.pane_id.clone();
-            let result = run_prepared_claude_turn(prepared).await;
+            let result = run_prepared_claude_turn(prepared, Some(tx.clone())).await;
             tx.send(AppEvent::ClaudePaneTurnFinished { pane_id, result });
         });
         true
+    }
+
+    pub(super) fn on_claude_pane_turn_progress(&mut self, progress: ClaudePaneTurnProgress) {
+        if self.claude_panes.active_user_pane_id() != progress.pane_id {
+            return;
+        }
+        self.chat_widget.add_info_message(
+            progress.summary,
+            progress.hint.or_else(|| {
+                Some(format!(
+                    "elapsed={}ms; artifact: {}; audit: {}",
+                    progress.elapsed_ms,
+                    progress.artifact_path.display(),
+                    progress.audit_path.display()
+                ))
+            }),
+        );
     }
 
     pub(super) fn on_claude_pane_turn_finished(
@@ -2211,8 +3298,15 @@ impl App {
             if let Some(status) = pane.latest_turn_status {
                 description.push_str(&format!("; latest status: {}", status.label()));
             }
-            if let Some(usage) = pane.latest_usage_summary.as_deref() {
-                description.push_str(&format!("; latest usage: {usage}"));
+            if let Some(status) = pane.latest_usage_status {
+                match (status, pane.latest_usage_summary.as_deref()) {
+                    (ClaudePaneUsageStatus::Reported, Some(usage)) => {
+                        description.push_str(&format!("; latest usage: {usage}"));
+                    }
+                    _ => {
+                        description.push_str(&format!("; latest usage: {}", status.label()));
+                    }
+                }
             }
             if let Some(path) = pane.latest_audit_path.as_ref() {
                 description.push_str(&format!("; audit: {}", path.display()));
@@ -2307,6 +3401,7 @@ mod tests {
                 claude_session_id: None,
                 status: ClaudePaneStatus::Idle,
                 latest_usage_summary: None,
+                latest_usage_status: None,
                 latest_turn_status: None,
                 latest_audit_path: None,
                 artifact_dir,
@@ -2420,6 +3515,38 @@ mod tests {
     }
 
     #[test]
+    fn zero_usage_summary_is_untrusted_not_reported() {
+        assert_eq!(
+            usage_status_from_summary(Some(r#"{"input_tokens":0,"output_tokens":0}"#)),
+            ClaudePaneUsageStatus::Untrusted
+        );
+        assert_eq!(
+            usage_status_from_summary(Some(r#"{"input_tokens":10,"output_tokens":0}"#)),
+            ClaudePaneUsageStatus::Untrusted
+        );
+        assert_eq!(
+            usage_status_from_summary(Some(r#"{"input_tokens":10,"output_tokens":1}"#)),
+            ClaudePaneUsageStatus::Reported
+        );
+    }
+
+    #[test]
+    fn timeout_pause_failure_message_is_not_provider_error() {
+        let (dir, pane) = pane(ClaudeProviderProfileKind::ClaudePlan);
+        let plan = build_claude_command_plan(&pane, "hello".to_string(), dir.path()).expect("plan");
+        let output = failed_turn_output(
+            &plan,
+            150_000,
+            ClaudePaneTurnStatus::TimeoutPause,
+            Some("timeout".to_string()),
+            "local timeout".to_string(),
+        );
+
+        assert!(output.failure_message().contains("timed out locally"));
+        assert!(!output.failure_message().contains("provider error"));
+    }
+
+    #[test]
     fn prompt_from_user_turn_rejects_images() {
         let op = AppCommand::UserTurn {
             items: vec![UserInput::Image {
@@ -2514,12 +3641,14 @@ mod tests {
             status: ClaudePaneTurnStatus::Success,
             session_id: Some("11111111-2222-4333-8444-555555555555".to_string()),
             usage_summary: None,
+            usage_status: ClaudePaneUsageStatus::Missing,
             artifact_path: dir.path().join("turn-0001.jsonl"),
             audit_path: dir.path().join("turn-0001.audit.json"),
             duration_ms: 1,
             terminal_reason: None,
             error_summary: None,
             tool_names: Vec::new(),
+            tool_events: Vec::new(),
             command_mode: ClaudeCommandMode::NewSession,
         });
         registry.finish_turn(&pane_id, &result);
@@ -2544,12 +3673,17 @@ mod tests {
             status: ClaudePaneTurnStatus::MaxTurnsPause,
             session_id: Some("44444444-4444-4444-8444-444444444444".to_string()),
             usage_summary: Some(r#"{"input_tokens":10}"#.to_string()),
+            usage_status: ClaudePaneUsageStatus::Reported,
             artifact_path: dir.path().join("turn-0001.jsonl"),
             audit_path: dir.path().join("turn-0001.audit.json"),
             duration_ms: 10,
             terminal_reason: Some("max_turns".to_string()),
             error_summary: Some("Reached maximum number of turns (24)".to_string()),
             tool_names: vec!["Read".to_string()],
+            tool_events: vec![ClaudePaneToolEvent {
+                name: "Read".to_string(),
+                preview: r#"{"file_path":"README.md"}"#.to_string(),
+            }],
             command_mode: ClaudeCommandMode::NewSession,
         };
 
@@ -2578,11 +3712,51 @@ mod tests {
             "simulated provider failure".to_string(),
         );
 
-        write_turn_audit(&plan, &output).expect("write audit");
+        write_turn_audit(&plan, &output, 1, 2, Some(1)).expect("write audit");
         let audit = std::fs::read_to_string(&plan.audit_path).expect("read audit");
         assert!(audit.contains("simulated provider failure"));
         assert!(!audit.contains("this prompt must not be serialized"));
         assert!(!audit.contains("ambient-secret"));
+    }
+
+    #[test]
+    fn turn_audit_counts_tool_events_not_unique_tool_names() {
+        let (dir, pane) = pane(ClaudeProviderProfileKind::ClaudePlan);
+        let plan =
+            build_claude_command_plan(&pane, "review".to_string(), dir.path()).expect("plan");
+        let output = ClaudePaneTurnOutput {
+            text: "done".to_string(),
+            status: ClaudePaneTurnStatus::Success,
+            session_id: Some("11111111-2222-4333-8444-555555555555".to_string()),
+            usage_summary: None,
+            usage_status: ClaudePaneUsageStatus::Missing,
+            artifact_path: plan.artifact_path.clone(),
+            audit_path: plan.audit_path.clone(),
+            duration_ms: 10,
+            terminal_reason: None,
+            error_summary: None,
+            tool_names: vec!["Read".to_string(), "Bash".to_string()],
+            tool_events: vec![
+                ClaudePaneToolEvent {
+                    name: "Read".to_string(),
+                    preview: "{}".to_string(),
+                },
+                ClaudePaneToolEvent {
+                    name: "Read".to_string(),
+                    preview: "{}".to_string(),
+                },
+                ClaudePaneToolEvent {
+                    name: "Bash".to_string(),
+                    preview: "{}".to_string(),
+                },
+            ],
+            command_mode: ClaudeCommandMode::NewSession,
+        };
+
+        write_turn_audit(&plan, &output, 1, 2, Some(1)).expect("write audit");
+        let audit = std::fs::read_to_string(&plan.audit_path).expect("read audit");
+        let audit: Value = serde_json::from_str(&audit).expect("audit json");
+        assert_eq!(audit.get("tool_use_count").and_then(Value::as_u64), Some(3));
     }
 
     #[test]
@@ -2686,6 +3860,33 @@ mod tests {
     }
 
     #[test]
+    fn claude_tool_use_count_counts_prior_assistant_tool_calls() {
+        let request = json!({
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "toolu_1", "name": "Read"},
+                        {"type": "text", "text": "checking"}
+                    ]
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "toolu_2", "name": "Bash"}
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": "continue"
+                }
+            ]
+        });
+
+        assert_eq!(claude_tool_use_count(&request), 2);
+    }
+
+    #[test]
     fn ambient_tool_call_is_translated_to_anthropic_tool_use() {
         let upstream = json!({
             "choices": [{
@@ -2734,7 +3935,7 @@ mod tests {
             &codex_home,
         )
         .expect("first live plan");
-        let first = run_claude_command_plan(first_plan)
+        let first = run_claude_command_plan(first_plan, None)
             .await
             .expect("first live Claude turn");
         assert!(
@@ -2751,7 +3952,7 @@ mod tests {
             &codex_home,
         )
         .expect("second live plan");
-        let second = run_claude_command_plan(second_plan)
+        let second = run_claude_command_plan(second_plan, None)
             .await
             .expect("second live Claude turn");
         assert!(
@@ -2776,7 +3977,7 @@ mod tests {
             &codex_home,
         )
         .expect("tool-loop live plan");
-        let output = run_claude_command_plan(plan)
+        let output = run_claude_command_plan(plan, None)
             .await
             .expect("tool-loop live Claude turn");
         assert!(
@@ -2805,7 +4006,7 @@ mod tests {
             &codex_home,
         )
         .expect("review live plan");
-        let output = run_claude_command_plan(plan)
+        let output = run_claude_command_plan(plan, None)
             .await
             .expect("review live Claude turn");
         assert_eq!(output.status, ClaudePaneTurnStatus::Success);
@@ -2839,7 +4040,7 @@ mod tests {
             &codex_home,
         )
         .expect("edit live plan");
-        let output = run_claude_command_plan(plan)
+        let output = run_claude_command_plan(plan, None)
             .await
             .expect("edit live Claude turn");
         assert_eq!(output.status, ClaudePaneTurnStatus::Success);

@@ -160,6 +160,10 @@ pub(crate) enum AppEvent {
         pane_id: String,
         result: Result<crate::claude_panes::ClaudePaneTurnOutput, String>,
     },
+    /// A Claude Code headless pane emitted bounded live progress.
+    ClaudePaneTurnProgress {
+        progress: crate::claude_panes::ClaudePaneTurnProgress,
+    },
 
     /// Fork the current thread into a transient side conversation.
     StartSide {

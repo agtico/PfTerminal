@@ -142,6 +142,10 @@ enum Subcommand {
     #[clap(name = "claude-pane-smoke")]
     ClaudePaneSmoke(ClaudePaneSmokeCommand),
 
+    /// Run live Claude pane workflow checks and write a machine-readable report.
+    #[clap(name = "claude-pane-workflow-suite")]
+    ClaudePaneWorkflowSuite(ClaudePaneWorkflowSuiteCommand),
+
     /// Manage external MCP servers for Codex.
     Mcp(McpCli),
 
@@ -558,6 +562,28 @@ struct ClaudePaneSmokeCommand {
     providers: Vec<String>,
 
     /// Working directory for Claude pane smoke tasks.
+    #[arg(long, value_name = "DIR")]
+    cwd: Option<PathBuf>,
+}
+
+#[derive(Debug, Parser)]
+struct ClaudePaneWorkflowSuiteCommand {
+    #[clap(skip)]
+    config_overrides: CliConfigOverrides,
+
+    /// Comma-separated provider list: ambient,zai,baseten,openrouter,claude-plan.
+    #[arg(long, value_delimiter = ',', default_value = "ambient")]
+    providers: Vec<String>,
+
+    /// Comma-separated workflows: mock-website,numpy-pandas-benchmark,code-review,auditability.
+    #[arg(
+        long,
+        value_delimiter = ',',
+        default_value = "mock-website,numpy-pandas-benchmark,code-review,auditability"
+    )]
+    workflows: Vec<String>,
+
+    /// Working directory for repo-oriented Claude pane workflow tasks.
     #[arg(long, value_name = "DIR")]
     cwd: Option<PathBuf>,
 }
@@ -1467,6 +1493,18 @@ async fn cli_main(
             );
             run_claude_pane_smoke_command(smoke_cli).await?;
         }
+        Some(Subcommand::ClaudePaneWorkflowSuite(mut suite_cli)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "claude-pane-workflow-suite",
+            )?;
+            prepend_config_flags(
+                &mut suite_cli.config_overrides,
+                root_config_overrides.clone(),
+            );
+            run_claude_pane_workflow_suite_command(suite_cli).await?;
+        }
         Some(Subcommand::Completion(completion_cli)) => {
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
@@ -2187,6 +2225,58 @@ async fn run_claude_pane_smoke_command(command: ClaudePaneSmokeCommand) -> anyho
     Ok(())
 }
 
+async fn run_claude_pane_workflow_suite_command(
+    command: ClaudePaneWorkflowSuiteCommand,
+) -> anyhow::Result<()> {
+    let cli_kv_overrides = command
+        .config_overrides
+        .parse_overrides()
+        .map_err(anyhow::Error::msg)?;
+    let config = ConfigBuilder::default()
+        .cli_overrides(cli_kv_overrides)
+        .build()
+        .await?;
+    let cwd = command.cwd.unwrap_or_else(|| config.cwd.to_path_buf());
+    let report = codex_tui::claude_panes::run_claude_pane_workflow_suite(
+        codex_tui::claude_panes::ClaudePaneWorkflowOptions {
+            codex_home: config.codex_home.to_path_buf(),
+            cwd,
+            providers: command.providers,
+            workflows: command.workflows,
+        },
+    )
+    .await?;
+    writeln!(std::io::stdout(), "{}", report.summary)?;
+    for entry in &report.entries {
+        let profile = entry.profile.as_deref().unwrap_or("unknown profile");
+        let error = entry
+            .error
+            .as_deref()
+            .map(|error| format!(" - {error}"))
+            .unwrap_or_default();
+        writeln!(
+            std::io::stdout(),
+            "{} / {}: {} ({profile}){error}",
+            entry.provider,
+            entry.workflow,
+            entry.status
+        )?;
+        if let Some(audit_path) = entry.audit_path.as_ref() {
+            writeln!(std::io::stdout(), "  audit: {}", audit_path.display())?;
+        }
+        if let Some(artifact_path) = entry.artifact_path.as_ref() {
+            writeln!(std::io::stdout(), "  artifact: {}", artifact_path.display())?;
+        }
+    }
+    if !report.passed {
+        anyhow::bail!(
+            "Claude pane workflow suite failed; report: {}",
+            report.report_path.display()
+        );
+    }
+    Ok(())
+}
+
 fn provider_vault_label_allowed_for_auth_helper(label: &str) -> bool {
     matches!(
         label,
@@ -2280,6 +2370,7 @@ fn unsupported_subcommand_name_for_strict_config(
         Some(Subcommand::Logout(_)) => Some("logout"),
         Some(Subcommand::Vault(_)) => Some("vault"),
         Some(Subcommand::ClaudePaneSmoke(_)) => Some("claude-pane-smoke"),
+        Some(Subcommand::ClaudePaneWorkflowSuite(_)) => Some("claude-pane-workflow-suite"),
         Some(Subcommand::Completion(_)) => Some("completion"),
         Some(Subcommand::Update) => Some("update"),
         Some(Subcommand::Cloud(_)) => Some("cloud"),
@@ -3013,6 +3104,29 @@ mod tests {
         };
 
         assert_eq!(command.providers, vec!["ambient", "zai"]);
+        assert_eq!(command.cwd.as_deref(), Some(std::path::Path::new("/tmp")));
+    }
+
+    #[test]
+    fn claude_pane_workflow_suite_parses_provider_and_workflow_lists() {
+        let cli = MultitoolCli::try_parse_from([
+            "codex",
+            "claude-pane-workflow-suite",
+            "--providers",
+            "ambient,zai",
+            "--workflows",
+            "mock-website,code-review",
+            "--cwd",
+            "/tmp",
+        ])
+        .expect("parse");
+
+        let Some(Subcommand::ClaudePaneWorkflowSuite(command)) = cli.subcommand else {
+            panic!("expected claude-pane-workflow-suite subcommand");
+        };
+
+        assert_eq!(command.providers, vec!["ambient", "zai"]);
+        assert_eq!(command.workflows, vec!["mock-website", "code-review"]);
         assert_eq!(command.cwd.as_deref(), Some(std::path::Path::new("/tmp")));
     }
 

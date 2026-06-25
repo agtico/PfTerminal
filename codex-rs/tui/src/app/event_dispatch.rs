@@ -1935,6 +1935,9 @@ impl App {
             AppEvent::ClaudePaneTurnFinished { pane_id, result } => {
                 self.on_claude_pane_turn_finished(pane_id, result);
             }
+            AppEvent::ClaudePaneTurnProgress { progress } => {
+                self.on_claude_pane_turn_progress(progress);
+            }
             AppEvent::StartSide {
                 parent_thread_id,
                 user_message,

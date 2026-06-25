@@ -1,241 +1,338 @@
-# Claude Code Integration Completion Spec
+# Claude Code Pane Completion Spec
 
-Status: implemented and verified for the current PFTerminal pane path.
+Status: Ambient provider complete; Z.AI, Baseten, OpenRouter, and Claude Plan
+profiles remain experimental until their workflow suites pass.
 
-This document defines the completion bar for the Claude Code integration in
-PFTerminal. The current Ambient-backed headless pane proves that `claude -p`
-can be launched and that one local bridge path can carry a simple tool loop.
-That is not enough to call the feature complete.
+## Hard Completion Bar
 
-## Problem Statement
+Claude panes are not done until the actual `/panes` user experience can do all
+of this without operator debugging:
 
-The earlier implementation failed the product expectation in four concrete
-ways:
+- [x] Create a mock website in a disposable directory and verify the resulting
+  files.
+- [x] Run a concrete NumPy vs Pandas benchmark and output a readable result
+  table.
+- [x] Conduct a substantive code review on a local PFTerminal-owned repo.
+- [x] Expose turn-by-turn progress and audit records so a long run is never a
+  silent black box.
 
-- It has not been tested across the provider set exposed in the UI.
-- It can hit `error_max_turns` after one apparently simple request, which means
-  it cannot yet be trusted for substantive Claude Code work.
-- It does not give the user a useful per-turn audit trail inside the UX.
-- It was shipped with too little cross-sectional testing, so a user found a
-  runtime failure immediately after login.
+These are product acceptance tests. A helper command, one-turn smoke response,
+or raw artifact path is not enough.
 
-Completion means a user can open `/panes`, create or select a Claude Code pane,
-send normal coding/review prompts, see what happened, and continue the
-conversation without debugging provider plumbing.
+This is the completion spec for wrapped Claude Code panes in PFTerminal. The
+Ambient profile now passes the required workflow suite and the actual `/panes`
+TUI path. The other provider profiles are still intentionally labeled
+experimental until they pass the same workflow suite.
 
-## Completion Gates
+Passing smoke tests is not sufficient. "Done" means the interactive `/panes`
+workflow can perform real work repeatedly, with visible progress and useful
+turn-by-turn auditability.
 
-The feature is not complete unless every gate below has current evidence.
+## Definition Of Done
 
-- [x] Provider matrix tested through the same pane backend used by `/panes`,
-  not only through isolated curls.
-- [x] Multi-turn pane sessions work for substantive tasks, not only marker
-  recall.
-- [x] Claude Code tool loops can perform real repo work without terminating at
-  `error_max_turns` under normal prompts.
-- [x] Turn artifacts are visible and inspectable from the UI.
-- [x] Every turn has a bounded audit record: provider, model, pane id, session
-  id, command shape, artifact path, duration, usage, terminal reason, and
-  whether tools were used.
-- [x] Provider errors render as actionable pane messages, not raw or misleading
-  success text.
-- [x] Failed turns preserve enough diagnostic evidence to debug without leaking
-  secrets into chat history or artifacts.
-- [x] Regression tests cover success, provider failure, max-turn failure,
-  multi-turn resume, and artifact parsing.
-- [x] A live smoke script can be run by maintainers before release and records
-  its results in one place.
+Claude panes are complete for a provider profile only when all four workflows
+below pass through the same pane backend used by `/panes`, and the actual TUI
+can create that pane, route a turn, and expose artifact/audit paths.
 
-## Provider Matrix
+- [x] **Mock website creation:** create a small mock website in a disposable
+  fixture directory, including HTML/CSS/JS or the repo-native equivalent, then
+  verify the files exist and contain the expected content.
+- [x] **Benchmark task:** run a discrete NumPy vs Pandas benchmark, capture the
+  benchmark command, and render a result table with timings and a short
+  interpretation.
+- [x] **Code review task:** conduct a code review on one PFTerminal-owned repo
+  from a Claude pane and return findings with file references. This must pass
+  in a fresh pane and in a resumed pane.
+- [x] **Turn auditability:** every turn must expose enough status to know what
+  Claude is doing while it runs, what tools it used, what it produced, and why
+  it stopped. A 15-minute silent run is a failure.
 
-Each provider profile exposed in `/panes` must be tested through the actual
-PFTerminal pane path.
+## Current Evidence
 
-| Provider pane | Required credential | Required result |
-| --- | --- | --- |
-| Claude Code - GLM 5.2 Ambient | `provider/ambient_api_key` | Create pane, run a tool loop, continue the same session, render audit. |
-| Claude Code - GLM 5.2 Z.AI | `provider/zai_api_key` | Create pane or fail with a precise provider error; no hang, no false success. |
-| Claude Code - GLM 5.2 Baseten | `provider/baseten_api_key` | Create pane or fail with a precise provider error; no hang, no false success. |
-| Claude Code - OpenRouter | `provider/openrouter_api_key` | Create pane or fail with a precise provider error; no hang, no false success. |
-| Claude Code - Claude Plan | Claude's native auth | Create pane using native Claude auth, or clearly explain missing native auth. |
+Verified on June 25, 2026 with the Ambient profile:
 
-If a provider cannot support Claude Code headless today, the UI must mark that
-profile unavailable or experimental instead of presenting it as working.
+- Workflow report:
+  `/home/postfiat/.pfterminal/panes/workflow-reports/claude-pane-workflow-suite-1782399985.json`
+- Summary: `Claude pane workflow suite: 4 passed, 4 checked`.
+- Mock website audit:
+  `/home/postfiat/.pfterminal/panes/claude-00f079fc-f1b5-4829-87b0-e254732e980d/turn-0001.audit.json`
+- NumPy/Pandas benchmark audit:
+  `/home/postfiat/.pfterminal/panes/claude-71832356-e5b6-4568-8839-285865700735/turn-0001.audit.json`
+- Code review resumed-turn audit:
+  `/home/postfiat/.pfterminal/panes/claude-aa5e5aa9-afb9-42f8-8fe6-6999cf39e120/turn-0002.audit.json`
+- Auditability multi-turn audit:
+  `/home/postfiat/.pfterminal/panes/claude-6a9192e8-4a10-4c0e-88bb-ea7d9f6397b5/turn-0003.audit.json`
+- Actual TUI `/panes` smoke:
+  `/home/postfiat/.pfterminal/panes/claude-83ff79a4-b960-49c8-b8bf-8dc949ef18f2/turn-0001.audit.json`
+  showed `status=success`, `usage_status=untrusted`, immediate artifact/audit
+  paths, and the visible marker `PFT_TUI_USAGE_OK`.
 
-Current provider smoke result:
+Important implementation guardrail: the Ambient bridge now enforces a local
+3-tool-call budget per Claude pane turn. The failed runs showed that larger
+tool histories could push GLM-backed Claude Code into API retry loops during
+code review. After three tool calls, the bridge removes tools from the upstream
+request and instructs Claude to produce a final answer using gathered evidence.
 
-```text
-Claude pane smoke: 5 passed, 5 checked
-report: /home/postfiat/.pfterminal/panes/smoke-reports/claude-pane-smoke-1782391716.json
+## Repeated Failures This Spec Must Prevent
 
-ambient: passed
-zai: passed
-baseten: passed
-openrouter: passed
-claude-plan: passed
-```
+The following failures already happened and are now explicit release blockers:
 
-## Substantive Work Tests
+- I treated a narrow smoke runner as proof of product readiness.
+- I called the work complete while `pfterminal-ci` was still running.
+- I shipped a pane path that could return one trivial response but failed on
+  substantive Claude Code work.
+- I did not test the same workflows across the intended provider profiles before
+  presenting the implementation as complete.
+- A real resumed code-review prompt timed out after one user test.
+- The timeout was labeled as a provider error even though the product problem
+  was the pane runner's inability to handle long Claude work transparently.
+- The audit rendered `input_tokens=0` and `output_tokens=0` as if that were
+  trustworthy usage data.
+- The UI exposed artifact paths but did not provide enough live progress,
+  tool-step visibility, or turn summaries for the user to understand what was
+  happening.
+- Tests proved plumbing, not the actual user workflows.
+- The completion report overstated success by counting shallow pass/fail checks
+  while the real `/panes` UX still failed a basic code-review prompt.
 
-Marker prompts are useful as a smoke test, but they do not prove the feature.
-The completion suite must include prompts that force Claude Code to perform
-real work:
+The corrective principle is simple: do not claim parity with Claude Code until
+PFTerminal can demonstrate comparable multi-turn work through its own pane UI.
 
-- Read-only code review of a target file or directory.
-- Repository survey that uses at least one filesystem tool and returns a
-  structured summary.
-- Small edit task in a disposable fixture repo, followed by a diff assertion.
-- Multi-turn continuation where the second prompt depends on files or facts
-  discovered in the first turn.
-- Failure-path prompt that intentionally exceeds a turn budget and verifies the
-  UX reports max-turn termination as incomplete work.
+## Product Requirements
 
-The observed failure:
+### Pane UX
 
-```text
-Claude returned an error result: error_max_turns;
-terminal_reason=max_turns; Reached maximum number of turns (8)
-```
+- `/panes` must show user panes and agent panes separately.
+- Selecting a Claude pane must make new user prompts route to Claude until the
+  user switches away.
+- The active footer/status line must clearly show that the active pane is
+  Claude, including provider/model when space allows.
+- Creating a pane must fail early with a clear missing-credential message when
+  the required vault key is absent.
+- Provider profiles that have not passed the workflow suite must be labeled
+  experimental or unavailable.
 
-is a blocking bug until the pane can either finish normal coding prompts or
-clearly ask the user to continue the same pane without losing context.
+### Long-Running Turn Transparency
 
-Current result:
+During a Claude turn, PFTerminal must show bounded live progress. At minimum:
 
-- Claude pane max turns were raised from 8 to 24 for normal pane work.
-- `error_max_turns` is parsed as `max-turn-pause`, not a fake success and not
-  an opaque string error.
-- The pane preserves the Claude session id and tells the user to type
-  `continue` in the same pane to resume.
-- A live Ambient code-review test passed against
-  `codex-rs/tui/src/claude_panes.rs`.
-- A live Ambient disposable edit test passed and asserted the fixture file was
-  actually changed.
+- elapsed time;
+- current phase: starting Claude, waiting for provider, tool call, tool result,
+  assistant response, audit write, or timeout handling;
+- last tool name and a bounded preview of its input/result;
+- artifact path and audit path as soon as they are known;
+- whether the run is first turn or resumed session.
 
-## Max-Turn Policy
+The UI must not sit for minutes with only a generic spinner.
 
-`--max-turns 8` is a guardrail, not a product answer.
+### Audit Record
 
-The pane backend must distinguish:
+Every turn must write and surface an audit record with:
 
-- successful completion;
-- provider failure;
-- permission/tool failure;
-- max-turn pause with resumable state;
-- max-turn failure where no useful answer was produced.
-
-For max-turn pause, the UI should keep the pane active and offer a visible
-continue action. It must not render the turn as successful if Claude returned
-`error_max_turns`.
-
-## Auditability Requirements
-
-Every Claude pane turn must produce an audit card or equivalent inspectable
-record in the PFTerminal UI.
-
-Minimum fields:
-
-- pane name and pane id;
+- pane id and pane title;
 - provider profile and model;
 - Claude session id;
 - turn number;
-- start time, end time, duration;
-- command mode (`--session-id` or `--resume`);
-- max-turn setting;
-- artifact path;
+- command mode: new session or resume;
+- max-turn setting and wall-clock timeout setting;
+- start time, last-progress time, end time, and duration;
+- artifact path and audit path;
 - stream-json parse status;
-- tool-use count and tool names;
-- usage fields reported by Claude;
+- tool-call count, tool names, and bounded previews;
+- usage values when known;
+- explicit `usage_status`: `reported`, `missing`, `unknown`, or `untrusted`;
 - terminal reason;
-- final result status: success, provider error, max-turn pause, max-turn
-  failure, or parse failure.
+- final result status: success, max-turn pause, timeout pause, provider error,
+  permission/tool error, parse failure, or user interrupt.
 
-The raw JSONL artifact may remain on disk, but the user must not have to hunt
-for it manually after an error. The UI should expose the artifact path and a
-short summary.
+If usage is missing or zero because the provider did not report it, the UI must
+say that. It must not imply that a real Claude turn consumed zero tokens.
 
-Current result: every Claude pane turn writes `turn-NNNN.jsonl` plus
-`turn-NNNN.audit.json`, and the UI completion/error message includes both
-paths. The latest audit path is also included in the `/panes` picker metadata.
+### Timeout And Resume Policy
 
-## Secret Handling
+A timeout is not automatically a provider error.
 
-Provider secrets must remain vault-owned.
+The pane backend must distinguish:
 
-- Pane settings may use `apiKeyHelper`.
-- Raw provider keys must not be written into pane settings, command arguments,
-  chat history, JSONL artifacts, logs, or docs.
-- Tests must assert that a revealed provider key is absent from pane settings
-  and turn artifacts.
+- provider returned an error;
+- Claude hit max turns but has a resumable session;
+- PFTerminal wall-clock timeout fired while Claude may still be working;
+- Claude produced partial useful output;
+- no useful output was produced.
 
-## UX Requirements
+For max-turn or timeout pauses, the pane must remain resumable and the UI must
+offer a clear continue action. If the turn cannot be resumed safely, the UI must
+say so and point to the audit record.
 
-The user-facing behavior must feel like a PFTerminal pane, not a pasted subprocess
-log.
+### Secret Handling
 
-- `/panes` shows user panes and agent panes separately.
-- Selecting a Claude pane changes the active footer label.
-- User prompts route to the active Claude pane until the user switches away.
-- Successful turns render assistant output in normal history.
-- Failed turns render a concise error with provider, terminal reason, and next
-  action.
-- Audit details are accessible from the turn, not buried only in files.
-- The user can continue a paused/max-turn pane without reselecting credentials.
+- Provider keys must remain vault-owned.
+- Raw provider keys must not be written to settings files, command arguments,
+  artifacts, audit files, chat history, logs, or docs.
+- Tests must check artifact and audit files for absence of the active provider
+  secret.
 
-## Required Test Commands
+## Mandatory Workflow Tests
 
-Before claiming completion, run and record:
+These tests must run through the same code path as `/panes`. A helper may drive
+the pane programmatically, but it must use the pane registry, command planner,
+Claude invocation, artifact writer, audit writer, and result renderer.
+
+For each workflow, run a live Claude Code TUI baseline first when practical, then
+run the matching PFTerminal `/panes` workflow. The result does not need to be
+byte-identical, but it must be comparable in capability: it should perform the
+same class of work, expose useful progress, and leave inspectable artifacts.
+
+Record the comparison for every workflow:
+
+- live Claude Code command or prompt;
+- PFTerminal `/panes` provider profile;
+- PFTerminal prompt;
+- pass/fail result;
+- artifact path;
+- audit path;
+- observed gap, if any.
+
+### 1. Mock Website Creation
+
+Fixture:
+
+- create a temporary empty directory;
+- create a Claude pane rooted in that directory;
+- prompt Claude to build a mock website for a simple product page;
+- require at least `index.html` and one styling/script asset unless the chosen
+  stack has a repo-native equivalent.
+
+Pass criteria:
+
+- files are created in the fixture directory;
+- content includes the requested product name and at least one interactive or
+  styled element;
+- audit shows tool use and final success;
+- no timeout or max-turn pause.
+
+### 2. NumPy vs Pandas Benchmark
+
+Fixture:
+
+- create a temporary Python script or notebook-equivalent in a disposable
+  directory;
+- benchmark one concrete task, such as filtering and aggregating one million
+  rows of numeric data;
+- run both NumPy and Pandas implementations.
+
+Pass criteria:
+
+- Claude runs the benchmark command;
+- output includes a markdown table with at least implementation, mean time,
+  fastest run, and notes;
+- artifact captures the command output;
+- audit shows the command/tool used;
+- if Python dependencies are missing, the pane reports a clear environment
+  failure rather than hanging.
+
+### 3. Code Review
+
+Fixture:
+
+- run against one of the local repos, for example
+  `/home/postfiat/repos/PfTerminal` or `/home/postfiat/repos/StakeHub`;
+- use a realistic prompt: "do a code review of this implementation" with a
+  file or subsystem target;
+- run once in a fresh pane and once in a resumed pane.
+
+Pass criteria:
+
+- review completes without timeout;
+- output includes concrete findings or "no findings" with file references;
+- audit shows file-reading/tool activity;
+- resumed-pane review does not lose context;
+- the result is visible in the TUI, not only in a JSONL file.
+
+### 4. Turn-By-Turn Auditability
+
+Fixture:
+
+- run a multi-turn Claude pane session with at least three turns;
+- include one long-running turn and one failure-path turn.
+
+Pass criteria:
+
+- every turn has a visible summary in the UI;
+- every turn has a valid audit JSON file;
+- audit entries can be opened from the UI path shown to the user;
+- long-running turns update progress at least every 30 seconds;
+- failed turns show status and next action, not just "provider error."
+
+## Provider Matrix
+
+Each supported provider must run the workflow suite or be explicitly marked as
+experimental.
+
+| Provider pane | Required credential | Required evidence |
+| --- | --- | --- |
+| Claude Code - GLM 5.2 Ambient | `provider/ambient_api_key` | All four workflows pass through `/panes`. |
+| Claude Code - GLM 5.2 Z.AI | `provider/zai_api_key` | All four workflows pass or profile is marked experimental. |
+| Claude Code - GLM 5.2 Baseten | `provider/baseten_api_key` | All four workflows pass or profile is marked experimental. |
+| Claude Code - OpenRouter | `provider/openrouter_api_key` | All four workflows pass or profile is marked experimental. |
+| Claude Code - Claude Plan | Claude native auth | All four workflows pass or profile is marked unavailable. |
+
+## Required Commands
+
+Before completion can be claimed, run and record fresh output for:
 
 ```bash
-cargo test -p codex-tui claude_panes
-
-PFTERMINAL_LIVE_CODEX_HOME=/home/postfiat/.pfterminal \
-  cargo test -p codex-tui claude_panes::tests::live_ambient_bridge_runs_claude_headless_for_two_turns -- --ignored --nocapture
-
-PFTERMINAL_LIVE_CODEX_HOME=/home/postfiat/.pfterminal \
-  cargo test -p codex-tui claude_panes::tests::live_ambient_bridge_runs_claude_tool_loop -- --ignored --nocapture
-
+cargo test -p codex-tui claude_panes --no-fail-fast
+cargo test -p codex-cli claude_pane_smoke_parses_provider_list
 cargo clippy -p codex-tui -p codex-cli --tests
 cargo build -p codex-cli --bin pfterminal
 .venv-docs/bin/mkdocs build --strict
 ```
 
-Add a live matrix runner before release:
+Live workflow runner required before release:
 
 ```bash
-pfterminal claude-pane-smoke --providers ambient,zai,baseten,openrouter,claude-plan
+pfterminal claude-pane-workflow-suite \
+  --providers ambient,zai,baseten,openrouter,claude-plan \
+  --workflows mock-website,numpy-pandas-benchmark,code-review,auditability \
+  --cwd /home/postfiat/repos/PfTerminal
 ```
 
-That runner should create a machine-readable report under
-`$CODEX_HOME/panes/smoke-reports/` and a human-readable summary that can be
-pasted into the sprint doc.
+The runner must write:
 
-Additional live tests now required and passing:
+- machine-readable report under `$CODEX_HOME/panes/workflow-reports/`;
+- human-readable summary with pass/fail per provider and workflow;
+- paths to every artifact and audit file;
+- exact command lines used for benchmarks and builds.
 
-```bash
-PFTERMINAL_LIVE_CODEX_HOME=/home/postfiat/.pfterminal \
-  cargo test -p codex-tui claude_panes::tests::live_ambient_bridge_runs_substantive_code_review -- --ignored --nocapture
+## CI Gate
 
-PFTERMINAL_LIVE_CODEX_HOME=/home/postfiat/.pfterminal \
-  cargo test -p codex-tui claude_panes::tests::live_ambient_bridge_runs_disposable_edit_task -- --ignored --nocapture
-```
+Do not call the feature complete while GitHub CI is still running.
+
+Completion requires:
+
+- latest pushed commit equals local `HEAD`;
+- worktree is clean;
+- Codespell passes;
+- cargo-deny passes;
+- `pfterminal-ci` passes or the specific failure is understood, documented,
+  and unrelated to this work;
+- no failing check is dismissed as "still running."
 
 ## Release Rule
 
-Do not call the Claude Code integration complete unless:
+The Claude pane integration is not done until a user can open `/panes` and run
+the four mandatory workflows without debugging Claude, providers, artifacts,
+or PFTerminal internals.
 
-- every supported provider profile is either verified working or explicitly
-  marked unavailable/experimental in the UI;
-- at least one provider completes a substantive repo task through `/panes`;
-- max-turn behavior is resumable and accurately rendered;
-- turn audit records are visible from the UX;
-- all required tests and live smoke checks have fresh passing output.
+Any claim of completion must include:
 
-Current completion evidence:
-
-- `cargo test -p codex-tui claude_panes --no-fail-fast`: 16 passed, 4 ignored.
-- Live Ambient two-turn resume test: passed.
-- Live Ambient tool-loop test: passed.
-- Live Ambient substantive code-review test: passed.
-- Live Ambient disposable edit test: passed.
-- `pfterminal claude-pane-smoke --providers ambient,zai,baseten,openrouter,claude-plan --cwd /home/postfiat/repos/PfTerminal`: 5 passed, 5 checked.
+- commit hash;
+- CI status;
+- workflow-suite report path;
+- provider matrix result;
+- mock website artifact path;
+- NumPy vs Pandas benchmark table path;
+- code-review output path;
+- auditability report path;
+- known limitations that remain visible in the UI.
