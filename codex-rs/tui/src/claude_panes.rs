@@ -4713,7 +4713,7 @@ impl App {
         items.push(section_item("New Pane"));
         items.extend(new_pane_items());
         items.push(section_item("Agent Panes"));
-        items.extend(self.spawn_tree_items());
+        items.extend(self.spawn_tree_items(/*show_task_actions*/ false));
 
         self.chat_widget.show_selection_view(SelectionViewParams {
             title: Some("Panes".to_string()),

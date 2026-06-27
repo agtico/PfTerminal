@@ -1301,7 +1301,7 @@ async fn spawn_status_shows_orc_task_preview_from_troll_activity() {
             is_running_hint: true,
         });
 
-    let status_items = app.spawn_tree_items();
+    let status_items = app.spawn_tree_items(/*show_task_actions*/ true);
     assert!(status_items.iter().any(|item| {
         item.name.contains("Snaga [orc]")
             && item
@@ -1309,6 +1309,66 @@ async fn spawn_status_shows_orc_task_preview_from_troll_activity() {
                 .as_deref()
                 .is_some_and(|description| description.contains("build the animated website shell"))
     }));
+}
+
+#[tokio::test]
+async fn pane_spawn_tree_hides_task_actions() {
+    let mut app = make_test_app().await;
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000228").expect("valid thread id");
+    let troll_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000229").expect("valid thread id");
+    let orc_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000230").expect("valid thread id");
+
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(main_thread_id);
+    app.upsert_agent_picker_thread(
+        troll_thread_id,
+        Some("Burzum".to_string()),
+        Some("troll".to_string()),
+        /*is_closed*/ false,
+    );
+    app.upsert_agent_picker_thread(
+        orc_thread_id,
+        Some("Snaga".to_string()),
+        Some("orc".to_string()),
+        /*is_closed*/ false,
+    );
+    app.spawn_parent_by_thread
+        .insert(troll_thread_id, main_thread_id);
+    app.spawn_parent_by_thread
+        .insert(orc_thread_id, troll_thread_id);
+
+    let pane_items = app.spawn_tree_items(/*show_task_actions*/ false);
+    assert!(
+        pane_items
+            .iter()
+            .any(|item| item.name.contains("Burzum [troll]"))
+    );
+    assert!(
+        pane_items
+            .iter()
+            .any(|item| item.name.contains("Snaga [orc]"))
+    );
+    assert!(
+        pane_items
+            .iter()
+            .all(|item| !item.name.contains("Send task to")),
+        "/panes should only switch panes, not show dispatch actions"
+    );
+
+    let status_items = app.spawn_tree_items(/*show_task_actions*/ true);
+    assert!(
+        status_items
+            .iter()
+            .any(|item| item.name.contains("Send task to Burzum [troll]"))
+    );
+    assert!(
+        status_items
+            .iter()
+            .any(|item| item.name.contains("Send task to Snaga [orc]"))
+    );
 }
 
 #[tokio::test]
@@ -1463,7 +1523,7 @@ async fn spawn_status_preserves_orc_activity_when_name_arrives_later() {
         Some("build the animated website shell")
     );
 
-    let status_items = app.spawn_tree_items();
+    let status_items = app.spawn_tree_items(/*show_task_actions*/ true);
     assert!(status_items.iter().any(|item| {
         item.name.contains("Snaga [orc]")
             && item.description.as_deref().is_some_and(|description| {
@@ -1537,7 +1597,7 @@ async fn native_spawn_turn_completion_updates_status_and_result_preview() {
         entry.last_result_message.as_deref(),
         Some("Created the missing components and npm run build passed cleanly.")
     );
-    let status_items = app.spawn_tree_items();
+    let status_items = app.spawn_tree_items(/*show_task_actions*/ true);
     assert!(status_items.iter().any(|item| {
         item.name.contains("Snaga [orc]")
             && item.description.as_deref().is_some_and(|description| {
@@ -1598,7 +1658,7 @@ async fn enqueued_native_spawn_turn_completion_updates_status_before_replay() {
         Some("Wrote /tmp/pfterminal-spawn-status-proof.txt and verified it.")
     );
 
-    let status_items = app.spawn_tree_items();
+    let status_items = app.spawn_tree_items(/*show_task_actions*/ true);
     assert!(status_items.iter().any(|item| {
         item.name.contains("Snaga [orc]")
             && item.description.as_deref().is_some_and(|description| {
@@ -1654,7 +1714,7 @@ async fn native_spawn_turn_interrupt_updates_status_without_closing_app() {
         .expect("orc should stay in picker");
     assert!(!entry.is_running);
 
-    let status_items = app.spawn_tree_items();
+    let status_items = app.spawn_tree_items(/*show_task_actions*/ true);
     assert!(status_items.iter().any(|item| {
         item.name.contains("Ghash [orc]")
             && item.description.as_deref().is_some_and(|description| {
@@ -1839,7 +1899,7 @@ fn spawn_app_path_creates_troll_with_two_named_orcs() -> Result<()> {
         assert!(demo_prompt.contains("Send both Orcs work in parallel"));
         assert!(demo_prompt.contains("last_result_message"));
 
-        let status_items = app.spawn_tree_items();
+        let status_items = app.spawn_tree_items(/*show_task_actions*/ true);
         assert!(
             status_items.iter().any(|item| item
                 .name

@@ -387,7 +387,7 @@ impl App {
             title: Some("Spawn Status".to_string()),
             subtitle: Some("Nazgul -> Troll -> Orc hierarchy.".to_string()),
             footer_hint: Some(standard_popup_hint_line()),
-            items: self.spawn_tree_items(),
+            items: self.spawn_tree_items(/*show_task_actions*/ true),
             is_searchable: true,
             search_placeholder: Some("Search spawned work".to_string()),
             ..Default::default()
@@ -883,7 +883,7 @@ impl App {
         channel.set_session(started.session, started.turns).await;
     }
 
-    pub(crate) fn spawn_tree_items(&self) -> Vec<SelectionItem> {
+    pub(crate) fn spawn_tree_items(&self, show_task_actions: bool) -> Vec<SelectionItem> {
         let mut items = Vec::new();
         items.push(section_item("Nazgul"));
         let bound_pane_id = self
@@ -914,10 +914,12 @@ impl App {
         }
         for (troll_thread_id, troll_entry) in trolls {
             items.push(self.spawn_agent_item(troll_thread_id, troll_entry, 0, Some(TROLL_ROLE)));
-            items.push(self.spawn_agent_task_item(troll_thread_id, troll_entry, 2));
+            if show_task_actions {
+                items.push(self.spawn_agent_task_item(troll_thread_id, troll_entry, 2));
+            }
             let troll_node_id = thread_node_id(troll_thread_id);
             let (orcs, claude_orcs) = self.spawn_orc_children_for_node(&troll_node_id);
-            if orcs.len() + claude_orcs.len() >= 2 {
+            if show_task_actions && orcs.len() + claude_orcs.len() >= 2 {
                 items.push(self.spawn_demo_task_item(troll_thread_id, 2));
             }
             if orcs.is_empty() && claude_orcs.is_empty() {
@@ -925,28 +927,38 @@ impl App {
             }
             for (orc_thread_id, orc_entry) in orcs {
                 items.push(self.spawn_agent_item(orc_thread_id, orc_entry, 2, Some(ORC_ROLE)));
-                items.push(self.spawn_agent_task_item(orc_thread_id, orc_entry, 4));
+                if show_task_actions {
+                    items.push(self.spawn_agent_task_item(orc_thread_id, orc_entry, 4));
+                }
             }
             for pane in claude_orcs {
                 items.push(self.claude_spawn_pane_item(pane, 2));
-                items.push(self.claude_spawn_pane_task_item(pane, 4));
+                if show_task_actions {
+                    items.push(self.claude_spawn_pane_task_item(pane, 4));
+                }
             }
         }
         for pane in claude_trolls {
             let troll_node_id = pane_node_id(&pane.id);
             items.push(self.claude_spawn_pane_item(pane, 0));
-            items.push(self.claude_spawn_pane_task_item(pane, 2));
+            if show_task_actions {
+                items.push(self.claude_spawn_pane_task_item(pane, 2));
+            }
             let (orcs, claude_orcs) = self.spawn_orc_children_for_node(&troll_node_id);
             if orcs.is_empty() && claude_orcs.is_empty() {
                 items.push(disabled_item("  No Orcs for this Troll yet"));
             }
             for (orc_thread_id, orc_entry) in orcs {
                 items.push(self.spawn_agent_item(orc_thread_id, orc_entry, 2, Some(ORC_ROLE)));
-                items.push(self.spawn_agent_task_item(orc_thread_id, orc_entry, 4));
+                if show_task_actions {
+                    items.push(self.spawn_agent_task_item(orc_thread_id, orc_entry, 4));
+                }
             }
             for pane in claude_orcs {
                 items.push(self.claude_spawn_pane_item(pane, 2));
-                items.push(self.claude_spawn_pane_task_item(pane, 4));
+                if show_task_actions {
+                    items.push(self.claude_spawn_pane_task_item(pane, 4));
+                }
             }
         }
 
@@ -955,11 +967,15 @@ impl App {
             items.push(section_item("Unassigned Orcs"));
             for (thread_id, entry) in orphan_orcs {
                 items.push(self.spawn_agent_item(thread_id, entry, 0, Some(ORC_ROLE)));
-                items.push(self.spawn_agent_task_item(thread_id, entry, 2));
+                if show_task_actions {
+                    items.push(self.spawn_agent_task_item(thread_id, entry, 2));
+                }
             }
             for pane in claude_orcs {
                 items.push(self.claude_spawn_pane_item(pane, 0));
-                items.push(self.claude_spawn_pane_task_item(pane, 2));
+                if show_task_actions {
+                    items.push(self.claude_spawn_pane_task_item(pane, 2));
+                }
             }
         }
 
