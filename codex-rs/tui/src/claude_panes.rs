@@ -312,6 +312,7 @@ struct ClaudePaneLiveTurn {
     phase: String,
     thinking_tokens: Option<String>,
     assistant_commentary_buffer: String,
+    assistant_transcript_emitted: String,
     assistant_blurbs: Vec<String>,
     reasoning_blurbs: Vec<String>,
     tool_blurbs: Vec<String>,
@@ -333,6 +334,7 @@ impl ClaudePaneLiveTurn {
             phase: "starting".to_string(),
             thinking_tokens: None,
             assistant_commentary_buffer: String::new(),
+            assistant_transcript_emitted: String::new(),
             assistant_blurbs: Vec::new(),
             reasoning_blurbs: Vec::new(),
             tool_blurbs: Vec::new(),
@@ -352,7 +354,7 @@ impl ClaudePaneLiveTurn {
                         assistant_update_blurbs_from_buffer(&self.assistant_commentary_buffer);
                 }
                 if let Some(update) = self.assistant_blurbs.last() {
-                    self.current = format!("Claude: {update}");
+                    self.current = format!("Claude note: {update}");
                 } else if self.current.trim().is_empty() {
                     self.current = "Claude is responding".to_string();
                 }
@@ -366,7 +368,7 @@ impl ClaudePaneLiveTurn {
             }
             "reasoning" => {
                 let reasoning = reasoning_blurb_from_progress(progress);
-                self.current = format!("reasoning: {reasoning}");
+                self.current = format!("thinking: {reasoning}");
                 if self.reasoning_blurbs.last() != Some(&reasoning) {
                     self.reasoning_blurbs.push(reasoning);
                 }
@@ -402,37 +404,49 @@ impl ClaudePaneLiveTurn {
         let header = format!("Claude running · {}", format_elapsed_ms(self.elapsed_ms));
         let mut lines = vec![format!("Current: {}", self.current)];
         if !self.assistant_blurbs.is_empty() {
-            lines.push("Updates:".to_string());
-            let hidden = self.assistant_blurbs.len().saturating_sub(4);
+            lines.push("Claude notes:".to_string());
+            let hidden = self
+                .assistant_blurbs
+                .len()
+                .saturating_sub(ASSISTANT_UPDATE_VISIBLE_COUNT);
             if hidden > 0 {
-                lines.push(format!("  +{hidden} earlier"));
+                lines.push(format!("  ... {hidden} earlier notes hidden"));
             }
-            let visible_start = self.assistant_blurbs.len().saturating_sub(4);
+            let visible_start = self
+                .assistant_blurbs
+                .len()
+                .saturating_sub(ASSISTANT_UPDATE_VISIBLE_COUNT);
             for update in self.assistant_blurbs.iter().skip(visible_start) {
                 lines.push(format!("  {update}"));
             }
         }
         if self.thinking_tokens.is_some() || !self.reasoning_blurbs.is_empty() {
-            lines.push("Reasoning:".to_string());
+            lines.push("Thinking:".to_string());
             if let Some(thinking_tokens) = &self.thinking_tokens {
                 lines.push(format!("  {thinking_tokens}"));
             }
-            let hidden = self.reasoning_blurbs.len().saturating_sub(3);
+            let hidden = self
+                .reasoning_blurbs
+                .len()
+                .saturating_sub(REASONING_VISIBLE_COUNT);
             if hidden > 0 {
-                lines.push(format!("  +{hidden} earlier"));
+                lines.push(format!("  ... {hidden} earlier thoughts hidden"));
             }
-            let visible_start = self.reasoning_blurbs.len().saturating_sub(3);
+            let visible_start = self
+                .reasoning_blurbs
+                .len()
+                .saturating_sub(REASONING_VISIBLE_COUNT);
             for reasoning in self.reasoning_blurbs.iter().skip(visible_start) {
                 lines.push(format!("  {reasoning}"));
             }
         }
         if !self.tool_blurbs.is_empty() {
             lines.push("Tools:".to_string());
-            let hidden = self.tool_blurbs.len().saturating_sub(5);
+            let hidden = self.tool_blurbs.len().saturating_sub(TOOL_VISIBLE_COUNT);
             if hidden > 0 {
                 lines.push(format!("  +{hidden} earlier"));
             }
-            let visible_start = self.tool_blurbs.len().saturating_sub(5);
+            let visible_start = self.tool_blurbs.len().saturating_sub(TOOL_VISIBLE_COUNT);
             let all_done = matches!(
                 self.phase.as_str(),
                 "assistant-result" | "assistant-text" | "error" | "reasoning" | "reasoning-tokens"
@@ -461,6 +475,36 @@ impl ClaudePaneLiveTurn {
             .into_iter()
             .filter(|dispatch| self.sent_dispatch_keys.insert(spawn_dispatch_key(dispatch)))
             .collect()
+    }
+
+    fn take_visible_assistant_transcript_delta(&mut self) -> Option<String> {
+        let visible = visible_assistant_text_from_buffer(&self.assistant_commentary_buffer);
+        self.take_visible_assistant_transcript_delta_from(visible)
+    }
+
+    fn take_final_visible_assistant_transcript_delta(
+        &mut self,
+        final_visible_text: &str,
+    ) -> Option<String> {
+        self.take_visible_assistant_transcript_delta_from(final_visible_text.to_string())
+    }
+
+    fn take_visible_assistant_transcript_delta_from(&mut self, visible: String) -> Option<String> {
+        if visible == self.assistant_transcript_emitted {
+            return None;
+        }
+
+        let delta = if visible.starts_with(&self.assistant_transcript_emitted) {
+            visible[self.assistant_transcript_emitted.len()..].to_string()
+        } else {
+            visible.clone()
+        };
+        self.assistant_transcript_emitted = visible;
+        (!delta.trim().is_empty()).then_some(delta)
+    }
+
+    fn has_emitted_visible_assistant_transcript(&self) -> bool {
+        !self.assistant_transcript_emitted.trim().is_empty()
     }
 }
 
@@ -733,6 +777,39 @@ impl ClaudePaneRegistry {
             .get_or_insert_with(ClaudePaneLiveTurn::starting);
         live_turn.update(progress);
         Some(live_turn.display())
+    }
+
+    pub(crate) fn take_visible_assistant_transcript_delta(
+        &mut self,
+        pane_id: &str,
+    ) -> Option<String> {
+        self.panes
+            .iter_mut()
+            .find(|pane| pane.id == pane_id)?
+            .live_turn
+            .as_mut()?
+            .take_visible_assistant_transcript_delta()
+    }
+
+    pub(crate) fn take_final_visible_assistant_transcript_delta(
+        &mut self,
+        pane_id: &str,
+        final_visible_text: &str,
+    ) -> Option<String> {
+        self.panes
+            .iter_mut()
+            .find(|pane| pane.id == pane_id)?
+            .live_turn
+            .as_mut()?
+            .take_final_visible_assistant_transcript_delta(final_visible_text)
+    }
+
+    pub(crate) fn has_emitted_visible_assistant_transcript(&self, pane_id: &str) -> bool {
+        self.panes
+            .iter()
+            .find(|pane| pane.id == pane_id)
+            .and_then(|pane| pane.live_turn.as_ref())
+            .is_some_and(ClaudePaneLiveTurn::has_emitted_visible_assistant_transcript)
     }
 
     pub(crate) fn collect_spawn_dispatches_from_assistant_delta(
@@ -3982,7 +4059,10 @@ fn collect_tool_events(value: &Value, tool_events: &mut Vec<ClaudePaneToolEvent>
 
 const TOOL_PREVIEW_MAX_CHARS: usize = 120;
 const REASONING_PREVIEW_MAX_CHARS: usize = 240;
-const ASSISTANT_UPDATE_MAX_CHARS: usize = 220;
+const ASSISTANT_UPDATE_MAX_CHARS: usize = 300;
+const ASSISTANT_UPDATE_VISIBLE_COUNT: usize = 6;
+const REASONING_VISIBLE_COUNT: usize = 4;
+const TOOL_VISIBLE_COUNT: usize = 5;
 const CLAUDE_TOOL_CALL_PREFIX: &str = "Claude tool call: ";
 const CLAUDE_REASONING_PREFIX: &str = "Claude reasoning: ";
 const SEND_TASK_FENCE_OPEN_MARKER: &str = "```pfterminal-send-task";
@@ -3998,8 +4078,7 @@ fn summarize_reasoning_text(text: &str) -> String {
 }
 
 fn assistant_update_blurbs_from_buffer(buffer: &str) -> Vec<String> {
-    let stable_text = strip_incomplete_spawn_dispatch_tail(buffer);
-    let (visible, _) = crate::spawn_orchestration::extract_spawn_task_dispatches(stable_text);
+    let visible = visible_assistant_text_from_buffer(buffer);
     let mut blurbs = Vec::new();
     let mut paragraph = String::new();
 
@@ -4021,19 +4100,95 @@ fn assistant_update_blurbs_from_buffer(buffer: &str) -> Vec<String> {
     blurbs
 }
 
+fn visible_assistant_text_from_buffer(buffer: &str) -> String {
+    let stable_text = strip_incomplete_spawn_dispatch_tail(buffer);
+    let (visible, _) = crate::spawn_orchestration::extract_spawn_task_dispatches(stable_text);
+    visible
+}
+
 fn push_assistant_update_blurb(blurbs: &mut Vec<String>, paragraph: &mut String) {
     let compact = collapse_whitespace(paragraph.trim());
     paragraph.clear();
     if compact.is_empty() {
         return;
     }
-    let chars = compact.chars().collect::<Vec<_>>();
-    for chunk in chars.chunks(ASSISTANT_UPDATE_MAX_CHARS) {
-        let blurb = chunk.iter().collect::<String>();
+    for blurb in assistant_blurbs_from_paragraph(&compact) {
         if blurbs.last() != Some(&blurb) {
             blurbs.push(blurb);
         }
     }
+}
+
+fn assistant_blurbs_from_paragraph(paragraph: &str) -> Vec<String> {
+    let sentences = assistant_sentences_from_paragraph(paragraph);
+    let mut blurbs = Vec::new();
+    let mut current = String::new();
+
+    for sentence in sentences {
+        if sentence.chars().count() > ASSISTANT_UPDATE_MAX_CHARS {
+            if !current.is_empty() {
+                blurbs.push(std::mem::take(&mut current));
+            }
+            blurbs.push(truncate_for_display(sentence, ASSISTANT_UPDATE_MAX_CHARS));
+            continue;
+        }
+
+        let candidate = if current.is_empty() {
+            sentence.to_string()
+        } else {
+            format!("{current} {sentence}")
+        };
+        if candidate.chars().count() <= ASSISTANT_UPDATE_MAX_CHARS {
+            current = candidate;
+        } else {
+            blurbs.push(std::mem::replace(&mut current, sentence.to_string()));
+        }
+    }
+
+    if !current.is_empty() {
+        blurbs.push(current);
+    }
+    blurbs
+}
+
+fn assistant_sentences_from_paragraph(paragraph: &str) -> Vec<&str> {
+    let mut sentences = Vec::new();
+    let mut start = 0;
+    for (index, ch) in paragraph.char_indices() {
+        if !is_assistant_sentence_boundary(paragraph, index, ch) {
+            continue;
+        }
+        let end = index + ch.len_utf8();
+        let sentence = paragraph[start..end].trim();
+        if !sentence.is_empty() {
+            sentences.push(sentence);
+        }
+        start = next_non_whitespace_byte(paragraph, end);
+    }
+
+    let remainder = paragraph[start..].trim();
+    if !remainder.is_empty() {
+        sentences.push(remainder);
+    }
+    sentences
+}
+
+fn is_assistant_sentence_boundary(paragraph: &str, index: usize, ch: char) -> bool {
+    if !matches!(ch, '.' | '!' | '?') {
+        return false;
+    }
+    paragraph[index + ch.len_utf8()..]
+        .chars()
+        .next()
+        .is_none_or(char::is_whitespace)
+}
+
+fn next_non_whitespace_byte(value: &str, start: usize) -> usize {
+    value[start..]
+        .char_indices()
+        .find(|(_, ch)| !ch.is_whitespace())
+        .map(|(offset, _)| start + offset)
+        .unwrap_or(value.len())
 }
 
 fn strip_incomplete_spawn_dispatch_tail(text: &str) -> &str {
@@ -5084,6 +5239,7 @@ impl App {
     }
 
     pub(super) fn on_claude_pane_turn_progress(&mut self, progress: ClaudePaneTurnProgress) {
+        let is_active = self.claude_panes.active_user_pane_id() == progress.pane_id;
         if let Some(delta) = progress.assistant_text_delta.as_deref() {
             let dispatches = self
                 .claude_panes
@@ -5092,12 +5248,18 @@ impl App {
                 self.dispatch_spawn_task_blocks(&progress.pane_id, dispatches);
             }
         }
-        if self.claude_panes.active_user_pane_id() != progress.pane_id {
-            return;
-        }
         if let Some(status) = self.claude_panes.update_live_progress(&progress) {
-            self.chat_widget
-                .update_external_pane_live_status(status.header, status.details);
+            if is_active {
+                if progress.phase == "assistant-text"
+                    && let Some(delta) = self
+                        .claude_panes
+                        .take_visible_assistant_transcript_delta(&progress.pane_id)
+                {
+                    self.chat_widget.stream_external_pane_response_delta(delta);
+                }
+                self.chat_widget
+                    .update_external_pane_live_status(status.header, status.details);
+            }
         }
     }
 
@@ -5112,6 +5274,17 @@ impl App {
                 let (visible_text, dispatches) =
                     crate::spawn_orchestration::extract_spawn_task_dispatches(&output.text);
                 output.text = visible_text;
+                if is_active
+                    && let Some(delta) = self
+                        .claude_panes
+                        .take_final_visible_assistant_transcript_delta(&pane_id, &output.text)
+                {
+                    self.chat_widget.stream_external_pane_response_delta(delta);
+                }
+                let active_text_streamed = is_active
+                    && self
+                        .claude_panes
+                        .has_emitted_visible_assistant_transcript(&pane_id);
                 let dispatches = self
                     .claude_panes
                     .filter_new_spawn_dispatches(&pane_id, dispatches);
@@ -5131,10 +5304,10 @@ impl App {
                     self.dispatch_spawn_task_blocks(&pane_id, dispatches);
                 }
                 if !output.text.trim().is_empty() {
-                    if is_active {
+                    if is_active && !active_text_streamed {
                         self.chat_widget
                             .append_external_pane_response(output.text.clone());
-                    } else {
+                    } else if !is_active {
                         self.append_inactive_claude_pane_transcript_cell(
                             &pane_id,
                             Arc::new(crate::history_cell::AgentMarkdownCell::new(
@@ -5676,6 +5849,33 @@ mod tests {
     }
 
     #[test]
+    fn visible_assistant_transcript_delta_hides_dispatch_payloads() {
+        let mut live_turn = ClaudePaneLiveTurn::starting();
+        live_turn
+            .assistant_commentary_buffer
+            .push_str("I reviewed the failure and will assign it now.\n");
+        assert_eq!(
+            live_turn.take_visible_assistant_transcript_delta(),
+            Some("I reviewed the failure and will assign it now.".to_string())
+        );
+
+        live_turn.assistant_commentary_buffer.push_str(
+            "<pfterminal_send_task target=\"Ghash\">\nfix the proxy comment\n</pfterminal_send_task>\n",
+        );
+        assert_eq!(live_turn.take_visible_assistant_transcript_delta(), None);
+
+        live_turn
+            .assistant_commentary_buffer
+            .push_str("Task queued; I am waiting for the report.");
+        let delta = live_turn
+            .take_visible_assistant_transcript_delta()
+            .expect("post-dispatch commentary delta");
+        assert!(delta.contains("Task queued; I am waiting for the report."));
+        assert!(!delta.contains("pfterminal_send_task"));
+        assert!(!delta.contains("fix the proxy comment"));
+    }
+
+    #[test]
     fn live_status_panel_tracks_assistant_commentary_without_dispatch_payload() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut registry = ClaudePaneRegistry::new();
@@ -5704,9 +5904,9 @@ mod tests {
         let status = registry.update_live_progress(&commentary).expect("status");
         let details = status.details.expect("details");
         assert!(details.contains(
-            "Current: Claude: Let me trace the allow flags and wrap_owned relationship."
+            "Current: Claude note: Let me trace the allow flags and wrap_owned relationship."
         ));
-        assert!(details.contains("Updates:"));
+        assert!(details.contains("Claude notes:"));
         assert!(details.contains("Let me trace the allow flags and wrap_owned relationship."));
         assert!(!details.contains("artifact:"));
         assert!(!details.contains("audit:"));
@@ -5751,6 +5951,49 @@ mod tests {
         assert!(!details.contains("pfterminal-send-task"));
         assert!(!details.contains("target: Snaga"));
         assert!(!details.contains("build site"));
+    }
+
+    #[test]
+    fn live_status_panel_does_not_slice_assistant_notes_mid_sentence() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut registry = ClaudePaneRegistry::new();
+        let pane_id = registry
+            .create_pane(
+                ClaudeProviderProfileKind::ClaudePlan,
+                std::env::current_dir().expect("cwd"),
+                dir.path(),
+            )
+            .expect("pane");
+        let artifact_path = dir.path().join("turn-0001.jsonl");
+        let audit_path = dir.path().join("turn-0001.audit.json");
+        let repeated = "I checked the RPC allow flags; it succeeded. ".repeat(12);
+        let commentary = format!(
+            "{repeated}Now npm run build failed because the command ran from the wrong directory. \
+             JS tests passed. Python tests failed to find the path, so I am switching cwd before retrying."
+        );
+
+        let progress = ClaudePaneTurnProgress {
+            pane_id,
+            phase: "assistant-text".to_string(),
+            summary: "Claude assistant text.".to_string(),
+            assistant_text_delta: Some(commentary),
+            hint: None,
+            elapsed_ms: 69_000,
+            artifact_path,
+            audit_path,
+        };
+        let status = registry.update_live_progress(&progress).expect("status");
+        assert_eq!(status.header, "Claude running · 1m09s");
+        let details = status.details.expect("details");
+        assert!(details.contains("Claude notes:"));
+        assert!(details.contains(
+            "Now npm run build failed because the command ran from the wrong directory."
+        ));
+        assert!(details.contains("Python tests failed to find the path"));
+        assert!(!details.contains("Current: Claude: s; it succeeded"));
+        assert!(!details.contains("\n  s; it succeeded"));
+        assert!(!details.contains("artifact:"));
+        assert!(!details.contains("audit:"));
     }
 
     #[test]
@@ -5886,10 +6129,10 @@ mod tests {
         let details = status.details.expect("details");
         assert!(
             details.contains(
-                "Current: reasoning: Inspect the hierarchy before asking Orcs to execute."
+                "Current: thinking: Inspect the hierarchy before asking Orcs to execute."
             )
         );
-        assert!(details.contains("Reasoning:"));
+        assert!(details.contains("Thinking:"));
         assert!(details.contains("Inspect the hierarchy before asking Orcs to execute."));
         assert!(!details.contains("artifact:"));
         assert!(!details.contains("audit:"));
@@ -5938,7 +6181,7 @@ mod tests {
         assert_eq!(status.header, "Claude running · 1m30s");
         let details = status.details.expect("details");
         assert!(details.contains("Current: thinking: 3.1K reasoning tokens"));
-        assert!(details.contains("Reasoning:"));
+        assert!(details.contains("Thinking:"));
         assert!(details.contains("thinking: 3.1K reasoning tokens"));
         assert!(details.contains("done    Bash: Run all Rust tests"));
         assert!(!details.contains("running Bash: Run all Rust tests"));

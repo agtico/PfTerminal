@@ -374,6 +374,13 @@ impl ChatWidget {
         ));
     }
 
+    pub(crate) fn stream_external_pane_response_delta(&mut self, delta: String) {
+        if delta.trim().is_empty() {
+            return;
+        }
+        self.on_agent_message_delta(delta);
+    }
+
     pub(crate) fn complete_external_pane_turn(
         &mut self,
         last_agent_message: Option<String>,
