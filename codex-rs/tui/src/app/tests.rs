@@ -1701,7 +1701,7 @@ async fn native_orc_completion_is_reported_to_claude_troll_context() {
 }
 
 #[tokio::test]
-async fn direct_two_orc_reports_are_visible_to_claude_troll_context() {
+async fn direct_six_orc_turn_reports_are_visible_to_claude_troll_context() {
     let mut app = make_test_app().await;
     let troll_pane_id = app
         .claude_panes
@@ -1741,46 +1741,72 @@ async fn direct_two_orc_reports_are_visible_to_claude_troll_context() {
         crate::spawn_orchestration::pane_node_id(&troll_pane_id),
     );
 
-    app.enqueue_thread_notification(
-        native_orc_thread_id,
-        turn_completed_with_agent_message(
-            native_orc_thread_id,
-            "turn-1",
-            TurnStatus::Completed,
-            "ORC_A_DONE: alpha finding",
-        ),
-    )
-    .await
-    .expect("native Orc completion should enqueue");
+    let turn_reports = [
+        ("native", "turn-1", "ORC_A_TURN_1_DONE: alpha finding"),
+        ("claude", "turn-2", "ORC_B_TURN_2_DONE: beta finding"),
+        ("native", "turn-3", "ORC_A_TURN_3_DONE: gamma finding"),
+        ("claude", "turn-4", "ORC_B_TURN_4_DONE: delta finding"),
+        ("native", "turn-5", "ORC_A_TURN_5_DONE: epsilon finding"),
+        ("claude", "turn-6", "ORC_B_TURN_6_DONE: zeta finding"),
+    ];
 
-    app.on_claude_pane_turn_finished(
-        claude_orc_pane_id,
-        Ok(crate::claude_panes::ClaudePaneTurnOutput {
-            text: "ORC_B_DONE: beta finding".to_string(),
-            status: crate::claude_panes::ClaudePaneTurnStatus::Success,
-            session_id: Some("claude-session".to_string()),
-            usage_summary: None,
-            usage_status: crate::claude_panes::ClaudePaneUsageStatus::Missing,
-            artifact_path: app.config.cwd.join("turn-0001.jsonl").to_path_buf(),
-            audit_path: app.config.cwd.join("turn-0001.audit.json").to_path_buf(),
-            duration_ms: 1,
-            terminal_reason: None,
-            error_summary: None,
-            tool_names: Vec::new(),
-            tool_events: Vec::new(),
-            reasoning_events: Vec::new(),
-            command_mode: crate::claude_panes::ClaudeCommandMode::NewSession,
-        }),
-    );
+    for (index, (harness, turn_id, report)) in turn_reports.iter().enumerate() {
+        if *harness == "native" {
+            app.enqueue_thread_notification(
+                native_orc_thread_id,
+                turn_completed_with_agent_message(
+                    native_orc_thread_id,
+                    turn_id,
+                    TurnStatus::Completed,
+                    report,
+                ),
+            )
+            .await
+            .expect("native Orc completion should enqueue");
+        } else {
+            app.on_claude_pane_turn_finished(
+                claude_orc_pane_id.clone(),
+                Ok(crate::claude_panes::ClaudePaneTurnOutput {
+                    text: (*report).to_string(),
+                    status: crate::claude_panes::ClaudePaneTurnStatus::Success,
+                    session_id: Some("claude-session".to_string()),
+                    usage_summary: None,
+                    usage_status: crate::claude_panes::ClaudePaneUsageStatus::Missing,
+                    artifact_path: app
+                        .config
+                        .cwd
+                        .join(format!("{turn_id}.jsonl"))
+                        .to_path_buf(),
+                    audit_path: app
+                        .config
+                        .cwd
+                        .join(format!("{turn_id}.audit.json"))
+                        .to_path_buf(),
+                    duration_ms: 1,
+                    terminal_reason: None,
+                    error_summary: None,
+                    tool_names: Vec::new(),
+                    tool_events: Vec::new(),
+                    reasoning_events: Vec::new(),
+                    command_mode: crate::claude_panes::ClaudeCommandMode::NewSession,
+                }),
+            );
+        }
+
+        let context = app
+            .spawn_context_for_user_pane(&troll_pane_id)
+            .expect("Troll pane should receive spawn context");
+        assert!(context.contains("Recent child reports delivered to this pane:"));
+        for (_, _, expected_report) in &turn_reports[..=index] {
+            assert!(context.contains(expected_report));
+        }
+    }
 
     let context = app
         .spawn_context_for_user_pane(&troll_pane_id)
         .expect("Troll pane should receive spawn context");
-    assert!(context.contains("Recent child reports delivered to this pane:"));
     assert!(context.contains("Snaga [orc]; status=done"));
-    assert!(context.contains("ORC_A_DONE: alpha finding"));
     assert!(context.contains("Claude Code Ghash [orc] - Claude Plan; status=success"));
-    assert!(context.contains("ORC_B_DONE: beta finding"));
 }
 
 #[tokio::test]
