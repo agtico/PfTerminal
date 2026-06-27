@@ -1701,6 +1701,89 @@ async fn native_orc_completion_is_reported_to_claude_troll_context() {
 }
 
 #[tokio::test]
+async fn direct_two_orc_reports_are_visible_to_claude_troll_context() {
+    let mut app = make_test_app().await;
+    let troll_pane_id = app
+        .claude_panes
+        .create_pane_with_role(
+            crate::claude_panes::ClaudeProviderProfileKind::ClaudePlan,
+            app.config.cwd.to_path_buf(),
+            app.config.codex_home.as_ref(),
+            Some(crate::spawn_orchestration::SpawnRole::Troll),
+            Some("Burzum".to_string()),
+        )
+        .expect("create Claude Troll pane");
+    let native_orc_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000235").expect("valid thread id");
+    app.upsert_agent_picker_thread(
+        native_orc_thread_id,
+        Some("Snaga".to_string()),
+        Some("orc".to_string()),
+        /*is_closed*/ false,
+    );
+    app.spawn_parent_by_node.insert(
+        crate::spawn_orchestration::thread_node_id(native_orc_thread_id),
+        crate::spawn_orchestration::pane_node_id(&troll_pane_id),
+    );
+
+    let claude_orc_pane_id = app
+        .claude_panes
+        .create_pane_with_role(
+            crate::claude_panes::ClaudeProviderProfileKind::ClaudePlan,
+            app.config.cwd.to_path_buf(),
+            app.config.codex_home.as_ref(),
+            Some(crate::spawn_orchestration::SpawnRole::Orc),
+            Some("Ghash".to_string()),
+        )
+        .expect("create Claude Orc pane");
+    app.spawn_parent_by_node.insert(
+        crate::spawn_orchestration::pane_node_id(&claude_orc_pane_id),
+        crate::spawn_orchestration::pane_node_id(&troll_pane_id),
+    );
+
+    app.enqueue_thread_notification(
+        native_orc_thread_id,
+        turn_completed_with_agent_message(
+            native_orc_thread_id,
+            "turn-1",
+            TurnStatus::Completed,
+            "ORC_A_DONE: alpha finding",
+        ),
+    )
+    .await
+    .expect("native Orc completion should enqueue");
+
+    app.on_claude_pane_turn_finished(
+        claude_orc_pane_id,
+        Ok(crate::claude_panes::ClaudePaneTurnOutput {
+            text: "ORC_B_DONE: beta finding".to_string(),
+            status: crate::claude_panes::ClaudePaneTurnStatus::Success,
+            session_id: Some("claude-session".to_string()),
+            usage_summary: None,
+            usage_status: crate::claude_panes::ClaudePaneUsageStatus::Missing,
+            artifact_path: app.config.cwd.join("turn-0001.jsonl").to_path_buf(),
+            audit_path: app.config.cwd.join("turn-0001.audit.json").to_path_buf(),
+            duration_ms: 1,
+            terminal_reason: None,
+            error_summary: None,
+            tool_names: Vec::new(),
+            tool_events: Vec::new(),
+            reasoning_events: Vec::new(),
+            command_mode: crate::claude_panes::ClaudeCommandMode::NewSession,
+        }),
+    );
+
+    let context = app
+        .spawn_context_for_user_pane(&troll_pane_id)
+        .expect("Troll pane should receive spawn context");
+    assert!(context.contains("Recent child reports delivered to this pane:"));
+    assert!(context.contains("Snaga [orc]; status=done"));
+    assert!(context.contains("ORC_A_DONE: alpha finding"));
+    assert!(context.contains("Claude Code Ghash [orc] - Claude Plan; status=success"));
+    assert!(context.contains("ORC_B_DONE: beta finding"));
+}
+
+#[tokio::test]
 async fn enqueued_native_spawn_turn_completion_updates_status_before_replay() {
     let mut app = make_test_app().await;
     let troll_thread_id =
