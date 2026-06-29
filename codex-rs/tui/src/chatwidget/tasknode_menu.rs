@@ -3431,8 +3431,8 @@ mod tests {
     #[test]
     fn tasknode_sse_parser_handles_delta_and_done_events() {
         let mut buffer = String::new();
-        buffer.push_str("event: delta\ndata: {\"delta\":\"hel\"}\n\n");
-        buffer.push_str("event: delta\ndata: {\"delta\":\"lo\"}\n\n");
+        buffer.push_str("event: delta\ndata: {\"delta\":\"he\"}\n\n");
+        buffer.push_str("event: delta\ndata: {\"delta\":\"llo\"}\n\n");
         buffer.push_str("event: done\ndata: {\"ok\":true,\"conversationId\":\"chat_test\"}\n\n");
 
         let blocks = tasknode_sse_drain_blocks(&mut buffer);
