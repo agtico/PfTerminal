@@ -287,6 +287,7 @@ use crate::bottom_pane::QueuedInputAction;
 use crate::bottom_pane::SelectionAction;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
+use crate::bottom_pane::custom_prompt_view::CustomPromptSubmitMode;
 use crate::bottom_pane::custom_prompt_view::CustomPromptView;
 use crate::bottom_pane::popup_consts::standard_popup_hint_line;
 use crate::clipboard_paste::paste_image_to_temp_png;
@@ -421,6 +422,7 @@ mod turn_lifecycle;
 mod turn_runtime;
 use self::turn_lifecycle::TurnLifecycleState;
 mod provider_credentials;
+mod tasknode_menu;
 mod usage;
 mod user_messages;
 mod vault_menu;
@@ -579,6 +581,9 @@ pub(crate) struct ChatWidget {
     // Stream lifecycle controller for proposed plan output.
     plan_stream_controller: Option<PlanStreamController>,
     pending_stream_consolidations: usize,
+    tasknode_menu_counts: Option<tasknode_menu::TaskNodeMenuCountsCache>,
+    tasknode_menu_poll_generation: u64,
+    tasknode_active_chat_stream_id: Option<String>,
     /// Holds the platform clipboard lease so copied text remains available while supported.
     clipboard_lease: Option<crate::clipboard_copy::ClipboardLease>,
     copy_last_response_binding: Vec<KeyBinding>,

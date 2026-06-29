@@ -1,0 +1,4 @@
+interface:
+  display_name: "Task Node Usage"
+  short_description: "Use Task Node as an agent second brain"
+  default_prompt: "Use $tasknode-usage to request a scoped Task Node task and manage evidence through verification."

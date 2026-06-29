@@ -241,6 +241,179 @@ pub(crate) enum AppEvent {
         progress: crate::claude_panes::ClaudePaneTurnProgress,
     },
 
+    /// Open the Task Node menu.
+    OpenTaskNodeMenu,
+    /// Task Node menu account/task counts loaded.
+    TaskNodeMenuStatusResult {
+        result: Result<serde_json::Value, String>,
+    },
+    /// Task Node menu task request count loaded.
+    TaskNodeMenuRequestsResult {
+        result: Result<serde_json::Value, String>,
+    },
+    /// Refresh Task Node menu counts while the menu is still active.
+    TaskNodeMenuPoll {
+        generation: u64,
+    },
+    /// Start or refresh GitHub-backed Task Node terminal linking.
+    OpenTaskNodeLink,
+    /// Show Task Node account/task status.
+    OpenTaskNodeStatus,
+    /// Task Node account/task status loaded.
+    TaskNodeStatusResult {
+        result: Result<serde_json::Value, String>,
+    },
+    /// Show a Task Node task tab.
+    OpenTaskNodeTaskList {
+        tab: String,
+    },
+    /// Task Node task tab loaded.
+    TaskNodeTaskListResult {
+        tab: String,
+        result: Result<serde_json::Value, String>,
+    },
+    /// Open Task Node task detail/actions.
+    OpenTaskNodeTaskActions {
+        task_id: String,
+    },
+    /// Task Node task detail/actions loaded.
+    TaskNodeTaskActionsResult {
+        task_id: String,
+        result: Result<serde_json::Value, String>,
+    },
+    /// Copy a Task Node task brief to the clipboard.
+    CopyTaskNodeTaskBrief {
+        task_id: String,
+    },
+    /// Task Node task brief detail loaded for clipboard copy.
+    CopyTaskNodeTaskBriefResult {
+        task_id: String,
+        result: Result<serde_json::Value, String>,
+    },
+    /// Submit a Task Node lifecycle action.
+    SubmitTaskNodeTaskAction {
+        task_id: String,
+        action: String,
+    },
+    /// Task Node lifecycle action finished.
+    SubmitTaskNodeTaskActionResult {
+        action: String,
+        result: Result<serde_json::Value, String>,
+    },
+    /// Open the Task Node evidence prompt.
+    OpenTaskNodeEvidencePrompt {
+        task_id: String,
+    },
+    /// Task Node task detail loaded for the evidence prompt.
+    OpenTaskNodeEvidencePromptResult {
+        task_id: String,
+        result: Result<serde_json::Value, String>,
+    },
+    /// Submit Task Node evidence text.
+    SubmitTaskNodeEvidence {
+        task_id: String,
+        summary: String,
+    },
+    /// Task Node evidence submission finished.
+    SubmitTaskNodeEvidenceResult {
+        result: Result<serde_json::Value, String>,
+    },
+    /// Open the Task Node personal task request prompt.
+    OpenTaskNodeTaskRequestPrompt,
+    /// Submit a Task Node personal task request.
+    SubmitTaskNodeTaskRequest {
+        detail: String,
+    },
+    /// Task Node personal task request finished.
+    SubmitTaskNodeTaskRequestResult {
+        result: Result<serde_json::Value, String>,
+    },
+    /// Show the current Task Node context document.
+    OpenTaskNodeContext,
+    /// Task Node context document loaded.
+    OpenTaskNodeContextResult {
+        result: Result<serde_json::Value, String>,
+    },
+    /// Open the Task Node context edit prompt.
+    OpenTaskNodeContextEdit {
+        title: String,
+        body: String,
+        revision: u64,
+        body_format: String,
+    },
+    /// Save Task Node context edits.
+    SubmitTaskNodeContextEdit {
+        title: String,
+        body: String,
+        revision: u64,
+    },
+    /// Task Node context save finished.
+    SubmitTaskNodeContextEditResult {
+        result: Result<serde_json::Value, String>,
+    },
+    /// Show active Task Node task requests.
+    OpenTaskNodeRequestList,
+    /// Active Task Node task requests loaded.
+    OpenTaskNodeRequestListResult {
+        result: Result<serde_json::Value, String>,
+    },
+    /// Show Task Node read-only balance.
+    OpenTaskNodeBalance,
+    /// Task Node read-only balance loaded.
+    OpenTaskNodeBalanceResult {
+        result: Result<serde_json::Value, String>,
+    },
+    /// Show recent Task Node rewards.
+    OpenTaskNodeRewards,
+    /// Recent Task Node rewards loaded.
+    OpenTaskNodeRewardsResult {
+        result: Result<serde_json::Value, String>,
+    },
+    /// Open Task Node chat threads.
+    OpenTaskNodeChat,
+    /// Task Node chat threads loaded.
+    OpenTaskNodeChatConversationsResult {
+        result: Result<serde_json::Value, String>,
+    },
+    /// Open Task Node chat history.
+    OpenTaskNodeChatHistory {
+        conversation_id: String,
+        title: String,
+    },
+    /// Task Node chat history loaded.
+    OpenTaskNodeChatHistoryResult {
+        conversation_id: String,
+        title: String,
+        result: Result<serde_json::Value, String>,
+    },
+    /// Open the Task Node chat composer.
+    OpenTaskNodeChatPrompt {
+        conversation_id: String,
+        title: String,
+    },
+    /// Submit a Task Node chat message.
+    SubmitTaskNodeChat {
+        conversation_id: String,
+        title: String,
+        message: String,
+    },
+    /// Task Node chat stream emitted visible assistant text.
+    TaskNodeChatStreamDelta {
+        stream_id: String,
+        conversation_id: String,
+        title: String,
+        text: String,
+    },
+    /// Task Node chat stream finished.
+    TaskNodeChatStreamDone {
+        stream_id: String,
+        conversation_id: String,
+        title: String,
+        result: Result<serde_json::Value, String>,
+    },
+    /// Remove the local Task Node terminal session.
+    LogoutTaskNode,
+
     /// Fork the current thread into a transient side conversation.
     StartSide {
         parent_thread_id: ThreadId,
