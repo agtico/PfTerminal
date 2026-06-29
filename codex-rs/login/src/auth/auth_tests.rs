@@ -2309,6 +2309,22 @@ async fn provider_api_key_login_is_provider_scoped_and_not_primary_auth() {
         Some("zai-test-key")
     );
 
+    super::login_with_provider_api_key(
+        codex_home.path(),
+        "ZAI_API_KEY",
+        "zai-updated-key",
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )
+    .expect("provider API key update should save");
+    assert_eq!(
+        auth_manager
+            .provider_api_key("ZAI_API_KEY")
+            .expect("updated provider API key should resolve")
+            .as_deref(),
+        Some("zai-updated-key")
+    );
+
     assert!(
         !super::logout(
             codex_home.path(),
@@ -2325,7 +2341,7 @@ async fn provider_api_key_login_is_provider_scoped_and_not_primary_auth() {
             AuthKeyringBackendKind::default(),
         )
         .expect("provider auth storage should still be readable"),
-        Some("zai-test-key".to_string())
+        Some("zai-updated-key".to_string())
     );
 
     assert!(
@@ -2344,6 +2360,12 @@ async fn provider_api_key_login_is_provider_scoped_and_not_primary_auth() {
             AuthKeyringBackendKind::default(),
         )
         .expect("provider auth storage should still be readable"),
+        None
+    );
+    assert_eq!(
+        auth_manager
+            .provider_api_key("ZAI_API_KEY")
+            .expect("provider API key cache should observe credential removal"),
         None
     );
 }

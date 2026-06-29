@@ -278,14 +278,13 @@ WHERE provider_id = ? AND model = ? AND key_fingerprint = ?
         lease: &ProviderRequestLease,
         result: ProviderRequestResult,
         now_ms: i64,
-    ) -> anyhow::Result<()> {
-        match result {
+    ) -> anyhow::Result<u64> {
+        let rows_affected = match result {
             ProviderRequestResult::Success {
                 input_tokens,
                 cached_input_tokens,
-            } => {
-                sqlx::query(
-                    r#"
+            } => sqlx::query(
+                r#"
 UPDATE provider_request_state
 SET lease_owner = NULL,
     lease_until_ms = 0,
@@ -298,17 +297,17 @@ SET lease_owner = NULL,
     updated_at_ms = ?
 WHERE provider_id = ? AND model = ? AND key_fingerprint = ? AND lease_owner = ?
                     "#,
-                )
-                .bind(input_tokens.map(|tokens| tokens.max(0)))
-                .bind(cached_input_tokens.map(|tokens| tokens.max(0)))
-                .bind(now_ms)
-                .bind(lease.key.provider_id.as_str())
-                .bind(lease.key.model.as_str())
-                .bind(lease.key.key_fingerprint.as_str())
-                .bind(lease.owner.as_str())
-                .execute(self.pool.as_ref())
-                .await?;
-            }
+            )
+            .bind(input_tokens.map(|tokens| tokens.max(0)))
+            .bind(cached_input_tokens.map(|tokens| tokens.max(0)))
+            .bind(now_ms)
+            .bind(lease.key.provider_id.as_str())
+            .bind(lease.key.model.as_str())
+            .bind(lease.key.key_fingerprint.as_str())
+            .bind(lease.owner.as_str())
+            .execute(self.pool.as_ref())
+            .await?
+            .rows_affected(),
             ProviderRequestResult::Failed {
                 status,
                 request_id,
@@ -346,7 +345,7 @@ WHERE provider_id = ? AND model = ? AND key_fingerprint = ?
                     0
                 };
 
-                sqlx::query(
+                let rows_affected = sqlx::query(
                     r#"
 UPDATE provider_request_state
 SET lease_owner = NULL,
@@ -369,21 +368,23 @@ WHERE provider_id = ? AND model = ? AND key_fingerprint = ? AND lease_owner = ?
                 .bind(lease.key.key_fingerprint.as_str())
                 .bind(lease.owner.as_str())
                 .execute(&mut *tx)
-                .await?;
+                .await?
+                .rows_affected();
 
                 tx.commit().await?;
+                rows_affected
             }
-        }
+        };
 
-        Ok(())
+        Ok(rows_affected)
     }
 
     pub async fn release_provider_request_lease(
         &self,
         lease: &ProviderRequestLease,
         now_ms: i64,
-    ) -> anyhow::Result<()> {
-        sqlx::query(
+    ) -> anyhow::Result<u64> {
+        let rows_affected = sqlx::query(
             r#"
 UPDATE provider_request_state
 SET lease_owner = NULL,
@@ -398,8 +399,9 @@ WHERE provider_id = ? AND model = ? AND key_fingerprint = ? AND lease_owner = ?
         .bind(lease.key.key_fingerprint.as_str())
         .bind(lease.owner.as_str())
         .execute(self.pool.as_ref())
-        .await?;
-        Ok(())
+        .await?
+        .rows_affected();
+        Ok(rows_affected)
     }
 }
 
@@ -515,10 +517,11 @@ mod tests {
         else {
             panic!("expected acquired lease");
         };
-        runtime
+        let rows_affected = runtime
             .release_provider_request_lease(&lease, 2_000)
             .await
             .expect("release lease");
+        assert_eq!(rows_affected, 1);
 
         let second = runtime
             .try_acquire_provider_request_lease(&key(), &preflight(), "worker-b", 10_000, 2_100)
@@ -552,6 +555,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_non_rate_limit_result_clears_lease_without_cooldown() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("initialize runtime");
+
+        let ProviderRequestLeaseDecision::Acquired(lease) = runtime
+            .try_acquire_provider_request_lease(&key(), &preflight(), "worker-a", 10_000, 1_000)
+            .await
+            .expect("acquire lease")
+        else {
+            panic!("expected acquired lease");
+        };
+        let rows_affected = runtime
+            .record_provider_request_result(
+                &lease,
+                ProviderRequestResult::Failed {
+                    status: Some(500),
+                    request_id: Some("req-500".to_string()),
+                    retry_after_ms: Some(60_000),
+                },
+                2_000,
+            )
+            .await
+            .expect("record non-rate-limit failure");
+        assert_eq!(rows_affected, 1);
+
+        let retry = runtime
+            .try_acquire_provider_request_lease(&key(), &preflight(), "worker-b", 10_000, 2_500)
+            .await
+            .expect("retry lease");
+        assert!(matches!(retry, ProviderRequestLeaseDecision::Acquired(_)));
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn stale_owner_result_or_release_does_not_clear_active_owner() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("initialize runtime");
+
+        let ProviderRequestLeaseDecision::Acquired(first) = runtime
+            .try_acquire_provider_request_lease(&key(), &preflight(), "worker-a", 1_000, 1_000)
+            .await
+            .expect("acquire first lease")
+        else {
+            panic!("expected first lease");
+        };
+        let ProviderRequestLeaseDecision::Acquired(_second) = runtime
+            .try_acquire_provider_request_lease(&key(), &preflight(), "worker-b", 10_000, 2_500)
+            .await
+            .expect("acquire second lease")
+        else {
+            panic!("expected second lease after first expires");
+        };
+
+        let result_rows = runtime
+            .record_provider_request_result(
+                &first,
+                ProviderRequestResult::Success {
+                    input_tokens: Some(1),
+                    cached_input_tokens: Some(1),
+                },
+                3_000,
+            )
+            .await
+            .expect("record stale result");
+        assert_eq!(result_rows, 0);
+        let release_rows = runtime
+            .release_provider_request_lease(&first, 3_100)
+            .await
+            .expect("release stale lease");
+        assert_eq!(release_rows, 0);
+
+        let blocked = runtime
+            .try_acquire_provider_request_lease(&key(), &preflight(), "worker-c", 10_000, 3_200)
+            .await
+            .expect("blocked by active second lease");
+        match blocked {
+            ProviderRequestLeaseDecision::Blocked(block) => {
+                assert_eq!(block.reason, ProviderRequestBlockReason::Lease);
+                assert_eq!(block.lease_owner.as_deref(), Some("worker-b"));
+            }
+            ProviderRequestLeaseDecision::Acquired(_) => panic!("expected active lease block"),
+        }
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
     async fn rate_limit_result_sets_cooldown_and_blocks_retry() {
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
@@ -565,7 +660,7 @@ mod tests {
         else {
             panic!("expected acquired lease");
         };
-        runtime
+        let rows_affected = runtime
             .record_provider_request_result(
                 &lease,
                 ProviderRequestResult::Failed {
@@ -577,6 +672,7 @@ mod tests {
             )
             .await
             .expect("record 429");
+        assert_eq!(rows_affected, 1);
 
         let retry = runtime
             .try_acquire_provider_request_lease(&key(), &preflight(), "worker-b", 10_000, 2_500)
@@ -609,7 +705,7 @@ mod tests {
         else {
             panic!("expected acquired lease");
         };
-        runtime
+        let rows_affected = runtime
             .record_provider_request_result(
                 &lease,
                 ProviderRequestResult::Success {
@@ -620,6 +716,7 @@ mod tests {
             )
             .await
             .expect("record success");
+        assert_eq!(rows_affected, 1);
 
         let ProviderRequestLeaseDecision::Acquired(second) = runtime
             .try_acquire_provider_request_lease(&key(), &preflight(), "worker-b", 10_000, 2_500)
