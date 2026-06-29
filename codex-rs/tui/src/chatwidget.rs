@@ -421,6 +421,7 @@ mod turn_lifecycle;
 mod turn_runtime;
 use self::turn_lifecycle::TurnLifecycleState;
 mod provider_credentials;
+mod tasknode_menu;
 mod usage;
 mod user_messages;
 mod vault_menu;
@@ -579,6 +580,8 @@ pub(crate) struct ChatWidget {
     // Stream lifecycle controller for proposed plan output.
     plan_stream_controller: Option<PlanStreamController>,
     pending_stream_consolidations: usize,
+    tasknode_menu_counts: Option<tasknode_menu::TaskNodeMenuCountsCache>,
+    tasknode_menu_poll_generation: u64,
     /// Holds the platform clipboard lease so copied text remains available while supported.
     clipboard_lease: Option<crate::clipboard_copy::ClipboardLease>,
     copy_last_response_binding: Vec<KeyBinding>,

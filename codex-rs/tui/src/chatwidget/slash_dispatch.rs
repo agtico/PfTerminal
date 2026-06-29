@@ -303,6 +303,9 @@ impl ChatWidget {
             SlashCommand::Spawn => {
                 self.app_event_tx.send(AppEvent::OpenSpawnRolePicker);
             }
+            SlashCommand::Tasknode => {
+                self.app_event_tx.send(AppEvent::OpenTaskNodeMenu);
+            }
             SlashCommand::Panes => {
                 self.app_event_tx.send(AppEvent::OpenPanePicker);
             }
@@ -739,6 +742,60 @@ impl ChatWidget {
                         .add_error_message("Usage: /spawn [status|nazgul|troll|orc]".to_string()),
                 }
             }
+            SlashCommand::Tasknode => {
+                let mut parts = trimmed.splitn(2, ' ');
+                let action = parts.next().unwrap_or_default().to_ascii_lowercase();
+                let rest = parts.next().unwrap_or_default().trim();
+                match action.as_str() {
+                    "" => self.app_event_tx.send(AppEvent::OpenTaskNodeMenu),
+                    "link" => self.app_event_tx.send(AppEvent::OpenTaskNodeLink),
+                    "status" => self.app_event_tx.send(AppEvent::OpenTaskNodeStatus),
+                    "tasks" | "outstanding" => {
+                        self.app_event_tx.send(AppEvent::OpenTaskNodeTaskList {
+                            tab: if rest.is_empty() {
+                                "outstanding".to_string()
+                            } else {
+                                rest.to_string()
+                            },
+                        })
+                    }
+                    "task" => {
+                        if rest.is_empty() {
+                            self.add_error_message("Usage: /tasknode task <task-id>".to_string());
+                        } else {
+                            self.app_event_tx.send(AppEvent::OpenTaskNodeTaskActions {
+                                task_id: rest.to_string(),
+                            });
+                        }
+                    }
+                    "verification" => self.app_event_tx.send(AppEvent::OpenTaskNodeTaskList {
+                        tab: "verification".to_string(),
+                    }),
+                    "refused" => self.app_event_tx.send(AppEvent::OpenTaskNodeTaskList {
+                        tab: "refused".to_string(),
+                    }),
+                    "rewarded" => self.app_event_tx.send(AppEvent::OpenTaskNodeTaskList {
+                        tab: "rewarded".to_string(),
+                    }),
+                    "request" => {
+                        if rest.is_empty() {
+                            self.app_event_tx.send(AppEvent::OpenTaskNodeTaskRequestPrompt);
+                        } else {
+                            self.app_event_tx.send(AppEvent::SubmitTaskNodeTaskRequest {
+                                detail: rest.to_string(),
+                            });
+                        }
+                    }
+                    "requests" => self.app_event_tx.send(AppEvent::OpenTaskNodeRequestList),
+                    "balance" => self.app_event_tx.send(AppEvent::OpenTaskNodeBalance),
+                    "rewards" => self.app_event_tx.send(AppEvent::OpenTaskNodeRewards),
+                    "logout" => self.app_event_tx.send(AppEvent::LogoutTaskNode),
+                    _ => self.add_error_message(
+                        "Usage: /tasknode [link|status|tasks|task|request|requests|verification|balance|rewards|logout]"
+                            .to_string(),
+                    ),
+                }
+            }
             SlashCommand::Keymap => match trimmed.to_ascii_lowercase().as_str() {
                 "" => self.open_keymap_picker(),
                 "debug" => {
@@ -1109,6 +1166,7 @@ impl ChatWidget {
             | SlashCommand::Providers
             | SlashCommand::Panes
             | SlashCommand::Spawn
+            | SlashCommand::Tasknode
             | SlashCommand::Rollout
             | SlashCommand::Vault
             | SlashCommand::Copy

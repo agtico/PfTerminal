@@ -1040,6 +1040,103 @@ impl App {
             AppEvent::OpenVaultCopySecret { label } => {
                 self.chat_widget.copy_vault_secret_to_clipboard(label);
             }
+            AppEvent::OpenTaskNodeMenu => {
+                self.chat_widget.open_tasknode_menu();
+            }
+            AppEvent::TaskNodeMenuStatusResult { result } => {
+                self.chat_widget.handle_tasknode_menu_status_result(result);
+            }
+            AppEvent::TaskNodeMenuRequestsResult { result } => {
+                self.chat_widget
+                    .handle_tasknode_menu_requests_result(result);
+            }
+            AppEvent::TaskNodeMenuPoll { generation } => {
+                self.chat_widget.handle_tasknode_menu_poll(generation);
+            }
+            AppEvent::OpenTaskNodeLink => {
+                self.chat_widget.open_tasknode_link();
+            }
+            AppEvent::OpenTaskNodeStatus => {
+                self.chat_widget.open_tasknode_status();
+            }
+            AppEvent::TaskNodeStatusResult { result } => {
+                self.chat_widget.handle_tasknode_status_result(result);
+            }
+            AppEvent::OpenTaskNodeTaskList { tab } => {
+                self.chat_widget.open_tasknode_task_list(tab);
+            }
+            AppEvent::TaskNodeTaskListResult { tab, result } => {
+                self.chat_widget
+                    .handle_tasknode_task_list_result(tab, result);
+            }
+            AppEvent::OpenTaskNodeTaskActions { task_id } => {
+                self.chat_widget.open_tasknode_task_actions(task_id);
+            }
+            AppEvent::TaskNodeTaskActionsResult { task_id, result } => {
+                self.chat_widget
+                    .handle_tasknode_task_actions_result(task_id, result);
+            }
+            AppEvent::CopyTaskNodeTaskBrief { task_id } => {
+                self.chat_widget.copy_tasknode_task_brief(task_id);
+            }
+            AppEvent::CopyTaskNodeTaskBriefResult { task_id, result } => {
+                self.chat_widget
+                    .handle_copy_tasknode_task_brief_result(task_id, result);
+            }
+            AppEvent::SubmitTaskNodeTaskAction { task_id, action } => {
+                self.chat_widget
+                    .submit_tasknode_task_action(task_id, action);
+            }
+            AppEvent::SubmitTaskNodeTaskActionResult { action, result } => {
+                self.chat_widget
+                    .handle_submit_tasknode_task_action_result(action, result);
+            }
+            AppEvent::OpenTaskNodeEvidencePrompt { task_id } => {
+                self.chat_widget.open_tasknode_evidence_prompt(task_id);
+            }
+            AppEvent::OpenTaskNodeEvidencePromptResult { task_id, result } => {
+                self.chat_widget
+                    .handle_open_tasknode_evidence_prompt_result(task_id, result);
+            }
+            AppEvent::SubmitTaskNodeEvidence { task_id, summary } => {
+                self.chat_widget.submit_tasknode_evidence(task_id, summary);
+            }
+            AppEvent::SubmitTaskNodeEvidenceResult { result } => {
+                self.chat_widget
+                    .handle_submit_tasknode_evidence_result(result);
+            }
+            AppEvent::OpenTaskNodeTaskRequestPrompt => {
+                self.chat_widget.open_tasknode_task_request_prompt();
+            }
+            AppEvent::SubmitTaskNodeTaskRequest { detail } => {
+                self.chat_widget.submit_tasknode_task_request(detail);
+            }
+            AppEvent::SubmitTaskNodeTaskRequestResult { result } => {
+                self.chat_widget
+                    .handle_submit_tasknode_task_request_result(result);
+            }
+            AppEvent::OpenTaskNodeRequestList => {
+                self.chat_widget.open_tasknode_request_list();
+            }
+            AppEvent::OpenTaskNodeRequestListResult { result } => {
+                self.chat_widget
+                    .handle_open_tasknode_request_list_result(result);
+            }
+            AppEvent::OpenTaskNodeBalance => {
+                self.chat_widget.open_tasknode_balance();
+            }
+            AppEvent::OpenTaskNodeBalanceResult { result } => {
+                self.chat_widget.handle_open_tasknode_balance_result(result);
+            }
+            AppEvent::OpenTaskNodeRewards => {
+                self.chat_widget.open_tasknode_rewards();
+            }
+            AppEvent::OpenTaskNodeRewardsResult { result } => {
+                self.chat_widget.handle_open_tasknode_rewards_result(result);
+            }
+            AppEvent::LogoutTaskNode => {
+                self.chat_widget.logout_tasknode();
+            }
             AppEvent::OpenFullAccessConfirmation {
                 preset,
                 return_to_permissions,
