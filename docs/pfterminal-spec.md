@@ -476,7 +476,7 @@ Subagent tool visibility is gated by the `namespace_tools` provider capability. 
 ### 11.2 Release installer (preferred)
 
 ```bash
-curl -fsSL https://github.com/agticorp/PfTerminal/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/agtico/PfTerminal/releases/latest/download/install.sh | sh
 ```
 
 Creates a `pfterminal` launcher, defaults state to `$HOME/.pfterminal`, and leaves any existing stock `codex` command untouched.
@@ -484,7 +484,7 @@ Creates a `pfterminal` launcher, defaults state to `$HOME/.pfterminal`, and leav
 ### 11.3 Build from source
 
 ```bash
-git clone https://github.com/agticorp/PfTerminal.git
+git clone https://github.com/agtico/PfTerminal.git
 cd PfTerminal/codex-rs
 CARGO_NET_GIT_FETCH_WITH_CLI=true cargo build -p codex-cli --bin pfterminal
 ```
@@ -634,4 +634,4 @@ Apache-2.0.
 
 ## 16. Upstream
 
-PFTerminal is based on the open-source Codex CLI project. Upstream changes are isolated through the `upstream` remote, and PFTerminal changes land through the `agticorp/PfTerminal` repository. Product-specific provider constants stay in provider metadata modules, product model choices stay in bundled model metadata, UI branding stays in TUI-facing modules, and request-compatibility shims stay close to API serialization — so upstream Codex changes can be merged without hiding PFTerminal product behavior in scattered prompt text.
+PFTerminal is based on the open-source Codex CLI project. Upstream changes are isolated through the `upstream` remote, and PFTerminal changes land through the `agtico/PfTerminal` repository. Product-specific provider constants stay in provider metadata modules, product model choices stay in bundled model metadata, UI branding stays in TUI-facing modules, and request-compatibility shims stay close to API serialization — so upstream Codex changes can be merged without hiding PFTerminal product behavior in scattered prompt text.

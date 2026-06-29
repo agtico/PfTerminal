@@ -41,6 +41,7 @@ jobs:
         run: |
           set -euo pipefail
           sh -n scripts/install/install.sh
+          bash -n scripts/install/build_macos_dmg.sh
           python3 -m unittest discover -s scripts/codex_package -p 'test_*.py'
 
       - name: Build PFTerminal binaries

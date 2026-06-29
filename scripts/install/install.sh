@@ -4,6 +4,8 @@ set -eu
 
 RELEASE="${PFTERMINAL_RELEASE:-${CODEX_RELEASE:-latest}}"
 NON_INTERACTIVE="${PFTERMINAL_NON_INTERACTIVE:-${CODEX_NON_INTERACTIVE:-false}}"
+LOCAL_PACKAGE_ARCHIVE="${PFTERMINAL_PACKAGE_ARCHIVE:-}"
+LOCAL_CHECKSUM_MANIFEST="${PFTERMINAL_CHECKSUM_MANIFEST:-}"
 
 BIN_DIR="${PFTERMINAL_INSTALL_DIR:-${CODEX_INSTALL_DIR:-$HOME/.local/bin}}"
 BIN_PATH="$BIN_DIR/pfterminal"
@@ -80,6 +82,9 @@ Environment:
   PFTERMINAL_NON_INTERACTIVE  Set to 1, true, or yes to skip prompts.
   PFTERMINAL_INSTALL_DIR      Directory for the pfterminal launcher.
   PFTERMINAL_HOME             PFTerminal state directory; defaults to ~/.pfterminal.
+  PFTERMINAL_PACKAGE_ARCHIVE  Local pfterminal package archive to install.
+  PFTERMINAL_CHECKSUM_MANIFEST
+                              Local SHA-256 manifest for PFTERMINAL_PACKAGE_ARCHIVE.
 
   Legacy CODEX_* installer variables are still honored as fallbacks.
 EOF
@@ -133,13 +138,13 @@ release_url_for_asset() {
   asset="$1"
   resolved_version="$2"
 
-  printf 'https://github.com/agticorp/PfTerminal/releases/download/rust-v%s/%s\n' "$resolved_version" "$asset"
+  printf 'https://github.com/agtico/PfTerminal/releases/download/rust-v%s/%s\n' "$resolved_version" "$asset"
 }
 
 release_metadata_url() {
   resolved_version="$1"
 
-  printf 'https://api.github.com/repos/agticorp/PfTerminal/releases/tags/rust-v%s\n' "$resolved_version"
+  printf 'https://api.github.com/repos/agtico/PfTerminal/releases/tags/rust-v%s\n' "$resolved_version"
 }
 
 release_asset_digest_or_empty() {
@@ -288,7 +293,7 @@ resolve_version() {
     return
   fi
 
-  release_json="$(download_text "https://api.github.com/repos/agticorp/PfTerminal/releases/latest")"
+  release_json="$(download_text "https://api.github.com/repos/agtico/PfTerminal/releases/latest")"
   resolved="$(printf '%s\n' "$release_json" | sed -n 's/.*"tag_name":[[:space:]]*"rust-v\([^"]*\)".*/\1/p' | head -n 1)"
 
   if [ -z "$resolved" ]; then
@@ -328,7 +333,8 @@ add_to_path() {
 
   case ":$PATH:" in
     *":$BIN_DIR:"*)
-      if [ -z "$conflict_manager" ]; then
+      resolved_visible="$(command -v pfterminal 2>/dev/null || true)"
+      if [ -z "$conflict_manager" ] || [ "$resolved_visible" = "$BIN_PATH" ]; then
         return
       fi
       ;;
@@ -888,7 +894,31 @@ fi
 resolved_version="$(resolve_version)"
 package_asset="pfterminal-package-$vendor_target.tar.gz"
 checksum_asset="pfterminal-package_SHA256SUMS"
-if release_asset_exists "$package_asset" "$resolved_version" &&
+if [ -n "$LOCAL_PACKAGE_ARCHIVE" ]; then
+  if [ ! -f "$LOCAL_PACKAGE_ARCHIVE" ]; then
+    echo "Local PFTerminal package archive does not exist: $LOCAL_PACKAGE_ARCHIVE" >&2
+    exit 1
+  fi
+
+  local_asset="$(basename "$LOCAL_PACKAGE_ARCHIVE")"
+  if [ "$local_asset" = "$package_asset" ]; then
+    install_layout="package"
+    asset="$package_asset"
+  elif [ "$local_asset" = "codex-package-$vendor_target.tar.gz" ]; then
+    install_layout="package"
+    package_asset="$local_asset"
+    checksum_asset="codex-package_SHA256SUMS"
+    asset="$package_asset"
+  else
+    echo "Local PFTerminal package archive $local_asset does not match detected platform target $vendor_target." >&2
+    exit 1
+  fi
+
+  if [ -n "$LOCAL_CHECKSUM_MANIFEST" ] && [ ! -f "$LOCAL_CHECKSUM_MANIFEST" ]; then
+    echo "Local PFTerminal checksum manifest does not exist: $LOCAL_CHECKSUM_MANIFEST" >&2
+    exit 1
+  fi
+elif release_asset_exists "$package_asset" "$resolved_version" &&
   release_asset_exists "$checksum_asset" "$resolved_version"; then
   install_layout="package"
   asset="$package_asset"
@@ -905,8 +935,12 @@ else
   echo "Could not find PFTerminal package or platform npm release assets for PFTerminal $resolved_version." >&2
   exit 1
 fi
-download_url="$(release_url_for_asset "$asset" "$resolved_version")"
-checksum_url="$(release_url_for_asset "$checksum_asset" "$resolved_version")"
+download_url=""
+checksum_url=""
+if [ -z "$LOCAL_PACKAGE_ARCHIVE" ]; then
+  download_url="$(release_url_for_asset "$asset" "$resolved_version")"
+  checksum_url="$(release_url_for_asset "$checksum_asset" "$resolved_version")"
+fi
 release_name="$resolved_version-$vendor_target"
 release_dir="$RELEASES_DIR/$release_name"
 current_version="$(current_installed_version)"
@@ -940,20 +974,30 @@ if ! release_dir_is_complete "$release_dir" "$resolved_version" "$vendor_target"
     warn "Found incomplete existing release at $release_dir; reinstalling."
   fi
 
-  archive_path="$tmp_dir/$asset"
-  checksum_path="$tmp_dir/$checksum_asset"
-
-  step "Downloading PFTerminal CLI"
-  if [ "$install_layout" = "package" ]; then
-    checksum_digest="$(release_asset_digest "$checksum_asset" "$resolved_version")"
-    download_file "$checksum_url" "$checksum_path"
-    verify_archive_digest "$checksum_path" "$checksum_digest"
-    expected_digest="$(package_archive_digest "$asset" "$checksum_path")"
+  if [ -n "$LOCAL_PACKAGE_ARCHIVE" ]; then
+    archive_path="$LOCAL_PACKAGE_ARCHIVE"
+    if [ -n "$LOCAL_CHECKSUM_MANIFEST" ]; then
+      expected_digest="$(package_archive_digest "$asset" "$LOCAL_CHECKSUM_MANIFEST")"
+      verify_archive_digest "$archive_path" "$expected_digest"
+    else
+      warn "No local checksum manifest was provided; skipping local archive checksum verification."
+    fi
   else
-    expected_digest="$(release_asset_digest "$asset" "$resolved_version")"
+    archive_path="$tmp_dir/$asset"
+    checksum_path="$tmp_dir/$checksum_asset"
+
+    step "Downloading PFTerminal CLI"
+    if [ "$install_layout" = "package" ]; then
+      checksum_digest="$(release_asset_digest "$checksum_asset" "$resolved_version")"
+      download_file "$checksum_url" "$checksum_path"
+      verify_archive_digest "$checksum_path" "$checksum_digest"
+      expected_digest="$(package_archive_digest "$asset" "$checksum_path")"
+    else
+      expected_digest="$(release_asset_digest "$asset" "$resolved_version")"
+    fi
+    download_file "$download_url" "$archive_path"
+    verify_archive_digest "$archive_path" "$expected_digest"
   fi
-  download_file "$download_url" "$archive_path"
-  verify_archive_digest "$archive_path" "$expected_digest"
 
   step "Installing standalone package to $release_dir"
   if [ "$install_layout" = "package" ]; then

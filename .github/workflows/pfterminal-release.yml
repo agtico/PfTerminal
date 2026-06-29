@@ -131,11 +131,40 @@ jobs:
           test -x "$package_dir/bin/codex"
           test -x "$package_dir/codex-path/rg"
 
-      - name: Upload macOS package archive
+      - name: Build macOS DMG installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/install/build_macos_dmg.sh \
+            --archive "dist/${TARGET}/pfterminal-package-${TARGET}.tar.gz" \
+            --target "$TARGET" \
+            --version "${{ needs.validate.outputs.version }}" \
+            --output "dist/${TARGET}/PFTerminal-${TARGET}.dmg"
+
+      - name: Smoke test macOS DMG installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmg="dist/${TARGET}/PFTerminal-${TARGET}.dmg"
+          hdiutil imageinfo "$dmg" >/dev/null
+          mount_dir="${RUNNER_TEMP}/pfterminal-dmg-${TARGET}"
+          rm -rf "$mount_dir"
+          mkdir -p "$mount_dir"
+          hdiutil attach "$dmg" -mountpoint "$mount_dir" -nobrowse -quiet
+          trap 'hdiutil detach "$mount_dir" -quiet || true' EXIT
+          test -x "$mount_dir/install.command"
+          test -x "$mount_dir/install.sh"
+          test -f "$mount_dir/pfterminal-package-${TARGET}.tar.gz"
+          test -f "$mount_dir/pfterminal-package_SHA256SUMS"
+          sh "$mount_dir/install.sh" --help >/dev/null
+
+      - name: Upload macOS package artifacts
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: pfterminal-package-${{ matrix.target }}
-          path: dist/${{ matrix.target }}/pfterminal-package-${{ matrix.target }}.tar.gz
+          path: |
+            dist/${{ matrix.target }}/pfterminal-package-${{ matrix.target }}.tar.gz
+            dist/${{ matrix.target }}/PFTerminal-${{ matrix.target }}.dmg
           if-no-files-found: error
           compression-level: 0
 
@@ -286,6 +315,7 @@ jobs:
           set -euo pipefail
           mkdir -p release-dist
           find downloaded -type f -name 'pfterminal-package-*.tar.gz' -exec cp {} release-dist/ \;
+          find downloaded -type f -name 'PFTerminal-*.dmg' -exec cp {} release-dist/ \;
           cp scripts/install/install.sh release-dist/install.sh
 
           find release-dist -maxdepth 1 -type f -name 'pfterminal-package-*.tar.gz' -print |
@@ -295,6 +325,13 @@ jobs:
                 awk -v name="$(basename "$archive")" '{ print $1 "  " name }'
             done > release-dist/pfterminal-package_SHA256SUMS
 
+          find release-dist -maxdepth 1 -type f -name 'PFTerminal-*.dmg' -print |
+            sort |
+            while IFS= read -r dmg; do
+              sha256sum "$dmg" |
+                awk -v name="$(basename "$dmg")" '{ print $1 "  " name }'
+            done > release-dist/pfterminal-dmg_SHA256SUMS
+
           expected_count=4
           actual_count="$(find release-dist -maxdepth 1 -type f -name 'pfterminal-package-*.tar.gz' | wc -l | tr -d ' ')"
           if [[ "$actual_count" != "$expected_count" ]]; then
@@ -303,7 +340,16 @@ jobs:
             exit 1
           fi
 
+          expected_dmg_count=2
+          actual_dmg_count="$(find release-dist -maxdepth 1 -type f -name 'PFTerminal-*.dmg' | wc -l | tr -d ' ')"
+          if [[ "$actual_dmg_count" != "$expected_dmg_count" ]]; then
+            echo "Expected ${expected_dmg_count} macOS DMG installers, found ${actual_dmg_count}"
+            find release-dist -maxdepth 1 -type f -print
+            exit 1
+          fi
+
           cat release-dist/pfterminal-package_SHA256SUMS
+          cat release-dist/pfterminal-dmg_SHA256SUMS
 
       - name: Upload release asset bundle
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0

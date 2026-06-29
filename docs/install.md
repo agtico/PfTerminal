@@ -34,14 +34,14 @@ xcode-select --install
 
 ## Install Options
 
-### Release Installer
+### Linux / Terminal Release Installer
 
-The standalone installer downloads a release from `agticorp/PfTerminal` and
-verifies the release artifact digest. This is the preferred path for normal
-users because it avoids a full Rust source build.
+The standalone installer downloads a release from `agtico/PfTerminal` and
+verifies the release artifact digest. This is the preferred path for Linux
+users and for macOS users who prefer terminal install over a DMG.
 
 ```bash
-curl -fsSL https://github.com/agticorp/PfTerminal/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/agtico/PfTerminal/releases/latest/download/install.sh | sh
 ```
 
 The release installer creates a `pfterminal` launcher and leaves any existing
@@ -50,7 +50,7 @@ stock `codex` command alone. By default that launcher stores PFTerminal state in
 only when you need a custom install location:
 
 ```bash
-curl -fsSL https://github.com/agticorp/PfTerminal/releases/latest/download/install.sh |
+curl -fsSL https://github.com/agtico/PfTerminal/releases/latest/download/install.sh |
   PFTERMINAL_INSTALL_DIR="$HOME/.local/bin" \
   PFTERMINAL_HOME="$HOME/.pfterminal" \
   sh
@@ -58,6 +58,18 @@ curl -fsSL https://github.com/agticorp/PfTerminal/releases/latest/download/insta
 
 The installer requires a published GitHub release. If a fresh clone has no
 release yet, use the source build fallback below.
+
+### macOS DMG
+
+Download the latest DMG from
+[GitHub Releases](https://github.com/agtico/PfTerminal/releases/latest):
+
+- `PFTerminal-aarch64-apple-darwin.dmg` for Apple Silicon Macs.
+- `PFTerminal-x86_64-apple-darwin.dmg` for Intel Macs.
+
+Open the DMG and double-click `install.command`. The DMG contains the exact
+standalone package archive plus `pfterminal-package_SHA256SUMS`; the installer
+uses the bundled archive and verifies it before installation.
 
 ### Release Build For Maintainers
 
@@ -72,7 +84,10 @@ pfterminal-package-aarch64-apple-darwin.tar.gz
 pfterminal-package-x86_64-apple-darwin.tar.gz
 pfterminal-package-aarch64-unknown-linux-musl.tar.gz
 pfterminal-package-x86_64-unknown-linux-gnu.tar.gz
+PFTerminal-aarch64-apple-darwin.dmg
+PFTerminal-x86_64-apple-darwin.dmg
 pfterminal-package_SHA256SUMS
+pfterminal-dmg_SHA256SUMS
 ```
 
 Leave `publish_release` disabled to do a build-only validation. Enable it to
@@ -83,7 +98,7 @@ installer's `latest` resolution.
 ### Source Build
 
 ```bash
-git clone https://github.com/agticorp/PfTerminal.git
+git clone https://github.com/agtico/PfTerminal.git
 cd PfTerminal/codex-rs
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y

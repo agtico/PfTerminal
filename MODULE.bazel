@@ -219,6 +219,32 @@ crate.from_cargo(
     use_experimental_platforms = True,
 )
 
+# rules_rs has well-known system-library annotations for these sys crates, but
+# PFTerminal intentionally keeps their upstream Cargo build scripts active here
+# rather than changing their linkage model in Bazel. Make that choice explicit
+# so Bazel query/build output stays actionable instead of repeating advisory
+# warnings on every invocation.
+crate.annotation(
+    crate = "gio-sys",
+    gen_build_script = "on",
+)
+crate.annotation(
+    crate = "glib-sys",
+    gen_build_script = "on",
+)
+crate.annotation(
+    crate = "gobject-sys",
+    gen_build_script = "on",
+)
+crate.annotation(
+    crate = "libgit2-sys",
+    gen_build_script = "on",
+)
+crate.annotation(
+    crate = "libssh2-sys",
+    gen_build_script = "on",
+)
+
 bazel_dep(name = "zstd", version = "1.5.7")
 
 crate.annotation(

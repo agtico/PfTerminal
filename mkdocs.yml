@@ -1,8 +1,8 @@
 site_name: PFTerminal
 site_description: Crypto-native AI services terminal based on the open-source Codex CLI.
 site_url: !ENV [PFTERMINAL_DOCS_SITE_URL, "http://127.0.0.1:8088/pfterminal/"]
-repo_url: https://github.com/agticorp/PfTerminal
-repo_name: agticorp/PfTerminal
+repo_url: https://github.com/agtico/PfTerminal
+repo_name: agtico/PfTerminal
 docs_dir: docs
 site_dir: site
 use_directory_urls: true

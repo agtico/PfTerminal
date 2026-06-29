@@ -82,7 +82,7 @@ function Find-ReleaseAssetMetadata {
         [string]$ResolvedVersion
     )
 
-    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/agticorp/PfTerminal/releases/tags/rust-v$ResolvedVersion"
+    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/agtico/PfTerminal/releases/tags/rust-v$ResolvedVersion"
     $asset = $release.assets | Where-Object { $_.name -eq $AssetName } | Select-Object -First 1
     if ($null -eq $asset) {
         return $null
@@ -223,7 +223,7 @@ function Resolve-Version {
         return $normalizedVersion
     }
 
-    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/agticorp/PfTerminal/releases/latest"
+    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/agtico/PfTerminal/releases/latest"
     if (-not $release.tag_name) {
         Write-Error "Failed to resolve the latest PFTerminal release version."
         exit 1

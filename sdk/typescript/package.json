@@ -4,7 +4,7 @@
   "description": "TypeScript SDK for PFTerminal APIs.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/agticorp/PfTerminal.git",
+    "url": "git+https://github.com/agtico/PfTerminal.git",
     "directory": "sdk/typescript"
   },
   "keywords": [
