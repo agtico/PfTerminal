@@ -170,5 +170,29 @@ mod tests {
                 .binary_search_by(|probe| probe.as_str().cmp("frontend-design/SKILL.md"))
                 .is_ok()
         );
+        assert!(
+            paths
+                .binary_search_by(|probe| probe.as_str().cmp("tasknode-usage/SKILL.md"))
+                .is_ok()
+        );
+        assert!(
+            paths
+                .binary_search_by(|probe| probe
+                    .as_str()
+                    .cmp("tasknode-usage/references/tooling.md"))
+                .is_ok()
+        );
+        assert!(
+            paths
+                .binary_search_by(|probe| probe
+                    .as_str()
+                    .cmp("tasknode-usage/references/submission-templates.md"))
+                .is_ok()
+        );
+        assert!(
+            paths
+                .binary_search_by(|probe| probe.as_str().cmp("tasknode-usage/agents/openai.yaml"))
+                .is_ok()
+        );
     }
 }

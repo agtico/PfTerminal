@@ -369,6 +369,48 @@ pub(crate) enum AppEvent {
     OpenTaskNodeRewardsResult {
         result: Result<serde_json::Value, String>,
     },
+    /// Open Task Node chat threads.
+    OpenTaskNodeChat,
+    /// Task Node chat threads loaded.
+    OpenTaskNodeChatConversationsResult {
+        result: Result<serde_json::Value, String>,
+    },
+    /// Open Task Node chat history.
+    OpenTaskNodeChatHistory {
+        conversation_id: String,
+        title: String,
+    },
+    /// Task Node chat history loaded.
+    OpenTaskNodeChatHistoryResult {
+        conversation_id: String,
+        title: String,
+        result: Result<serde_json::Value, String>,
+    },
+    /// Open the Task Node chat composer.
+    OpenTaskNodeChatPrompt {
+        conversation_id: String,
+        title: String,
+    },
+    /// Submit a Task Node chat message.
+    SubmitTaskNodeChat {
+        conversation_id: String,
+        title: String,
+        message: String,
+    },
+    /// Task Node chat stream emitted visible assistant text.
+    TaskNodeChatStreamDelta {
+        stream_id: String,
+        conversation_id: String,
+        title: String,
+        text: String,
+    },
+    /// Task Node chat stream finished.
+    TaskNodeChatStreamDone {
+        stream_id: String,
+        conversation_id: String,
+        title: String,
+        result: Result<serde_json::Value, String>,
+    },
     /// Remove the local Task Node terminal session.
     LogoutTaskNode,
 

@@ -38,6 +38,10 @@ const GOAL_USAGE_HINT: &str = "Example: /goal improve benchmark coverage";
 const RAW_USAGE: &str = "Usage: /raw [on|off]";
 const USAGE_CHATGPT_LOGIN_REQUIRED: &str = "Sign in with ChatGPT to view OpenAI usage with /usage.";
 
+fn tasknode_new_chat_id() -> String {
+    format!("chat_{}", uuid::Uuid::new_v4().simple())
+}
+
 impl ChatWidget {
     /// Dispatch a bare slash command and record its staged local-history entry.
     ///
@@ -787,12 +791,23 @@ impl ChatWidget {
                         }
                     }
                     "context" => self.app_event_tx.send(AppEvent::OpenTaskNodeContext),
+                    "chat" => {
+                        if rest.is_empty() {
+                            self.app_event_tx.send(AppEvent::OpenTaskNodeChat);
+                        } else {
+                            self.app_event_tx.send(AppEvent::SubmitTaskNodeChat {
+                                conversation_id: tasknode_new_chat_id(),
+                                title: "New chat".to_string(),
+                                message: rest.to_string(),
+                            });
+                        }
+                    }
                     "requests" => self.app_event_tx.send(AppEvent::OpenTaskNodeRequestList),
                     "balance" => self.app_event_tx.send(AppEvent::OpenTaskNodeBalance),
                     "rewards" => self.app_event_tx.send(AppEvent::OpenTaskNodeRewards),
                     "logout" => self.app_event_tx.send(AppEvent::LogoutTaskNode),
                     _ => self.add_error_message(
-                        "Usage: /tasknode [link|status|tasks|task|request|context|requests|verification|balance|rewards|logout]"
+                        "Usage: /tasknode [link|status|tasks|task|request|context|chat|requests|verification|balance|rewards|logout]"
                             .to_string(),
                     ),
                 }

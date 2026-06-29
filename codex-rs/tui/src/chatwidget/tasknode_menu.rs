@@ -12,6 +12,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use std::io::Read;
 use uuid::Uuid;
 
 const TASKNODE_MENU_VIEW_ID: &str = "tasknode-menu";
@@ -19,6 +20,7 @@ const TASKNODE_TASKS_VIEW_ID: &str = "tasknode-tasks";
 const TASKNODE_TASK_ACTIONS_VIEW_ID: &str = "tasknode-task-actions";
 const TASKNODE_REQUESTS_VIEW_ID: &str = "tasknode-requests";
 const TASKNODE_CONTEXT_VIEW_ID: &str = "tasknode-context";
+const TASKNODE_CHAT_VIEW_ID: &str = "tasknode-chat";
 const TASKNODE_SESSION_LABEL: &str = "tasknode/session";
 const TASKNODE_MENU_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -680,6 +682,230 @@ impl ChatWidget {
         }
     }
 
+    pub(crate) fn open_tasknode_chat(&mut self) {
+        self.show_or_replace_tasknode_selection(TASKNODE_CHAT_VIEW_ID, || {
+            tasknode_loading_selection_params(
+                TASKNODE_CHAT_VIEW_ID,
+                "Task Node chat".to_string(),
+                "Loading chat threads from Task Node...".to_string(),
+            )
+        });
+        self.spawn_tasknode_value_request(
+            "chat-conversations",
+            |client| client.chat_conversations(),
+            |result| AppEvent::OpenTaskNodeChatConversationsResult { result },
+        );
+    }
+
+    pub(crate) fn handle_open_tasknode_chat_conversations_result(
+        &mut self,
+        result: Result<Value, String>,
+    ) {
+        match parse_tasknode_value::<TaskNodeChatConversationsResponse>(
+            result,
+            "chat conversations",
+        ) {
+            Ok(response) => {
+                let mut header = ColumnRenderable::new();
+                header.push(Line::from("Task Node chat".bold()));
+                header.push(Line::from(
+                    "Private Thinking by default. Existing standard chat threads are shown below."
+                        .dim(),
+                ));
+                self.show_or_replace_tasknode_selection(TASKNODE_CHAT_VIEW_ID, || {
+                    SelectionViewParams {
+                        view_id: Some(TASKNODE_CHAT_VIEW_ID),
+                        footer_hint: Some(standard_popup_hint_line()),
+                        is_searchable: true,
+                        search_placeholder: Some("Search chat threads".to_string()),
+                        header: Box::new(header),
+                        items: tasknode_chat_conversation_items(response.conversations),
+                        ..Default::default()
+                    }
+                });
+            }
+            Err(err) => {
+                self.show_or_replace_tasknode_selection(TASKNODE_CHAT_VIEW_ID, || {
+                    tasknode_error_selection_params(
+                        TASKNODE_CHAT_VIEW_ID,
+                        "Task Node chat".to_string(),
+                        format!("Task Node chat failed: {err}"),
+                    )
+                });
+                self.add_error_message(format!("Task Node chat failed: {err}"));
+            }
+        }
+    }
+
+    pub(crate) fn open_tasknode_chat_history(&mut self, conversation_id: String, title: String) {
+        self.show_or_replace_tasknode_selection(TASKNODE_CHAT_VIEW_ID, || {
+            tasknode_loading_selection_params(
+                TASKNODE_CHAT_VIEW_ID,
+                tasknode_chat_title(&title),
+                "Loading chat history from Task Node...".to_string(),
+            )
+        });
+        self.spawn_tasknode_value_request(
+            "chat-history",
+            {
+                let conversation_id = conversation_id.clone();
+                move |client| client.chat_history(&conversation_id)
+            },
+            move |result| AppEvent::OpenTaskNodeChatHistoryResult {
+                conversation_id: conversation_id.clone(),
+                title: title.clone(),
+                result,
+            },
+        );
+    }
+
+    pub(crate) fn handle_open_tasknode_chat_history_result(
+        &mut self,
+        conversation_id: String,
+        title: String,
+        result: Result<Value, String>,
+    ) {
+        match parse_tasknode_value::<TaskNodeChatHistoryResponse>(result, "chat history") {
+            Ok(response) => {
+                let resolved_id = if response.conversation_id.is_empty() {
+                    conversation_id
+                } else {
+                    response.conversation_id.clone()
+                };
+                self.add_plain_history_lines(tasknode_chat_history_lines(
+                    &title,
+                    &resolved_id,
+                    &response.messages,
+                ));
+                let header = tasknode_chat_history_header(&title, &resolved_id, &response.messages);
+                let items = tasknode_chat_thread_items(resolved_id, title);
+                self.show_or_replace_tasknode_selection(TASKNODE_CHAT_VIEW_ID, || {
+                    SelectionViewParams {
+                        view_id: Some(TASKNODE_CHAT_VIEW_ID),
+                        footer_hint: Some(standard_popup_hint_line()),
+                        is_searchable: false,
+                        header: Box::new(header),
+                        items,
+                        ..Default::default()
+                    }
+                });
+            }
+            Err(err) => {
+                self.show_or_replace_tasknode_selection(TASKNODE_CHAT_VIEW_ID, || {
+                    tasknode_error_selection_params(
+                        TASKNODE_CHAT_VIEW_ID,
+                        tasknode_chat_title(&title),
+                        format!("Task Node chat history failed: {err}"),
+                    )
+                });
+                self.add_error_message(format!("Task Node chat history failed: {err}"));
+            }
+        }
+    }
+
+    pub(crate) fn open_tasknode_chat_prompt(&mut self, conversation_id: String, title: String) {
+        let tx = self.app_event_tx.clone();
+        let view = CustomPromptView::new(
+            "Task Node chat".to_string(),
+            "Message Task Node".to_string(),
+            String::new(),
+            Some(format!(
+                "{} | Private Thinking",
+                tasknode_chat_title(&title)
+            )),
+            Box::new(move |message: String| {
+                tx.send(AppEvent::SubmitTaskNodeChat {
+                    conversation_id: conversation_id.clone(),
+                    title: title.clone(),
+                    message,
+                });
+            }),
+        )
+        .with_submit_mode(CustomPromptSubmitMode::CtrlD);
+        self.show_custom_prompt_view(view);
+    }
+
+    pub(crate) fn submit_tasknode_chat(
+        &mut self,
+        conversation_id: String,
+        title: String,
+        message: String,
+    ) {
+        let message = message.trim().to_string();
+        if message.is_empty() {
+            self.add_error_message("Task Node chat message is required.".to_string());
+            return;
+        }
+        let stream_id = format!("tasknode-chat-stream-{}", Uuid::new_v4());
+        self.tasknode_active_chat_stream_id = Some(stream_id.clone());
+        self.add_plain_history_lines(tasknode_chat_user_message_lines(&title, &message));
+        self.show_or_replace_tasknode_selection(TASKNODE_CHAT_VIEW_ID, || {
+            tasknode_chat_stream_params(&title, &conversation_id, "Waiting for Task Node...", false)
+        });
+        self.spawn_tasknode_chat_stream(stream_id, conversation_id, title, message);
+    }
+
+    pub(crate) fn handle_tasknode_chat_stream_delta(
+        &mut self,
+        stream_id: String,
+        conversation_id: String,
+        title: String,
+        text: String,
+    ) {
+        if self.tasknode_active_chat_stream_id.as_deref() != Some(stream_id.as_str()) {
+            return;
+        }
+        self.show_or_replace_tasknode_selection(TASKNODE_CHAT_VIEW_ID, || {
+            tasknode_chat_stream_params(&title, &conversation_id, &text, false)
+        });
+    }
+
+    pub(crate) fn handle_tasknode_chat_stream_done(
+        &mut self,
+        stream_id: String,
+        conversation_id: String,
+        title: String,
+        result: Result<Value, String>,
+    ) {
+        if self.tasknode_active_chat_stream_id.as_deref() != Some(stream_id.as_str()) {
+            return;
+        }
+        self.tasknode_active_chat_stream_id = None;
+        match parse_tasknode_value::<TaskNodeChatStreamResponse>(result, "chat stream") {
+            Ok(response) => {
+                let resolved_id = if response.conversation_id.is_empty() {
+                    conversation_id
+                } else {
+                    response.conversation_id.clone()
+                };
+                self.add_plain_history_lines(tasknode_chat_stream_result_lines(&response));
+                let messages = tasknode_chat_response_messages(&response);
+                let header = tasknode_chat_history_header(&title, &resolved_id, &messages);
+                let items = tasknode_chat_thread_items(resolved_id, title);
+                self.show_or_replace_tasknode_selection(TASKNODE_CHAT_VIEW_ID, || {
+                    SelectionViewParams {
+                        view_id: Some(TASKNODE_CHAT_VIEW_ID),
+                        footer_hint: Some(standard_popup_hint_line()),
+                        is_searchable: false,
+                        header: Box::new(header),
+                        items,
+                        ..Default::default()
+                    }
+                });
+            }
+            Err(err) => {
+                self.show_or_replace_tasknode_selection(TASKNODE_CHAT_VIEW_ID, || {
+                    tasknode_error_selection_params(
+                        TASKNODE_CHAT_VIEW_ID,
+                        tasknode_chat_title(&title),
+                        format!("Task Node chat failed: {err}"),
+                    )
+                });
+                self.add_error_message(format!("Task Node chat failed: {err}"));
+            }
+        }
+    }
+
     pub(crate) fn logout_tasknode(&mut self) {
         let codex_home = self.config.codex_home.as_path().to_path_buf();
         let session = TaskNodeLocalState::load(&codex_home).ok().flatten();
@@ -767,6 +993,34 @@ impl ChatWidget {
         self.refresh_tasknode_menu_counts();
         if self.bottom_pane.active_view_id() == Some(TASKNODE_TASKS_VIEW_ID) {
             self.open_tasknode_task_list("outstanding".to_string());
+        }
+    }
+
+    fn spawn_tasknode_chat_stream(
+        &mut self,
+        stream_id: String,
+        conversation_id: String,
+        title: String,
+        message: String,
+    ) {
+        let codex_home = self.config.codex_home.as_path().to_path_buf();
+        let tx = self.app_event_tx.clone();
+        let spawn_result = std::thread::Builder::new()
+            .name("tasknode-chat-stream".to_string())
+            .spawn(move || {
+                let result = tasknode_client_for_codex_home(&codex_home).and_then(|client| {
+                    client.stream_chat(&conversation_id, &message, &stream_id, &title, tx.clone())
+                });
+                tx.send(AppEvent::TaskNodeChatStreamDone {
+                    stream_id,
+                    conversation_id,
+                    title,
+                    result,
+                });
+            });
+        if let Err(err) = spawn_result {
+            self.tasknode_active_chat_stream_id = None;
+            self.add_error_message(format!("Task Node chat worker failed: {err}"));
         }
     }
 
@@ -1015,6 +1269,15 @@ fn tasknode_menu_items(
                 name: "Context document".to_string(),
                 description: Some("Review or edit the current Task Node context".to_string()),
                 actions: vec![Box::new(|tx| tx.send(AppEvent::OpenTaskNodeContext))],
+                dismiss_on_select: false,
+                ..Default::default()
+            },
+            SelectionItem {
+                name: "Chat".to_string(),
+                description: Some(
+                    "Open Task Node chat threads or start a Private Thinking chat".to_string(),
+                ),
+                actions: vec![Box::new(|tx| tx.send(AppEvent::OpenTaskNodeChat))],
                 dismiss_on_select: false,
                 ..Default::default()
             },
@@ -1940,6 +2203,336 @@ fn tasknode_request_items(requests: Vec<TaskNodeRequestRow>) -> Vec<SelectionIte
         .collect()
 }
 
+fn tasknode_new_chat_id() -> String {
+    format!("chat_{}", Uuid::new_v4().simple())
+}
+
+fn tasknode_chat_title(title: &str) -> String {
+    if title.trim().is_empty() || title.trim() == "New chat" {
+        "Task Node chat".to_string()
+    } else {
+        title.trim().to_string()
+    }
+}
+
+fn tasknode_chat_conversation_items(
+    conversations: Vec<TaskNodeChatConversation>,
+) -> Vec<SelectionItem> {
+    let mut items = vec![SelectionItem {
+        name: "New Private Thinking chat".to_string(),
+        description: Some("Start a new Task Node chat thread".to_string()),
+        actions: vec![Box::new(|tx| {
+            tx.send(AppEvent::OpenTaskNodeChatPrompt {
+                conversation_id: tasknode_new_chat_id(),
+                title: "New chat".to_string(),
+            });
+        })],
+        dismiss_on_select: true,
+        ..Default::default()
+    }];
+
+    if conversations.is_empty() {
+        items.push(SelectionItem {
+            name: "No chat threads".to_string(),
+            description: Some("Start a new chat to create one.".to_string()),
+            is_disabled: true,
+            ..Default::default()
+        });
+        return items;
+    }
+
+    items.extend(conversations.into_iter().map(|conversation| {
+        let conversation_id = conversation.conversation_id();
+        let title = tasknode_chat_title(&conversation.title);
+        let kind = conversation.kind.clone().unwrap_or_default();
+        let is_hive = kind == "hive";
+        let is_disabled = is_hive || conversation_id.is_empty();
+        let description = [
+            conversation
+                .last_message_preview
+                .clone()
+                .filter(|preview| !preview.trim().is_empty())
+                .unwrap_or_else(|| {
+                    format!("{} message(s)", conversation.message_count.unwrap_or(0))
+                }),
+            conversation.updated_at.clone().unwrap_or_default(),
+        ]
+        .into_iter()
+        .filter(|part| !part.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("   ");
+
+        SelectionItem {
+            name: title.clone(),
+            description: Some(if is_hive {
+                "Hive chat is not routed through terminal standard chat yet.".to_string()
+            } else {
+                description
+            }),
+            actions: if is_disabled {
+                Vec::new()
+            } else {
+                vec![Box::new({
+                    let conversation_id = conversation_id.clone();
+                    move |tx| {
+                        tx.send(AppEvent::OpenTaskNodeChatHistory {
+                            conversation_id: conversation_id.clone(),
+                            title: title.clone(),
+                        });
+                    }
+                })]
+            },
+            is_disabled,
+            disabled_reason: is_hive.then(|| "Open Hive chat in the web app for now.".to_string()),
+            dismiss_on_select: false,
+            ..Default::default()
+        }
+    }));
+
+    items
+}
+
+fn tasknode_chat_thread_items(conversation_id: String, title: String) -> Vec<SelectionItem> {
+    let send_conversation_id = conversation_id.clone();
+    let send_title = title.clone();
+    let refresh_conversation_id = conversation_id.clone();
+    let refresh_title = title.clone();
+    vec![
+        SelectionItem {
+            name: "Send message".to_string(),
+            description: Some("Continue this thread with Private Thinking".to_string()),
+            actions: vec![Box::new(move |tx| {
+                tx.send(AppEvent::OpenTaskNodeChatPrompt {
+                    conversation_id: send_conversation_id.clone(),
+                    title: send_title.clone(),
+                });
+            })],
+            dismiss_on_select: true,
+            ..Default::default()
+        },
+        SelectionItem {
+            name: "Refresh thread".to_string(),
+            description: Some("Reload this chat history from Task Node".to_string()),
+            actions: vec![Box::new(move |tx| {
+                tx.send(AppEvent::OpenTaskNodeChatHistory {
+                    conversation_id: refresh_conversation_id.clone(),
+                    title: refresh_title.clone(),
+                });
+            })],
+            dismiss_on_select: false,
+            ..Default::default()
+        },
+        SelectionItem {
+            name: "Back to chat threads".to_string(),
+            description: Some("Return to the Task Node chat list".to_string()),
+            actions: vec![Box::new(|tx| tx.send(AppEvent::OpenTaskNodeChat))],
+            dismiss_on_select: false,
+            ..Default::default()
+        },
+    ]
+}
+
+fn tasknode_chat_message_role(message: &TaskNodeChatMessage) -> String {
+    match message.role.as_deref() {
+        Some("user") => "You".to_string(),
+        Some("assistant") => "Task Node".to_string(),
+        Some("agent") => "Agent".to_string(),
+        Some(role) if !role.trim().is_empty() => role.to_string(),
+        _ => "Message".to_string(),
+    }
+}
+
+fn tasknode_chat_message_body(message: &TaskNodeChatMessage) -> String {
+    message
+        .body
+        .clone()
+        .or(message.text.clone())
+        .unwrap_or_default()
+}
+
+fn push_tasknode_chat_message(
+    header: &mut ColumnRenderable<'static>,
+    message: &TaskNodeChatMessage,
+) {
+    let body = tasknode_chat_message_body(message);
+    let role = tasknode_chat_message_role(message);
+    let timestamp = message.created_at.clone().unwrap_or_default();
+    let title = if timestamp.is_empty() {
+        role
+    } else {
+        format!("{role}  {timestamp}")
+    };
+    header.push(Line::from(""));
+    header.push(Line::from(Span::from(title).bold().cyan()));
+    if body.trim().is_empty() {
+        header.push(Line::from("(empty)".dim()));
+    } else {
+        header.push(tasknode_wrapped_paragraph(body));
+    }
+}
+
+fn tasknode_chat_history_header(
+    title: &str,
+    conversation_id: &str,
+    messages: &[TaskNodeChatMessage],
+) -> ColumnRenderable<'static> {
+    let mut header = ColumnRenderable::new();
+    header.push(Line::from(tasknode_chat_title(title).bold()));
+    header.push(Line::from(
+        format!("{conversation_id} | Private Thinking default").dim(),
+    ));
+    if messages.is_empty() {
+        header.push(Line::from(""));
+        header.push(Line::from("No messages yet.".dim()));
+        return header;
+    }
+    for message in messages {
+        push_tasknode_chat_message(&mut header, message);
+    }
+    header
+}
+
+fn tasknode_chat_history_lines(
+    title: &str,
+    conversation_id: &str,
+    messages: &[TaskNodeChatMessage],
+) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(vec!["Task Node chat".bold().cyan()]),
+        Line::from(tasknode_chat_title(title).bold()),
+        Line::from(conversation_id.to_string().dim()),
+    ];
+    if messages.is_empty() {
+        lines.push(Line::from("  No messages yet."));
+        return lines;
+    }
+    for message in messages {
+        lines.push(Line::from(""));
+        lines.push(Line::from(tasknode_chat_message_role(message).bold()));
+        for source_line in tasknode_chat_message_body(message).lines() {
+            if source_line.trim().is_empty() {
+                lines.push(Line::from(""));
+                continue;
+            }
+            for wrapped in tasknode_soft_wrap_line(source_line, 100) {
+                lines.push(Line::from(format!("  {wrapped}")));
+            }
+        }
+    }
+    lines
+}
+
+fn tasknode_chat_user_message_lines(title: &str, message: &str) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(vec!["Task Node chat".bold().cyan()]),
+        Line::from(tasknode_chat_title(title).bold()),
+        Line::from("You".bold()),
+    ];
+    for source_line in message.lines() {
+        for wrapped in tasknode_soft_wrap_line(source_line, 100) {
+            lines.push(Line::from(format!("  {wrapped}")));
+        }
+    }
+    lines
+}
+
+fn tasknode_chat_stream_params(
+    title: &str,
+    conversation_id: &str,
+    text: &str,
+    done: bool,
+) -> SelectionViewParams {
+    let mut header = ColumnRenderable::new();
+    header.push(Line::from(tasknode_chat_title(title).bold()));
+    header.push(Line::from(
+        format!("{conversation_id} | Private Thinking streaming").dim(),
+    ));
+    header.push(Line::from(""));
+    header.push(Line::from("Task Node".bold().cyan()));
+    header.push(tasknode_wrapped_paragraph(text.to_string()));
+    SelectionViewParams {
+        view_id: Some(TASKNODE_CHAT_VIEW_ID),
+        footer_hint: Some(standard_popup_hint_line()),
+        is_searchable: false,
+        header: Box::new(header),
+        items: vec![SelectionItem {
+            name: if done {
+                "Response complete".to_string()
+            } else {
+                "Streaming...".to_string()
+            },
+            description: Some("Waiting for Task Node chat stream.".to_string()),
+            is_disabled: true,
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+}
+
+fn tasknode_chat_response_messages(
+    response: &TaskNodeChatStreamResponse,
+) -> Vec<TaskNodeChatMessage> {
+    let mut messages = Vec::new();
+    if let Some(user) = &response.user {
+        messages.push(user.clone());
+    }
+    if let Some(assistant) = &response.assistant {
+        messages.push(assistant.clone());
+    }
+    messages
+}
+
+fn tasknode_chat_usage_summary(response: &TaskNodeChatStreamResponse) -> String {
+    let usage = match &response.usage {
+        Some(usage) => usage,
+        None => return String::new(),
+    };
+    let mut parts = Vec::new();
+    if let Some(total) = usage.total_tokens {
+        parts.push(format!("{total} tokens"));
+    }
+    if let Some(cost) = usage.cost_usd {
+        parts.push(format!("${cost:.6}"));
+    }
+    parts.join(" | ")
+}
+
+fn tasknode_chat_stream_result_lines(response: &TaskNodeChatStreamResponse) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(vec!["Task Node response".bold().cyan()])];
+    let metadata = [
+        response.mode.clone().unwrap_or_default(),
+        response.provider.clone().unwrap_or_default(),
+        response.model.clone().unwrap_or_default(),
+        tasknode_chat_usage_summary(response),
+    ]
+    .into_iter()
+    .filter(|part| !part.trim().is_empty())
+    .collect::<Vec<_>>()
+    .join(" | ");
+    if !metadata.is_empty() {
+        lines.push(Line::from(metadata.dim()));
+    }
+    let body = response
+        .assistant
+        .as_ref()
+        .map(tasknode_chat_message_body)
+        .unwrap_or_default();
+    if body.trim().is_empty() {
+        lines.push(Line::from("  Task Node returned no assistant text."));
+        return lines;
+    }
+    for source_line in body.lines() {
+        if source_line.trim().is_empty() {
+            lines.push(Line::from(""));
+            continue;
+        }
+        for wrapped in tasknode_soft_wrap_line(source_line, 100) {
+            lines.push(Line::from(format!("  {wrapped}")));
+        }
+    }
+    lines
+}
+
 fn tasknode_response_hint(value: &Value) -> Option<String> {
     value
         .get("message")
@@ -2208,6 +2801,52 @@ impl TaskNodeClient {
         .map_err(|err| err.to_string())
     }
 
+    fn chat_conversations(&self) -> Result<Value, String> {
+        self.get_json("/api/terminal/tasknode/chat/conversations?limit=30")
+            .map_err(|err| err.to_string())
+    }
+
+    fn chat_history(&self, conversation_id: &str) -> Result<Value, String> {
+        self.get_json(&format!(
+            "/api/terminal/tasknode/chat/history?conversationId={}&limit=120",
+            urlencoding::encode(conversation_id)
+        ))
+        .map_err(|err| err.to_string())
+    }
+
+    fn stream_chat(
+        &self,
+        conversation_id: &str,
+        message: &str,
+        stream_id: &str,
+        title: &str,
+        tx: AppEventSender,
+    ) -> Result<Value, String> {
+        let body = serde_json::json!({
+            "conversationId": conversation_id,
+            "message": message,
+            "mode": "Private Thinking",
+        });
+        self.post_sse(
+            "/api/terminal/tasknode/chat/stream",
+            &body,
+            move |event, value, accumulated| {
+                if event == "delta"
+                    && let Some(delta) = value.get("delta").and_then(Value::as_str)
+                {
+                    accumulated.push_str(delta);
+                    tx.send(AppEvent::TaskNodeChatStreamDelta {
+                        stream_id: stream_id.to_string(),
+                        conversation_id: conversation_id.to_string(),
+                        title: title.to_string(),
+                        text: accumulated.clone(),
+                    });
+                }
+            },
+        )
+        .map_err(|err| err.to_string())
+    }
+
     fn revoke(&self) -> Result<Value, String> {
         self.post_json("/api/auth/terminal/revoke", &serde_json::json!({}))
             .map_err(|err| err.to_string())
@@ -2246,12 +2885,106 @@ impl TaskNodeClient {
             parse_tasknode_response(request.send())
         })
     }
+
+    fn post_sse(
+        &self,
+        path: &str,
+        body: &Value,
+        mut on_event: impl FnMut(&str, &Value, &mut String),
+    ) -> Result<Value, TaskNodeClientError> {
+        let url = format!("{}{}", self.origin, path);
+        let token = self.token.clone();
+        let body = body.clone();
+        let http = tasknode_streaming_http_client()?;
+        let mut request = http.post(url).json(&body);
+        if let Some(token) = &token {
+            request = request.bearer_auth(token);
+        }
+        let response = request
+            .send()
+            .map_err(|err| TaskNodeClientError::Http(tasknode_reqwest_error(err)))?;
+        let status = response.status().as_u16();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        if !(200..300).contains(&status) || !content_type.contains("text/event-stream") {
+            return parse_tasknode_response::<Value>(Ok(response));
+        }
+
+        let mut buffer = String::new();
+        let mut accumulated = String::new();
+        let mut done: Option<Value> = None;
+        let mut response = response;
+        let mut chunk = [0u8; 8192];
+        loop {
+            let read = response
+                .read(&mut chunk)
+                .map_err(|err| TaskNodeClientError::Http(err.to_string()))?;
+            if read == 0 {
+                break;
+            }
+            buffer.push_str(&String::from_utf8_lossy(&chunk[..read]));
+            for block in tasknode_sse_drain_blocks(&mut buffer) {
+                let Some((event, value)) = tasknode_parse_sse_block(&block)? else {
+                    continue;
+                };
+                match event.as_str() {
+                    "delta" => on_event(&event, &value, &mut accumulated),
+                    "done" => done = Some(value),
+                    "error" => {
+                        return Err(TaskNodeClientError::Http(
+                            value
+                                .get("message")
+                                .or_else(|| value.get("error"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("Task Node chat stream failed.")
+                                .to_string(),
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for block in tasknode_sse_drain_remainder(&mut buffer) {
+            let Some((event, value)) = tasknode_parse_sse_block(&block)? else {
+                continue;
+            };
+            if event == "done" {
+                done = Some(value);
+            } else if event == "error" {
+                return Err(TaskNodeClientError::Http(
+                    value
+                        .get("message")
+                        .or_else(|| value.get("error"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("Task Node chat stream failed.")
+                        .to_string(),
+                ));
+            }
+        }
+        done.ok_or_else(|| {
+            TaskNodeClientError::Http(
+                "Task Node chat stream ended without a final response.".to_string(),
+            )
+        })
+    }
 }
 
 fn tasknode_http_client() -> Result<reqwest::blocking::Client, TaskNodeClientError> {
     reqwest::blocking::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|err| TaskNodeClientError::Http(tasknode_reqwest_error(err)))
+}
+
+fn tasknode_streaming_http_client() -> Result<reqwest::blocking::Client, TaskNodeClientError> {
+    reqwest::blocking::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(300))
         .build()
         .map_err(|err| TaskNodeClientError::Http(tasknode_reqwest_error(err)))
 }
@@ -2294,6 +3027,60 @@ fn parse_tasknode_response<T: DeserializeOwned>(
         return Err(TaskNodeClientError::Http(message));
     }
     serde_json::from_str(&text).map_err(|err| TaskNodeClientError::Http(err.to_string()))
+}
+
+fn tasknode_sse_separator(buffer: &str) -> Option<(usize, usize)> {
+    match (buffer.find("\n\n"), buffer.find("\r\n\r\n")) {
+        (Some(lf), Some(crlf)) if crlf < lf => Some((crlf, 4)),
+        (Some(lf), _) => Some((lf, 2)),
+        (None, Some(crlf)) => Some((crlf, 4)),
+        (None, None) => None,
+    }
+}
+
+fn tasknode_sse_drain_blocks(buffer: &mut String) -> Vec<String> {
+    let mut blocks = Vec::new();
+    while let Some((index, separator_len)) = tasknode_sse_separator(buffer) {
+        let drained: String = buffer.drain(..index + separator_len).collect();
+        blocks.push(drained[..index].to_string());
+    }
+    blocks
+}
+
+fn tasknode_sse_drain_remainder(buffer: &mut String) -> Vec<String> {
+    let remainder = std::mem::take(buffer);
+    if remainder.trim().is_empty() {
+        Vec::new()
+    } else {
+        vec![remainder]
+    }
+}
+
+fn tasknode_parse_sse_block(block: &str) -> Result<Option<(String, Value)>, TaskNodeClientError> {
+    let normalized = block.replace("\r\n", "\n");
+    let mut event = "message".to_string();
+    let mut data = Vec::new();
+    for line in normalized.lines() {
+        if line.is_empty() || line.starts_with(':') {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("event:") {
+            event = rest.trim().to_string();
+        } else if let Some(rest) = line.strip_prefix("data:") {
+            data.push(rest.trim_start().to_string());
+        }
+    }
+    if data.is_empty() {
+        return Ok(None);
+    }
+    let data = data.join("\n");
+    if data.trim() == "[DONE]" {
+        return Ok(None);
+    }
+    let value = serde_json::from_str(&data).map_err(|err| {
+        TaskNodeClientError::Http(format!("invalid Task Node chat stream event: {err}"))
+    })?;
+    Ok(Some((event, value)))
 }
 
 fn tasknode_reqwest_error(err: reqwest::Error) -> String {
@@ -2568,4 +3355,129 @@ struct TaskNodeRequestRow {
     #[serde(rename = "generatedTaskId")]
     generated_task_id: Option<String>,
     ago: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TaskNodeChatConversationsResponse {
+    #[serde(default)]
+    conversations: Vec<TaskNodeChatConversation>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TaskNodeChatConversation {
+    id: Option<String>,
+    #[serde(rename = "conversationId")]
+    conversation_id: Option<String>,
+    kind: Option<String>,
+    title: String,
+    #[serde(rename = "updatedAt")]
+    updated_at: Option<String>,
+    #[serde(rename = "lastMessagePreview")]
+    last_message_preview: Option<String>,
+    #[serde(rename = "messageCount")]
+    message_count: Option<usize>,
+}
+
+impl TaskNodeChatConversation {
+    fn conversation_id(&self) -> String {
+        self.conversation_id
+            .clone()
+            .or(self.id.clone())
+            .unwrap_or_default()
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TaskNodeChatHistoryResponse {
+    #[serde(rename = "conversationId")]
+    conversation_id: String,
+    #[serde(default)]
+    messages: Vec<TaskNodeChatMessage>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct TaskNodeChatMessage {
+    role: Option<String>,
+    body: Option<String>,
+    text: Option<String>,
+    #[serde(rename = "createdAt")]
+    created_at: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TaskNodeChatStreamResponse {
+    #[serde(rename = "conversationId")]
+    conversation_id: String,
+    mode: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    user: Option<TaskNodeChatMessage>,
+    assistant: Option<TaskNodeChatMessage>,
+    usage: Option<TaskNodeChatUsage>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TaskNodeChatUsage {
+    #[serde(rename = "totalTokens")]
+    total_tokens: Option<i64>,
+    #[serde(rename = "costUsd")]
+    cost_usd: Option<f64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tasknode_sse_parser_handles_delta_and_done_events() {
+        let mut buffer = String::new();
+        buffer.push_str("event: delta\ndata: {\"delta\":\"hel\"}\n\n");
+        buffer.push_str("event: delta\ndata: {\"delta\":\"lo\"}\n\n");
+        buffer.push_str("event: done\ndata: {\"ok\":true,\"conversationId\":\"chat_test\"}\n\n");
+
+        let blocks = tasknode_sse_drain_blocks(&mut buffer);
+        assert!(buffer.is_empty());
+        assert_eq!(blocks.len(), 3);
+
+        let mut accumulated = String::new();
+        let mut done = None;
+        for block in blocks {
+            let (event, value) = tasknode_parse_sse_block(&block)
+                .expect("valid sse block")
+                .expect("json payload");
+            match event.as_str() {
+                "delta" => accumulated.push_str(
+                    value
+                        .get("delta")
+                        .and_then(Value::as_str)
+                        .expect("delta text"),
+                ),
+                "done" => done = Some(value),
+                _ => {}
+            }
+        }
+
+        assert_eq!(accumulated, "hello");
+        assert_eq!(
+            done.and_then(|value| {
+                value
+                    .get("conversationId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            }),
+            Some("chat_test".to_string())
+        );
+    }
+
+    #[test]
+    fn tasknode_sse_parser_accepts_crlf_boundaries() {
+        let mut buffer = "event: done\r\ndata: {\"ok\":true}\r\n\r\n".to_string();
+        let blocks = tasknode_sse_drain_blocks(&mut buffer);
+        assert_eq!(blocks.len(), 1);
+        let (event, value) = tasknode_parse_sse_block(&blocks[0])
+            .expect("valid crlf sse block")
+            .expect("json payload");
+        assert_eq!(event, "done");
+        assert_eq!(value.get("ok").and_then(Value::as_bool), Some(true));
+    }
 }

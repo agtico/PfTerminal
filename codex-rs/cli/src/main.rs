@@ -57,6 +57,7 @@ mod remote_control_cmd;
 #[cfg(target_os = "windows")]
 mod sandbox_setup;
 mod state_db_recovery;
+mod tasknode_cmd;
 #[cfg(not(windows))]
 mod wsl_paths;
 
@@ -137,6 +138,9 @@ enum Subcommand {
 
     /// Internal vault helpers for PFTerminal integrations.
     Vault(VaultCommand),
+
+    /// Agent JSON helper for GitHub-linked Task Node terminal sessions.
+    Tasknode(tasknode_cmd::TaskNodeCli),
 
     /// Run live Claude pane smoke checks and write a machine-readable report.
     #[clap(name = "claude-pane-smoke")]
@@ -1481,6 +1485,18 @@ async fn cli_main(
             );
             run_vault_command(vault_cli).await?;
         }
+        Some(Subcommand::Tasknode(mut tasknode_cli)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "tasknode",
+            )?;
+            prepend_config_flags(
+                &mut tasknode_cli.config_overrides,
+                root_config_overrides.clone(),
+            );
+            tasknode_cmd::run(tasknode_cli).await?;
+        }
         Some(Subcommand::ClaudePaneSmoke(mut smoke_cli)) => {
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
@@ -2376,6 +2392,7 @@ fn unsupported_subcommand_name_for_strict_config(
         Some(Subcommand::Login(_)) => Some("login"),
         Some(Subcommand::Logout(_)) => Some("logout"),
         Some(Subcommand::Vault(_)) => Some("vault"),
+        Some(Subcommand::Tasknode(_)) => Some("tasknode"),
         Some(Subcommand::ClaudePaneSmoke(_)) => Some("claude-pane-smoke"),
         Some(Subcommand::ClaudePaneWorkflowSuite(_)) => Some("claude-pane-workflow-suite"),
         Some(Subcommand::Completion(_)) => Some("completion"),

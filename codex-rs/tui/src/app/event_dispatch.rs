@@ -1161,6 +1161,72 @@ impl App {
             AppEvent::OpenTaskNodeRewardsResult { result } => {
                 self.chat_widget.handle_open_tasknode_rewards_result(result);
             }
+            AppEvent::OpenTaskNodeChat => {
+                self.chat_widget.open_tasknode_chat();
+            }
+            AppEvent::OpenTaskNodeChatConversationsResult { result } => {
+                self.chat_widget
+                    .handle_open_tasknode_chat_conversations_result(result);
+            }
+            AppEvent::OpenTaskNodeChatHistory {
+                conversation_id,
+                title,
+            } => {
+                self.chat_widget
+                    .open_tasknode_chat_history(conversation_id, title);
+            }
+            AppEvent::OpenTaskNodeChatHistoryResult {
+                conversation_id,
+                title,
+                result,
+            } => {
+                self.chat_widget.handle_open_tasknode_chat_history_result(
+                    conversation_id,
+                    title,
+                    result,
+                );
+            }
+            AppEvent::OpenTaskNodeChatPrompt {
+                conversation_id,
+                title,
+            } => {
+                self.chat_widget
+                    .open_tasknode_chat_prompt(conversation_id, title);
+            }
+            AppEvent::SubmitTaskNodeChat {
+                conversation_id,
+                title,
+                message,
+            } => {
+                self.chat_widget
+                    .submit_tasknode_chat(conversation_id, title, message);
+            }
+            AppEvent::TaskNodeChatStreamDelta {
+                stream_id,
+                conversation_id,
+                title,
+                text,
+            } => {
+                self.chat_widget.handle_tasknode_chat_stream_delta(
+                    stream_id,
+                    conversation_id,
+                    title,
+                    text,
+                );
+            }
+            AppEvent::TaskNodeChatStreamDone {
+                stream_id,
+                conversation_id,
+                title,
+                result,
+            } => {
+                self.chat_widget.handle_tasknode_chat_stream_done(
+                    stream_id,
+                    conversation_id,
+                    title,
+                    result,
+                );
+            }
             AppEvent::LogoutTaskNode => {
                 self.chat_widget.logout_tasknode();
             }

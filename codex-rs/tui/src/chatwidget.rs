@@ -583,6 +583,7 @@ pub(crate) struct ChatWidget {
     pending_stream_consolidations: usize,
     tasknode_menu_counts: Option<tasknode_menu::TaskNodeMenuCountsCache>,
     tasknode_menu_poll_generation: u64,
+    tasknode_active_chat_stream_id: Option<String>,
     /// Holds the platform clipboard lease so copied text remains available while supported.
     clipboard_lease: Option<crate::clipboard_copy::ClipboardLease>,
     copy_last_response_binding: Vec<KeyBinding>,
