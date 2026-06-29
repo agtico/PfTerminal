@@ -13,6 +13,7 @@ use ratatui::widgets::Widget;
 use std::cell::RefCell;
 use std::time::Instant;
 
+use crate::key_hint;
 use crate::key_hint::has_ctrl_or_alt;
 use crate::render::renderable::Renderable;
 
@@ -28,12 +29,19 @@ use super::textarea::TextAreaState;
 /// Callback invoked when the user submits a custom prompt.
 pub(crate) type PromptSubmitted = Box<dyn Fn(String) + Send + Sync>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CustomPromptSubmitMode {
+    Enter,
+    CtrlD,
+}
+
 /// Minimal multi-line text input view to collect custom review instructions.
 pub(crate) struct CustomPromptView {
     title: String,
     placeholder: String,
     context_label: Option<String>,
     on_submit: PromptSubmitted,
+    submit_mode: CustomPromptSubmitMode,
 
     // UI state
     textarea: TextArea,
@@ -61,10 +69,24 @@ impl CustomPromptView {
             placeholder,
             context_label,
             on_submit,
+            submit_mode: CustomPromptSubmitMode::Enter,
             textarea,
             textarea_state: RefCell::new(TextAreaState::default()),
             paste_burst: PasteBurst::default(),
             completion: None,
+        }
+    }
+
+    pub(crate) fn with_submit_mode(mut self, submit_mode: CustomPromptSubmitMode) -> Self {
+        self.submit_mode = submit_mode;
+        self
+    }
+
+    fn submit_current_text(&mut self) {
+        let text = self.textarea.text().trim().to_string();
+        if !text.is_empty() {
+            (self.on_submit)(text);
+            self.completion = Some(ViewCompletion::Accepted);
         }
     }
 
@@ -74,6 +96,12 @@ impl CustomPromptView {
                 code: KeyCode::Esc, ..
             } => {
                 self.on_ctrl_c();
+            }
+            event
+                if self.submit_mode == CustomPromptSubmitMode::CtrlD
+                    && key_hint::ctrl(KeyCode::Char('d')).is_press(event) =>
+            {
+                self.submit_current_text();
             }
             KeyEvent {
                 code: KeyCode::Enter,
@@ -85,12 +113,12 @@ impl CustomPromptView {
                     self.textarea.insert_str("\n");
                     return;
                 }
+                if self.submit_mode == CustomPromptSubmitMode::CtrlD {
+                    self.textarea.insert_str("\n");
+                    return;
+                }
                 if modifiers == KeyModifiers::NONE {
-                    let text = self.textarea.text().trim().to_string();
-                    if !text.is_empty() {
-                        (self.on_submit)(text);
-                        self.completion = Some(ViewCompletion::Accepted);
-                    }
+                    self.submit_current_text();
                 } else {
                     self.textarea.input(key_event);
                 }
@@ -253,7 +281,7 @@ impl Renderable for CustomPromptView {
 
         let hint_y = hint_blank_y.saturating_add(1);
         if hint_y < area.y.saturating_add(area.height) {
-            Paragraph::new(standard_popup_hint_line()).render(
+            Paragraph::new(self.footer_hint_line()).render(
                 Rect {
                     x: area.x,
                     y: hint_y,
@@ -291,6 +319,21 @@ impl CustomPromptView {
         let usable_width = width.saturating_sub(2);
         let text_height = self.textarea.desired_height(usable_width).clamp(1, 8);
         text_height.saturating_add(1).min(9)
+    }
+
+    fn footer_hint_line(&self) -> Line<'static> {
+        match self.submit_mode {
+            CustomPromptSubmitMode::Enter => standard_popup_hint_line(),
+            CustomPromptSubmitMode::CtrlD => Line::from(vec![
+                "Press ".into(),
+                key_hint::ctrl(KeyCode::Char('d')).into(),
+                " when done editing, ".into(),
+                key_hint::plain(KeyCode::Enter).into(),
+                " for newline, or ".into(),
+                key_hint::plain(KeyCode::Esc).into(),
+                " to go back".into(),
+            ]),
+        }
     }
 }
 

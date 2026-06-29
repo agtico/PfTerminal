@@ -74,6 +74,34 @@ fn delayed_enter_after_typing_submits() {
     assert!(view.is_complete());
 }
 
+#[test]
+fn ctrl_d_submit_mode_uses_enter_for_newline() {
+    let (mut view, submitted_rx) = custom_prompt_view_ctrl_d();
+    let now = Instant::now();
+
+    for (idx, ch) in "foo".chars().enumerate() {
+        view.handle_key_event_at(KeyEvent::from(KeyCode::Char(ch)), now + elapsed(idx * 20));
+    }
+    view.handle_key_event_at(KeyEvent::from(KeyCode::Enter), now + elapsed(/*ms*/ 100));
+    for (idx, ch) in "bar".chars().enumerate() {
+        view.handle_key_event_at(
+            KeyEvent::from(KeyCode::Char(ch)),
+            now + elapsed(120 + idx * 20),
+        );
+    }
+
+    assert!(submitted_rx.try_recv().is_err());
+    assert!(!view.is_complete());
+
+    view.handle_key_event_at(
+        KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        now + elapsed(/*ms*/ 240),
+    );
+
+    assert_eq!(submitted_rx.try_recv(), Ok("foo\nbar".to_string()));
+    assert!(view.is_complete());
+}
+
 fn custom_prompt_view() -> (CustomPromptView, Receiver<String>) {
     let (submitted, submitted_rx) = std::sync::mpsc::channel();
     let view = CustomPromptView::new(
@@ -85,6 +113,21 @@ fn custom_prompt_view() -> (CustomPromptView, Receiver<String>) {
             submitted.send(text).expect("send submitted text");
         }),
     );
+    (view, submitted_rx)
+}
+
+fn custom_prompt_view_ctrl_d() -> (CustomPromptView, Receiver<String>) {
+    let (submitted, submitted_rx) = std::sync::mpsc::channel();
+    let view = CustomPromptView::new(
+        "Edit context".to_string(),
+        "Type context".to_string(),
+        String::new(),
+        /*context_label*/ None,
+        Box::new(move |text| {
+            submitted.send(text).expect("send submitted text");
+        }),
+    )
+    .with_submit_mode(CustomPromptSubmitMode::CtrlD);
     (view, submitted_rx)
 }
 

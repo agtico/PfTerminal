@@ -542,7 +542,8 @@ impl ChatWidget {
                     revision,
                 });
             }),
-        );
+        )
+        .with_submit_mode(CustomPromptSubmitMode::CtrlD);
         self.show_custom_prompt_view(view);
     }
 
