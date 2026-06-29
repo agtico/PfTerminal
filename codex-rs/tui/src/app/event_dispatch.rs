@@ -1115,6 +1115,33 @@ impl App {
                 self.chat_widget
                     .handle_submit_tasknode_task_request_result(result);
             }
+            AppEvent::OpenTaskNodeContext => {
+                self.chat_widget.open_tasknode_context();
+            }
+            AppEvent::OpenTaskNodeContextResult { result } => {
+                self.chat_widget.handle_open_tasknode_context_result(result);
+            }
+            AppEvent::OpenTaskNodeContextEdit {
+                title,
+                body,
+                revision,
+                body_format,
+            } => {
+                self.chat_widget
+                    .open_tasknode_context_edit(title, body, revision, body_format);
+            }
+            AppEvent::SubmitTaskNodeContextEdit {
+                title,
+                body,
+                revision,
+            } => {
+                self.chat_widget
+                    .submit_tasknode_context_edit(title, body, revision);
+            }
+            AppEvent::SubmitTaskNodeContextEditResult { result } => {
+                self.chat_widget
+                    .handle_submit_tasknode_context_edit_result(result);
+            }
             AppEvent::OpenTaskNodeRequestList => {
                 self.chat_widget.open_tasknode_request_list();
             }

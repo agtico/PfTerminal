@@ -328,6 +328,29 @@ pub(crate) enum AppEvent {
     SubmitTaskNodeTaskRequestResult {
         result: Result<serde_json::Value, String>,
     },
+    /// Show the current Task Node context document.
+    OpenTaskNodeContext,
+    /// Task Node context document loaded.
+    OpenTaskNodeContextResult {
+        result: Result<serde_json::Value, String>,
+    },
+    /// Open the Task Node context edit prompt.
+    OpenTaskNodeContextEdit {
+        title: String,
+        body: String,
+        revision: u64,
+        body_format: String,
+    },
+    /// Save Task Node context edits.
+    SubmitTaskNodeContextEdit {
+        title: String,
+        body: String,
+        revision: u64,
+    },
+    /// Task Node context save finished.
+    SubmitTaskNodeContextEditResult {
+        result: Result<serde_json::Value, String>,
+    },
     /// Show active Task Node task requests.
     OpenTaskNodeRequestList,
     /// Active Task Node task requests loaded.

@@ -18,6 +18,7 @@ const TASKNODE_MENU_VIEW_ID: &str = "tasknode-menu";
 const TASKNODE_TASKS_VIEW_ID: &str = "tasknode-tasks";
 const TASKNODE_TASK_ACTIONS_VIEW_ID: &str = "tasknode-task-actions";
 const TASKNODE_REQUESTS_VIEW_ID: &str = "tasknode-requests";
+const TASKNODE_CONTEXT_VIEW_ID: &str = "tasknode-context";
 const TASKNODE_SESSION_LABEL: &str = "tasknode/session";
 const TASKNODE_MENU_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -476,6 +477,123 @@ impl ChatWidget {
         }
     }
 
+    pub(crate) fn open_tasknode_context(&mut self) {
+        self.show_or_replace_tasknode_selection(TASKNODE_CONTEXT_VIEW_ID, || {
+            tasknode_loading_selection_params(
+                TASKNODE_CONTEXT_VIEW_ID,
+                "Task Node context".to_string(),
+                "Loading current context document from Task Node...".to_string(),
+            )
+        });
+        self.spawn_tasknode_value_request(
+            "context",
+            |client| client.context(),
+            |result| AppEvent::OpenTaskNodeContextResult { result },
+        );
+    }
+
+    pub(crate) fn handle_open_tasknode_context_result(&mut self, result: Result<Value, String>) {
+        match parse_tasknode_value::<TaskNodeContextResponse>(result, "context") {
+            Ok(response) => {
+                self.add_plain_history_lines(tasknode_context_lines(&response.context));
+                let header = tasknode_context_header(&response.context);
+                let items = tasknode_context_items(response.context);
+                self.show_or_replace_tasknode_selection(TASKNODE_CONTEXT_VIEW_ID, || {
+                    SelectionViewParams {
+                        view_id: Some(TASKNODE_CONTEXT_VIEW_ID),
+                        footer_hint: Some(standard_popup_hint_line()),
+                        is_searchable: false,
+                        header: Box::new(header),
+                        items,
+                        ..Default::default()
+                    }
+                });
+            }
+            Err(err) => {
+                self.show_or_replace_tasknode_selection(TASKNODE_CONTEXT_VIEW_ID, || {
+                    tasknode_error_selection_params(
+                        TASKNODE_CONTEXT_VIEW_ID,
+                        "Task Node context".to_string(),
+                        format!("Task Node context failed: {err}"),
+                    )
+                });
+                self.add_error_message(format!("Task Node context failed: {err}"));
+            }
+        }
+    }
+
+    pub(crate) fn open_tasknode_context_edit(
+        &mut self,
+        title: String,
+        body: String,
+        revision: u64,
+        body_format: String,
+    ) {
+        let tx = self.app_event_tx.clone();
+        let view = CustomPromptView::new(
+            "Edit Task Node context".to_string(),
+            "Edit the current context document".to_string(),
+            body,
+            Some(format!("Revision {revision}; format: {body_format}")),
+            Box::new(move |body: String| {
+                tx.send(AppEvent::SubmitTaskNodeContextEdit {
+                    title: title.clone(),
+                    body,
+                    revision,
+                });
+            }),
+        );
+        self.show_custom_prompt_view(view);
+    }
+
+    pub(crate) fn submit_tasknode_context_edit(
+        &mut self,
+        title: String,
+        body: String,
+        revision: u64,
+    ) {
+        if body.trim().is_empty() {
+            self.add_error_message("Task Node context body is required.".to_string());
+            return;
+        }
+        self.add_info_message("Saving Task Node context...".to_string(), None);
+        self.spawn_tasknode_value_request(
+            "save-context",
+            move |client| client.save_context(&title, &body, revision),
+            |result| AppEvent::SubmitTaskNodeContextEditResult { result },
+        );
+    }
+
+    pub(crate) fn handle_submit_tasknode_context_edit_result(
+        &mut self,
+        result: Result<Value, String>,
+    ) {
+        match parse_tasknode_value::<TaskNodeContextSaveResponse>(result, "context save") {
+            Ok(response) => {
+                self.add_info_message(
+                    response
+                        .message
+                        .unwrap_or_else(|| "Task Node context saved.".to_string()),
+                    None,
+                );
+                self.add_plain_history_lines(tasknode_context_lines(&response.context));
+                let header = tasknode_context_header(&response.context);
+                let items = tasknode_context_items(response.context);
+                self.show_or_replace_tasknode_selection(TASKNODE_CONTEXT_VIEW_ID, || {
+                    SelectionViewParams {
+                        view_id: Some(TASKNODE_CONTEXT_VIEW_ID),
+                        footer_hint: Some(standard_popup_hint_line()),
+                        is_searchable: false,
+                        header: Box::new(header),
+                        items,
+                        ..Default::default()
+                    }
+                });
+            }
+            Err(err) => self.add_error_message(format!("Task Node context save failed: {err}")),
+        }
+    }
+
     pub(crate) fn open_tasknode_request_list(&mut self) {
         self.show_or_replace_tasknode_selection(TASKNODE_REQUESTS_VIEW_ID, || {
             tasknode_loading_selection_params(
@@ -890,6 +1008,13 @@ fn tasknode_menu_items(
                     tx.send(AppEvent::OpenTaskNodeTaskRequestPrompt)
                 })],
                 dismiss_on_select: true,
+                ..Default::default()
+            },
+            SelectionItem {
+                name: "Context document".to_string(),
+                description: Some("Review or edit the current Task Node context".to_string()),
+                actions: vec![Box::new(|tx| tx.send(AppEvent::OpenTaskNodeContext))],
+                dismiss_on_select: false,
                 ..Default::default()
             },
             SelectionItem {
@@ -1574,6 +1699,194 @@ fn tasknode_task_request_result_lines(value: &Value) -> Vec<Line<'static>> {
     ]
 }
 
+fn tasknode_context_header(context: &TaskNodeContextDocument) -> ColumnRenderable<'static> {
+    let mut header = ColumnRenderable::new();
+    header.push(Line::from("Task Node context".bold()));
+    header.push(Line::from(tasknode_context_title(context).cyan()));
+    header.push(Line::from(tasknode_context_summary(context).dim()));
+    header
+}
+
+fn tasknode_context_items(context: TaskNodeContextDocument) -> Vec<SelectionItem> {
+    let mut items = Vec::new();
+    let title = tasknode_context_title(&context);
+    let body = context.body.clone();
+    let revision = context.revision;
+    let body_format = context
+        .terminal
+        .as_ref()
+        .and_then(|terminal| terminal.editable_body_format.clone())
+        .unwrap_or_else(|| "text".to_string());
+    items.push(SelectionItem {
+        name: "Edit context document".to_string(),
+        description: Some("Open a multiline editor seeded with the current context".to_string()),
+        actions: vec![Box::new(move |tx| {
+            tx.send(AppEvent::OpenTaskNodeContextEdit {
+                title: title.clone(),
+                body: body.clone(),
+                revision,
+                body_format: body_format.clone(),
+            });
+        })],
+        is_disabled: !context.can_edit,
+        disabled_reason: (!context.can_edit).then(|| "Context is read-only.".to_string()),
+        dismiss_on_select: true,
+        ..Default::default()
+    });
+    items.push(SelectionItem {
+        name: "Refresh context document".to_string(),
+        description: Some("Reload context from Task Node".to_string()),
+        actions: vec![Box::new(|tx| tx.send(AppEvent::OpenTaskNodeContext))],
+        dismiss_on_select: false,
+        ..Default::default()
+    });
+    items
+}
+
+fn tasknode_context_lines(context: &TaskNodeContextDocument) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(vec!["Task Node context".bold().cyan()]),
+        Line::from(vec![
+            "  title:    ".dim(),
+            tasknode_context_title(context).into(),
+        ]),
+        Line::from(vec![
+            "  revision: ".dim(),
+            context.revision.to_string().into(),
+        ]),
+        Line::from(vec![
+            "  updated:  ".dim(),
+            context.updated_at.clone().unwrap_or_default().into(),
+        ]),
+        Line::from(vec![
+            "  digest:   ".dim(),
+            context
+                .terminal
+                .as_ref()
+                .and_then(|terminal| terminal.digest.clone())
+                .unwrap_or_default()
+                .into(),
+        ]),
+        Line::from(vec![
+            "  size:     ".dim(),
+            tasknode_context_size(context).into(),
+        ]),
+        Line::from(""),
+    ];
+
+    let body = context
+        .body_text
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or(context.body.as_str());
+    if body.trim().is_empty() {
+        lines.push(Line::from("  Context document is empty."));
+        return lines;
+    }
+
+    for source_line in body.lines() {
+        if source_line.trim().is_empty() {
+            lines.push(Line::from(""));
+            continue;
+        }
+        for wrapped in tasknode_soft_wrap_line(source_line, 100) {
+            lines.push(Line::from(wrapped));
+        }
+    }
+    lines
+}
+
+fn tasknode_context_title(context: &TaskNodeContextDocument) -> String {
+    if context.title.trim().is_empty() {
+        "Task Node Context".to_string()
+    } else {
+        context.title.clone()
+    }
+}
+
+fn tasknode_context_summary(context: &TaskNodeContextDocument) -> String {
+    [
+        format!("revision {}", context.revision),
+        context
+            .updated_at
+            .as_ref()
+            .filter(|updated_at| !updated_at.is_empty())
+            .map(|updated_at| format!("updated {updated_at}"))
+            .unwrap_or_default(),
+        context
+            .terminal
+            .as_ref()
+            .and_then(|terminal| terminal.digest.clone())
+            .unwrap_or_default(),
+        tasknode_context_size(context),
+    ]
+    .into_iter()
+    .filter(|part| !part.is_empty())
+    .collect::<Vec<_>>()
+    .join(" | ")
+}
+
+fn tasknode_context_size(context: &TaskNodeContextDocument) -> String {
+    if let Some(terminal) = &context.terminal {
+        return format!(
+            "{} words, {} lines, {} chars",
+            terminal.word_count.unwrap_or(0),
+            terminal.line_count.unwrap_or(0),
+            terminal.char_count.unwrap_or(0)
+        );
+    }
+    let body = context
+        .body_text
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or(context.body.as_str());
+    let words = body.split_whitespace().count();
+    let lines = body.lines().count().max(1);
+    format!("{words} words, {lines} lines, {} chars", body.len())
+}
+
+fn tasknode_soft_wrap_line(line: &str, width: usize) -> Vec<String> {
+    if line.chars().count() <= width {
+        return vec![line.to_string()];
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in line.split_whitespace() {
+        let word_len = word.chars().count();
+        let current_len = current.chars().count();
+        if current_len > 0 && current_len + 1 + word_len > width {
+            lines.push(current);
+            current = String::new();
+        }
+        if word_len > width {
+            if !current.is_empty() {
+                lines.push(current);
+                current = String::new();
+            }
+            let mut chunk = String::new();
+            for ch in word.chars() {
+                if chunk.chars().count() >= width {
+                    lines.push(chunk);
+                    chunk = String::new();
+                }
+                chunk.push(ch);
+            }
+            if !chunk.is_empty() {
+                current = chunk;
+            }
+            continue;
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
 fn tasknode_request_items(requests: Vec<TaskNodeRequestRow>) -> Vec<SelectionItem> {
     if requests.is_empty() {
         return vec![SelectionItem {
@@ -1871,6 +2184,24 @@ impl TaskNodeClient {
                 "source": "pfterminal",
                 "sourceConversationTitle": "PFTerminal",
                 "idempotencyKey": format!("pfterminal-request:{}", Uuid::new_v4()),
+            }),
+        )
+        .map_err(|err| err.to_string())
+    }
+
+    fn context(&self) -> Result<Value, String> {
+        self.get_json("/api/terminal/tasknode/context")
+            .map_err(|err| err.to_string())
+    }
+
+    fn save_context(&self, title: &str, body: &str, revision: u64) -> Result<Value, String> {
+        self.post_json(
+            "/api/terminal/tasknode/context",
+            &serde_json::json!({
+                "title": title,
+                "body": body,
+                "revision": revision,
+                "source": "pfterminal",
             }),
         )
         .map_err(|err| err.to_string())
@@ -2182,6 +2513,46 @@ struct TaskNodeEvidencePrompt {
 struct TaskNodeRequestsResponse {
     #[serde(default)]
     items: Vec<TaskNodeRequestRow>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TaskNodeContextResponse {
+    #[serde(default)]
+    context: TaskNodeContextDocument,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TaskNodeContextSaveResponse {
+    message: Option<String>,
+    #[serde(default)]
+    context: TaskNodeContextDocument,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct TaskNodeContextDocument {
+    title: String,
+    body: String,
+    #[serde(rename = "bodyText")]
+    body_text: Option<String>,
+    revision: u64,
+    #[serde(rename = "updatedAt")]
+    updated_at: Option<String>,
+    #[serde(rename = "canEdit")]
+    can_edit: bool,
+    terminal: Option<TaskNodeContextTerminal>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct TaskNodeContextTerminal {
+    digest: Option<String>,
+    #[serde(rename = "lineCount")]
+    line_count: Option<usize>,
+    #[serde(rename = "wordCount")]
+    word_count: Option<usize>,
+    #[serde(rename = "charCount")]
+    char_count: Option<usize>,
+    #[serde(rename = "editableBodyFormat")]
+    editable_body_format: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]

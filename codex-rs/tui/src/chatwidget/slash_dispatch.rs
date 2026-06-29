@@ -786,12 +786,13 @@ impl ChatWidget {
                             });
                         }
                     }
+                    "context" => self.app_event_tx.send(AppEvent::OpenTaskNodeContext),
                     "requests" => self.app_event_tx.send(AppEvent::OpenTaskNodeRequestList),
                     "balance" => self.app_event_tx.send(AppEvent::OpenTaskNodeBalance),
                     "rewards" => self.app_event_tx.send(AppEvent::OpenTaskNodeRewards),
                     "logout" => self.app_event_tx.send(AppEvent::LogoutTaskNode),
                     _ => self.add_error_message(
-                        "Usage: /tasknode [link|status|tasks|task|request|requests|verification|balance|rewards|logout]"
+                        "Usage: /tasknode [link|status|tasks|task|request|context|requests|verification|balance|rewards|logout]"
                             .to_string(),
                     ),
                 }
