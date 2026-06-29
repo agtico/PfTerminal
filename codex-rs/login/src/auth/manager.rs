@@ -1976,6 +1976,7 @@ pub struct AuthManager {
     refresh_lock: Semaphore,
     agent_identity_lock: Semaphore,
     external_auth: RwLock<Option<Arc<dyn ExternalAuth>>>,
+    provider_api_key_cache: RwLock<HashMap<String, Option<String>>>,
 }
 
 /// Configuration view required to construct a shared [`AuthManager`].
@@ -2070,6 +2071,7 @@ impl AuthManager {
             refresh_lock: Semaphore::new(/*permits*/ 1),
             agent_identity_lock: Semaphore::new(/*permits*/ 1),
             external_auth: RwLock::new(None),
+            provider_api_key_cache: RwLock::new(HashMap::new()),
         }
     }
 
@@ -2094,6 +2096,7 @@ impl AuthManager {
             refresh_lock: Semaphore::new(/*permits*/ 1),
             agent_identity_lock: Semaphore::new(/*permits*/ 1),
             external_auth: RwLock::new(None),
+            provider_api_key_cache: RwLock::new(HashMap::new()),
         })
     }
 
@@ -2117,6 +2120,7 @@ impl AuthManager {
             refresh_lock: Semaphore::new(/*permits*/ 1),
             agent_identity_lock: Semaphore::new(/*permits*/ 1),
             external_auth: RwLock::new(None),
+            provider_api_key_cache: RwLock::new(HashMap::new()),
         })
     }
 
@@ -2148,6 +2152,7 @@ impl AuthManager {
             refresh_lock: Semaphore::new(/*permits*/ 1),
             agent_identity_lock: Semaphore::new(/*permits*/ 1),
             external_auth: RwLock::new(None),
+            provider_api_key_cache: RwLock::new(HashMap::new()),
         })
     }
 
@@ -2171,6 +2176,7 @@ impl AuthManager {
             external_auth: RwLock::new(Some(
                 Arc::new(BearerTokenRefresher::new(config)) as Arc<dyn ExternalAuth>
             )),
+            provider_api_key_cache: RwLock::new(HashMap::new()),
         })
     }
 
@@ -2360,6 +2366,7 @@ impl AuthManager {
             let changed = !AuthManager::auths_equal(previous, new_auth.as_ref());
             let auth_changed_for_refresh =
                 !Self::auths_equal_for_refresh(previous, new_auth.as_ref());
+            self.clear_provider_api_key_cache();
             if auth_changed_for_refresh {
                 guard.permanent_refresh_failure = None;
             }
@@ -2660,12 +2667,31 @@ impl AuthManager {
     }
 
     pub fn provider_api_key(&self, provider_key_id: &str) -> std::io::Result<Option<String>> {
-        provider_api_key_from_auth_storage(
+        if let Some(cached) = self
+            .provider_api_key_cache
+            .read()
+            .ok()
+            .and_then(|cache| cache.get(provider_key_id).cloned())
+        {
+            return Ok(cached);
+        }
+
+        let key = provider_api_key_from_auth_storage(
             &self.codex_home,
             provider_key_id,
             self.auth_credentials_store_mode,
             self.keyring_backend_kind,
-        )
+        )?;
+        if let Ok(mut cache) = self.provider_api_key_cache.write() {
+            cache.insert(provider_key_id.to_string(), key.clone());
+        }
+        Ok(key)
+    }
+
+    fn clear_provider_api_key_cache(&self) {
+        if let Ok(mut cache) = self.provider_api_key_cache.write() {
+            cache.clear();
+        }
     }
 
     pub fn current_auth_uses_codex_backend(&self) -> bool {

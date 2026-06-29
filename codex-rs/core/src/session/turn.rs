@@ -2122,6 +2122,7 @@ async fn acquire_provider_request_lease(
                 provider = %key.provider_id,
                 model = %key.model,
                 key_fingerprint = %key.key_fingerprint,
+                owner = %lease.owner,
                 input_tokens = preflight.input_tokens,
                 cached_input_tokens = preflight.cached_input_tokens,
                 request_bytes = preflight.request_bytes,
@@ -2136,6 +2137,8 @@ async fn acquire_provider_request_lease(
                 provider = %key.provider_id,
                 model = %key.model,
                 key_fingerprint = %key.key_fingerprint,
+                attempted_owner = %owner,
+                lease_owner = ?block.lease_owner,
                 reason = ?block.reason,
                 remaining_ms = block.remaining_ms,
                 last_status = ?block.last_status,
@@ -2240,18 +2243,44 @@ async fn record_provider_request_result_for_lease(
     let Some(state_db) = sess.state_db() else {
         return true;
     };
-    if let Err(err) = state_db
+    let result_kind = provider_request_result_kind(&result);
+    let rows_affected = match state_db
         .record_provider_request_result(lease, result, now_unix_timestamp_ms())
         .await
     {
+        Ok(rows_affected) => rows_affected,
+        Err(err) => {
+            warn!(
+                provider = %lease.key.provider_id,
+                model = %lease.key.model,
+                key_fingerprint = %lease.key.key_fingerprint,
+                owner = %lease.owner,
+                result = result_kind,
+                error = %err,
+                "failed to record provider request result"
+            );
+            return false;
+        }
+    };
+    if rows_affected == 0 {
         warn!(
             provider = %lease.key.provider_id,
             model = %lease.key.model,
             key_fingerprint = %lease.key.key_fingerprint,
-            error = %err,
-            "failed to record provider request result"
+            owner = %lease.owner,
+            result = result_kind,
+            "provider request result did not match active lease owner"
         );
-        return false;
+    } else {
+        trace!(
+            provider = %lease.key.provider_id,
+            model = %lease.key.model,
+            key_fingerprint = %lease.key.key_fingerprint,
+            owner = %lease.owner,
+            result = result_kind,
+            rows_affected,
+            "recorded provider request result"
+        );
     }
     true
 }
@@ -2290,19 +2319,42 @@ impl Drop for ProviderRequestLeaseGuard {
             return;
         };
         std::mem::drop(self.runtime_handle.spawn(async move {
-            if let Err(err) = state_db
+            match state_db
                 .release_provider_request_lease(&lease, now_unix_timestamp_ms())
                 .await
             {
-                warn!(
+                Ok(0) => warn!(
                     provider = %lease.key.provider_id,
                     model = %lease.key.model,
                     key_fingerprint = %lease.key.key_fingerprint,
+                    owner = %lease.owner,
+                    "provider request lease guard drop did not match active lease owner"
+                ),
+                Ok(rows_affected) => trace!(
+                    provider = %lease.key.provider_id,
+                    model = %lease.key.model,
+                    key_fingerprint = %lease.key.key_fingerprint,
+                    owner = %lease.owner,
+                    rows_affected,
+                    "released provider request lease on guard drop"
+                ),
+                Err(err) => warn!(
+                    provider = %lease.key.provider_id,
+                    model = %lease.key.model,
+                    key_fingerprint = %lease.key.key_fingerprint,
+                    owner = %lease.owner,
                     error = %err,
                     "failed to release provider request lease on guard drop"
-                );
+                ),
             }
         }));
+    }
+}
+
+fn provider_request_result_kind(result: &ProviderRequestResult) -> &'static str {
+    match result {
+        ProviderRequestResult::Success { .. } => "success",
+        ProviderRequestResult::Failed { .. } => "failed",
     }
 }
 
