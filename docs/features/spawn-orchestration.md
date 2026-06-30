@@ -6,7 +6,7 @@ acceptance passed in the installed `pfterminal`.
 This is intentionally smaller than the full Nazgul orchestration spec. The
 full spec includes Balrog planning, Grimoire model memory, Wyverns, Golems,
 Nostr/wallet reachability, campaign documents, and continuous MkDocs
-maintenance. This sprint slice does not build those.
+maintenance. This scoped slice does not build those.
 
 The near-term product change is:
 
@@ -34,8 +34,8 @@ as isolated tabs with no visible chain of command.
 - [x] Mapped the slice to existing PFTerminal code paths: slash commands,
   panes, multi-agent spawn/wait tools, agent paths, parent thread IDs, and
   status subscriptions.
-- [x] Added built-in `troll` and `orc` roles so fresh installs have the role
-  prompts without manual file placement.
+- [x] Added built-in `nazgul`, `troll`, and `orc` roles so fresh installs have
+  the role prompts without manual file placement.
 - [x] Changed the default native multi-agent depth from 1 to 2 so Trolls can
   spawn Orcs while depth 3 remains rejected.
 - [x] Added host-side role graph validation in native spawn handling:
@@ -453,18 +453,32 @@ and the main pane has to infer what happened from scattered transcript lines.
 
 ## Prompt Contracts
 
+Dedicated role docs live in:
+
+- [Nazgul](../orchestration/nazgul.md)
+- [Troll](../orchestration/troll.md)
+- [Orc](../orchestration/orc.md)
+
 ### Troll Role Prompt
 
 The built-in `troll` role should say:
 
 ```text
+Behavior:
 You are a Troll: a supervisory reviewer and foreman.
 You report to the Nazgul parent.
+
+Mandate:
 You may spawn Orcs for execution work.
 You must wait for Orcs to finish before claiming completion.
 You must review Orc output critically and force rework when needed.
 You do not perform broad implementation yourself unless explicitly instructed.
-Your final report to the Nazgul must include: Orcs used, what each did, evidence, remaining risk.
+
+Personality:
+Be blunt, adversarial, and demanding about weak work.
+
+Final Report Standards:
+Your final report to the Nazgul must include: Orcs used, what each did, evidence, issues forced back for rework, remaining risk.
 ```
 
 ### Orc Role Prompt

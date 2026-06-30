@@ -10,9 +10,9 @@
 
 - [x] Re-run live GLM structured-edit smoke testing after the Z.AI `429` rate limit clears.
 - [x] Finish harness-side command-budget enforcement for explicit read-only review caps.
-- [x] Run a broader GLM repo-review/edit benchmark and record pass/fail evidence in this sprint page.
+- [x] Run a broader GLM repo-review/edit benchmark and record pass/fail evidence in this feature page.
 
-Status: current sprint implementation plan with V0 core tool support implemented
+Status: feature implementation record with V0 core tool support implemented
 and live GLM validation in progress.
 
 Latest readiness update, 2026-06-23 02:00 UTC: `pfterminal` was rebuilt from
@@ -36,7 +36,7 @@ keep strict `apply_patch` unchanged for Codex-native models, but route GLM/Z.AI
 and similar providers to structured edit/write tools.
 
 V0 of that path is now implemented in the PFTerminal core tool harness. The
-remaining sprint work is live GLM validation across real repo-review/edit loops,
+remaining work is live GLM validation across real repo-review/edit loops,
 per-session aggregation beyond the turn-scoped strict-patch fallback threshold,
 and hardening review-loop discipline so successful tool compatibility turns into
 usable throughput.
@@ -62,7 +62,7 @@ thread_id: 019ef112-d498-7853-a4d8-1776ebf38021
 model: glm-5.2
 cwd: /home/postfiat/repos/PfTerminal
 task: implement /vault v0
-observed_at: 2026-06-22 UTC, matching the host clock for this sprint
+observed_at: 2026-06-22 UTC, matching the host clock for this note
 ```
 
 The logs show the normal Codex loop working:
@@ -716,7 +716,7 @@ and:
 
 ```json
 {
-  "path": "docs/current-sprint/authentication.md",
+  "path": "docs/authentication.md",
   "content": "...",
   "mode": "create_only"
 }

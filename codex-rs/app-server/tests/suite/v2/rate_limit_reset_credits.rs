@@ -283,6 +283,19 @@ async fn login_with_api_key(mcp: &mut TestAppServer, api_key: &str) -> Result<()
 fn write_chatgpt_base_url(codex_home: &Path, base_url: &str) -> std::io::Result<()> {
     std::fs::write(
         codex_home.join("config.toml"),
-        format!("chatgpt_base_url = \"{base_url}\"\n"),
+        format!(
+            r#"
+chatgpt_base_url = "{base_url}"
+model_provider = "mock_provider"
+
+[model_providers.mock_provider]
+name = "Mock provider for test"
+base_url = "{base_url}/v1"
+wire_api = "responses"
+request_max_retries = 0
+stream_max_retries = 0
+requires_openai_auth = true
+"#
+        ),
     )
 }

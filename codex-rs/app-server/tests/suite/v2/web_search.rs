@@ -303,13 +303,17 @@ chatgpt_base_url = "{server_uri}"
 standalone_web_search = true
 
 [model_providers.openai-custom]
-name = "OpenAI"
+name = "OpenAI Test Mock"
 base_url = "{server_uri}/api/codex"
 wire_api = "responses"
 request_max_retries = 0
 stream_max_retries = 0
 supports_websockets = false
 requires_openai_auth = true
+
+[mcp_servers.codex_apps]
+url = "https://localhost.invalid/mcp"
+enabled = false
 "#
         ),
     )

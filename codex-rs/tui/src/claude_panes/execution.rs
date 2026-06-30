@@ -42,6 +42,8 @@ use super::turn_types::ClaudePaneTurnOutput;
 use super::turn_types::PreparedClaudePaneTurn;
 
 const CLAUDE_PANE_PROGRESS_HEARTBEAT: Duration = Duration::from_secs(30);
+const CLAUDE_SECRET_REDACTION: &str = "[REDACTED_SECRET]";
+const MIN_REDACTED_SECRET_LEN: usize = 8;
 pub(crate) async fn run_prepared_claude_turn(
     prepared: PreparedClaudePaneTurn,
     progress_tx: Option<AppEventSender>,
@@ -72,6 +74,7 @@ pub(crate) async fn run_claude_command_plan(
             plan.audit_path.display()
         )),
     );
+    let redactor = ClaudeSecretRedactor::from_plan(&plan);
     let bridge_handle = plan
         .bridge
         .take()
@@ -81,6 +84,9 @@ pub(crate) async fn run_claude_command_plan(
     #[cfg(unix)]
     {
         command.process_group(0);
+    }
+    for key in &plan.env_remove {
+        command.env_remove(key);
     }
     let mut child = command
         .args(&plan.args)
@@ -139,6 +145,7 @@ pub(crate) async fn run_claude_command_plan(
                 let Some(line) = line.context("failed to read Claude stdout")? else {
                     break;
                 };
+                let line = redactor.redact(&line);
                 stdout_text.push_str(&line);
                 stdout_text.push('\n');
                 use std::io::Write as _;
@@ -206,7 +213,7 @@ pub(crate) async fn run_claude_command_plan(
         stderr_task.abort();
         String::new()
     } else {
-        stderr_task.await.unwrap_or_default()
+        redactor.redact(&stderr_task.await.unwrap_or_default())
     };
     if let Some(handle) = bridge_handle {
         handle.abort();
@@ -354,6 +361,33 @@ pub(crate) async fn run_claude_command_plan(
         last_progress_elapsed_ms,
     )?;
     Ok(output)
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ClaudeSecretRedactor {
+    secrets: Vec<String>,
+}
+
+impl ClaudeSecretRedactor {
+    pub(crate) fn from_plan(plan: &ClaudeCommandPlan) -> Self {
+        let secrets = plan
+            .bridge
+            .as_ref()
+            .map(|bridge| bridge.upstream_api_key.as_str())
+            .into_iter()
+            .filter(|secret| secret.len() >= MIN_REDACTED_SECRET_LEN)
+            .map(ToString::to_string)
+            .collect();
+        Self { secrets }
+    }
+
+    pub(crate) fn redact(&self, text: &str) -> String {
+        let mut redacted = text.to_string();
+        for secret in &self.secrets {
+            redacted = redacted.replace(secret, CLAUDE_SECRET_REDACTION);
+        }
+        redacted
+    }
 }
 
 pub(crate) async fn stop_claude_child(child: &mut Child) -> Result<()> {

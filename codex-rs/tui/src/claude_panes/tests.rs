@@ -31,6 +31,8 @@ use super::command_plan::claude_pane_title;
 use super::command_plan::compose_claude_pane_prompt;
 use super::command_plan::prompt_from_user_turn;
 use super::command_plan::settings_json_with_base_url;
+#[cfg(unix)]
+use super::execution::ClaudeSecretRedactor;
 use super::execution::failed_turn_output;
 use super::execution::partial_failed_turn_output;
 use super::execution::run_claude_command_plan;
@@ -60,6 +62,8 @@ use super::registry::load_pane_layout;
 use super::registry::persist_pane_layout;
 use super::smoke_workflows::smoke_provider_profile;
 use super::turn_types::ClaudeBridgeKind;
+#[cfg(unix)]
+use super::turn_types::ClaudeBridgePlan;
 use super::turn_types::ClaudeCommandPlan;
 use super::turn_types::ClaudePaneReasoningEvent;
 use super::turn_types::ClaudePaneToolEvent;
@@ -150,7 +154,7 @@ fn registry_restores_persisted_pane_metadata() {
     let unlisted_pane_id = registry
         .create_pane_with_role(
             ClaudeProviderProfileKind::ClaudePlan,
-            cwd.clone(),
+            cwd,
             codex_home.path(),
             Some(SpawnRole::Orc),
             Some("Snaga".to_string()),
@@ -195,7 +199,7 @@ fn registry_restores_legacy_pane_from_latest_audit() {
         .to_string(),
     )
     .expect("artifact");
-    std::fs::write(&artifact_dir.join("turn-0003.jsonl"), "{}\n").expect("next artifact");
+    std::fs::write(artifact_dir.join("turn-0003.jsonl"), "{}\n").expect("next artifact");
     std::fs::write(
         &audit_path,
         serde_json::json!({
@@ -500,6 +504,51 @@ fn settings_json_uses_helper_without_secret_material() {
     assert!(rendered.contains("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"));
     assert!(rendered.contains("pfterminal vault auth-helper provider/zai_api_key"));
     assert!(!rendered.contains("zai-secret"));
+}
+
+#[test]
+fn direct_provider_plan_uses_auth_helper_without_secret_env() {
+    let (dir, pane) = pane(ClaudeProviderProfileKind::ZaiGlm52);
+    codex_vault::Vault::new(dir.path().to_path_buf())
+        .add(codex_vault::AddCredential {
+            label: "provider/zai_api_key".to_string(),
+            credential_type: codex_vault::CredentialType::ApiKey,
+            provider: Some("zai".to_string()),
+            notes: None,
+            revocation_notes: None,
+            secret: "zai-test-key".to_string(),
+        })
+        .expect("store test Z.AI key");
+
+    let plan = build_claude_command_plan(&pane, "hello".to_string(), dir.path()).expect("plan");
+    let settings = std::fs::read_to_string(pane.artifact_dir.join("settings.json"))
+        .expect("settings should be written");
+    let settings: Value = serde_json::from_str(&settings).expect("settings json");
+
+    assert!(plan.bridge.is_none());
+    assert_eq!(
+        settings.pointer("/apiKeyHelper"),
+        Some(&json!("pfterminal vault auth-helper provider/zai_api_key"))
+    );
+    assert!(plan.env_remove.iter().any(|key| key == "ANTHROPIC_API_KEY"));
+    assert!(
+        plan.env_remove
+            .iter()
+            .any(|key| key == "ANTHROPIC_AUTH_TOKEN")
+    );
+    assert_eq!(
+        plan.env.get("ANTHROPIC_API_KEY").map(String::as_str),
+        Some("")
+    );
+    assert!(!plan.env.contains_key("ANTHROPIC_AUTH_TOKEN"));
+    assert!(
+        !plan
+            .env
+            .values()
+            .any(|value| value.contains("zai-test-key"))
+    );
+    assert!(!plan.args.iter().any(|arg| arg.contains("zai-test-key")));
+    assert!(!settings.to_string().contains("zai-test-key"));
 }
 
 #[test]
@@ -1159,10 +1208,21 @@ fn vercel_fast_command_plan_uses_count_tokens_passthrough_bridge() {
         Some("pfterminal-local-bridge")
     );
     assert!(
+        plan.env_remove
+            .iter()
+            .any(|key| key == "ANTHROPIC_AUTH_TOKEN")
+    );
+    assert!(
         settings
             .pointer("/env/ANTHROPIC_BASE_URL")
             .and_then(Value::as_str)
             .is_some_and(|base_url| base_url.starts_with("http://127.0.0.1:"))
+    );
+    assert!(
+        !plan
+            .env
+            .values()
+            .any(|value| value.contains("vercel-test-key"))
     );
     assert!(!plan.args.iter().any(|arg| arg.contains("vercel-test-key")));
     assert!(!settings.to_string().contains("vercel-test-key"));
@@ -1222,6 +1282,109 @@ fn ambient_glm_profile_uses_native_ambient_model_slug() {
 
     assert_eq!(plan.provider_model, AMBIENT_DEFAULT_MODEL);
     assert_eq!(bridge.upstream_model, AMBIENT_DEFAULT_MODEL);
+}
+
+#[cfg(unix)]
+fn bridge_redaction_plan(
+    dir: &tempfile::TempDir,
+    command: String,
+    secret: &str,
+) -> ClaudeCommandPlan {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind listener");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
+    let bind_addr = listener.local_addr().expect("listener address");
+    ClaudeCommandPlan {
+        executable: "sh".to_string(),
+        args: vec!["-c".to_string(), command],
+        env: BTreeMap::new(),
+        env_remove: Vec::new(),
+        cwd: dir.path().to_path_buf(),
+        pane_id: "claude-redaction-test".to_string(),
+        pane_title: "Claude Redaction Test".to_string(),
+        profile_title: "Claude Redaction Test".to_string(),
+        provider_model: "test-model".to_string(),
+        turn_index: 1,
+        command_mode: ClaudeCommandMode::NewSession,
+        command_session_id: "11111111-1111-4111-8111-111111111111".to_string(),
+        max_turns: None,
+        artifact_path: dir.path().join("turn-0001.jsonl"),
+        audit_path: dir.path().join("turn-0001.audit.json"),
+        timeout_ms: None,
+        bridge: Some(ClaudeBridgePlan {
+            kind: ClaudeBridgeKind::AnthropicPassthrough,
+            listener,
+            bind_addr,
+            upstream_base_url: "https://example.invalid".to_string(),
+            upstream_api_key: secret.to_string(),
+            upstream_model: "test-model".to_string(),
+        }),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_secret_redactor_redacts_bridge_key() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let plan = bridge_redaction_plan(&dir, "true".to_string(), "bridge-secret-for-redaction-test");
+
+    let redacted =
+        ClaudeSecretRedactor::from_plan(&plan).redact("leaked bridge-secret-for-redaction-test");
+
+    assert_eq!(redacted, "leaked [REDACTED_SECRET]");
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bridge_secret_is_redacted_from_stdout_artifact_and_output() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let secret = "vercel-test-key-for-redaction";
+    let line = json!({
+        "type": "result",
+        "subtype": "success",
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "result": format!("leaked {secret}"),
+    })
+    .to_string();
+    let plan = bridge_redaction_plan(&dir, format!("printf '%s\\n' '{line}'"), secret);
+    let artifact_path = plan.artifact_path.clone();
+
+    let output = run_claude_command_plan(plan, CancellationToken::new(), /*progress_tx*/ None)
+        .await
+        .expect("turn output");
+    let artifact = std::fs::read_to_string(artifact_path).expect("artifact");
+
+    assert_eq!(output.status, ClaudePaneTurnStatus::Success);
+    assert_eq!(output.text, "leaked [REDACTED_SECRET]");
+    assert!(!artifact.contains(secret));
+    assert!(artifact.contains("[REDACTED_SECRET]"));
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bridge_secret_is_redacted_from_stderr_failure_and_audit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let secret = "vercel-test-key-for-stderr-redaction";
+    let plan = bridge_redaction_plan(
+        &dir,
+        format!("printf '%s\\n' 'upstream leaked {secret}' >&2; exit 42"),
+        secret,
+    );
+    let audit_path = plan.audit_path.clone();
+
+    let output = run_claude_command_plan(plan, CancellationToken::new(), /*progress_tx*/ None)
+        .await
+        .expect("turn output");
+    let audit = std::fs::read_to_string(audit_path).expect("audit");
+
+    assert_eq!(output.status, ClaudePaneTurnStatus::ProviderError);
+    assert_eq!(
+        output.error_summary.as_deref(),
+        Some("Claude exited with status exit status: 42: upstream leaked [REDACTED_SECRET]")
+    );
+    assert!(!audit.contains(secret));
+    assert!(audit.contains("[REDACTED_SECRET]"));
 }
 
 #[test]
@@ -1498,6 +1661,7 @@ async fn cancelling_running_command_returns_interrupted_output() {
                 "printf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"55555555-5555-4555-8555-555555555555\"}'; sleep 60".to_string(),
             ],
             env: BTreeMap::new(),
+            env_remove: Vec::new(),
             cwd: dir.path().to_path_buf(),
             pane_id: "claude-test".to_string(),
             pane_title: "Claude Test".to_string(),

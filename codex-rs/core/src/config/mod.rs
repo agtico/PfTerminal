@@ -2155,6 +2155,22 @@ pub fn agent_nickname_candidates_for_role(config: &Config, role_name: Option<&st
     crate::agent::role::agent_nickname_candidates(config, role_name)
 }
 
+/// Returns whether an agent role is declared by user config or built-in defaults.
+pub fn agent_role_config_exists(config: &Config, role_name: &str) -> bool {
+    crate::agent::role::resolve_role_config(config, role_name).is_some()
+}
+
+/// Applies the named agent role as a high-precedence config layer.
+///
+/// App-server thread spawning uses this when a client starts a sub-agent directly instead of going
+/// through the model-facing `spawn_agent` tool handler.
+pub async fn apply_agent_role_to_config(
+    config: &mut Config,
+    role_name: Option<&str>,
+) -> Result<(), String> {
+    crate::agent::role::apply_role_to_config(config, role_name).await
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CustomPermissionProfileSummary {
     pub id: String,

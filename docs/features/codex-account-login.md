@@ -1,6 +1,6 @@
 # Codex Account Login
 
-Status: current sprint, implemented.
+Status: implemented locally.
 
 ## Goal
 

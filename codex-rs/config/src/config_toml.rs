@@ -1101,4 +1101,47 @@ mod tests {
         assert!(err.contains("myvercel"));
         assert!(err.contains("Vercel"));
     }
+
+    #[test]
+    fn reserved_model_provider_names_rejects_openai_builtin_name() {
+        let mut provider =
+            ModelProviderInfo::create_openai_provider(Some("https://mock.example/v1".to_string()));
+        provider.name = BUILT_IN_MODEL_PROVIDER_NAMES[0].to_string();
+        let mut providers = HashMap::new();
+        providers.insert("openai-custom".to_string(), provider);
+
+        let err = validate_reserved_model_provider_names(&providers)
+            .expect_err("reserved OpenAI display name rejected");
+
+        assert!(err.contains("reserved built-in provider names"));
+        assert!(err.contains("openai-custom"));
+        assert!(err.contains(BUILT_IN_MODEL_PROVIDER_NAMES[0]));
+    }
+
+    #[test]
+    fn reserved_model_provider_ids_rejects_openai_builtin_id() {
+        let mut provider =
+            ModelProviderInfo::create_openai_provider(Some("https://mock.example/v1".to_string()));
+        provider.name = "OpenAI Test Mock".to_string();
+        let mut providers = HashMap::new();
+        providers.insert(OPENAI_PROVIDER_ID.to_string(), provider);
+
+        let err = validate_reserved_model_provider_ids(&providers)
+            .expect_err("reserved OpenAI provider id rejected");
+
+        assert!(err.contains("reserved built-in provider IDs"));
+        assert!(err.contains(OPENAI_PROVIDER_ID));
+    }
+
+    #[test]
+    fn model_provider_validation_accepts_unique_openai_auth_mock_provider() {
+        let mut provider =
+            ModelProviderInfo::create_openai_provider(Some("https://mock.example/v1".to_string()));
+        provider.name = "OpenAI Test Mock".to_string();
+        let mut providers = HashMap::new();
+        providers.insert("openai-custom".to_string(), provider);
+
+        validate_model_providers(&providers)
+            .expect("unique OpenAI-auth responses mock provider should validate");
+    }
 }

@@ -18,6 +18,9 @@ has been integrated.
 | Baseten       | Built-in metered provider for GLM 5.2 through Baseten.                                                                  | [Baseten](integrations/baseten.md)            |
 | Vercel        | Built-in metered provider for GLM 5.2 and GLM 5.2 Fast through Vercel AI Gateway.                                       | [Vercel](integrations/vercel.md)              |
 | Vault         | Encrypted credential store for provider keys and manually-added secrets.                                                | [Authentication And Vault](authentication.md) |
+| Panes         | User panes and Claude Code headless panes with provider-backed profiles and turn artifacts.                             | [Claude Headless Panes](features/claude-headless-panes.md) |
+| Spawn         | Managed Nazgul/Troll/Orc orchestration through `/spawn` and `/spawn status`.                                            | [Spawn Orchestration](features/spawn-orchestration.md) |
+| `/tasknode`   | Slash command for Task Node task views, actions, evidence, task requests, rewards, and account status.                  | [`/tasknode` Slash Command](features/tasknode.md) |
 | Codex fork    | Product command aliases, npm packages, installer names, TUI branding, and model picker behavior.                        | [Codex Fork](integrations/codex-fork.md)      |
 | Runtime       | Codex-derived local coding agent with tools, approvals, sandboxing, MCP, exec, and review modes.                        | [Runtime](exec.md)                            |
 | Configuration | Provider and model defaults normalize Ambient/Z.AI sessions onto compatible GLM models.                                 | [Configuration](config.md)                    |
@@ -36,7 +39,9 @@ has been integrated.
    from upstream Codex.
 5. Read [Configuration](config.md), [Authentication](authentication.md), and
    [Slash Commands](slash_commands.md) for operator-facing behavior.
-6. Read [Exec](exec.md), [Sandbox](sandbox.md), and [Skills](skills.md) for the
+6. Read [Features](features/index.md) for `/spawn`, `/tasknode`, `/panes`, and
+   runtime feature records.
+7. Read [Exec](exec.md), [Sandbox](sandbox.md), and [Skills](skills.md) for the
    inherited runtime surfaces.
 
 ## Core Claim

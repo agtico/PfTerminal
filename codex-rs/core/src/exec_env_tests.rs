@@ -60,6 +60,27 @@ fn test_core_inherit_with_default_excludes_enabled() {
 }
 
 #[test]
+fn shell_tool_env_removes_provider_auth_vars_even_when_policy_keeps_sensitive_vars() {
+    let mut env: HashMap<String, String> = hashmap! {
+        "PATH".to_string() => "/usr/bin".to_string(),
+        "OPENAI_API_KEY".to_string() => "openai-secret".to_string(),
+        "Anthropic_Auth_Token".to_string() => "anthropic-secret".to_string(),
+        "AI_GATEWAY_API_KEY".to_string() => "vercel-secret".to_string(),
+        "CORP_MODEL_TOKEN".to_string() => "custom-secret".to_string(),
+        "GENERIC_API_KEY".to_string() => "workflow-secret".to_string(),
+    };
+
+    remove_provider_auth_env_vars(&mut env, ["CORP_MODEL_TOKEN"]);
+
+    let expected: HashMap<String, String> = hashmap! {
+        "PATH".to_string() => "/usr/bin".to_string(),
+        "GENERIC_API_KEY".to_string() => "workflow-secret".to_string(),
+    };
+
+    assert_eq!(env, expected);
+}
+
+#[test]
 fn test_include_only() {
     let vars = make_vars(&[("PATH", "/usr/bin"), ("FOO", "bar")]);
 

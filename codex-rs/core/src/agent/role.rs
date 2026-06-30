@@ -370,6 +370,25 @@ Rules:
                     }
                 ),
                 (
+                    "nazgul".to_string(),
+                    AgentRoleConfig {
+                        description: Some(r#"Use `nazgul` for CTO-level architecture, delegation, security review, and orchestration.
+Nazgul report to Sauron/the human, translate the user's vision into implementation blueprints, delegate execution to Trolls, and do not act as individual contributors."#.to_string()),
+                        config_file: Some("nazgul.toml".to_string().parse().unwrap_or_default()),
+                        nickname_candidates: Some(vec![
+                            "Angmar".to_string(),
+                            "Khamul".to_string(),
+                            "Morgul".to_string(),
+                            "DolGuldur".to_string(),
+                            "MinasMorgul".to_string(),
+                            "Guldur".to_string(),
+                            "Nurn".to_string(),
+                            "Cirith".to_string(),
+                            "Barad".to_string(),
+                        ]),
+                    }
+                ),
+                (
                     "troll".to_string(),
                     AgentRoleConfig {
                         description: Some(r#"Use `troll` for engineering-manager supervision, review, coordination, and enforcement.
@@ -436,11 +455,13 @@ Orcs follow the Troll's assignment exactly, do not expand scope, produce concret
     pub(super) fn config_file_contents(path: &Path) -> Option<&'static str> {
         const EXPLORER: &str = include_str!("builtins/explorer.toml");
         const AWAITER: &str = include_str!("builtins/awaiter.toml");
+        const NAZGUL: &str = include_str!("builtins/nazgul.toml");
         const TROLL: &str = include_str!("builtins/troll.toml");
         const ORC: &str = include_str!("builtins/orc.toml");
         match path.to_str()? {
             "explorer.toml" => Some(EXPLORER),
             "awaiter.toml" => Some(AWAITER),
+            "nazgul.toml" => Some(NAZGUL),
             "troll.toml" => Some(TROLL),
             "orc.toml" => Some(ORC),
             _ => None,

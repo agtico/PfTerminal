@@ -5,7 +5,7 @@ use codex_tools::ToolName;
 
 use crate::exec::ExecCapturePolicy;
 use crate::exec::ExecParams;
-use crate::exec_env::create_env;
+use crate::exec_env::create_shell_tool_env;
 use crate::function_tool::FunctionCallError;
 use crate::maybe_emit_implicit_skill_invocation;
 use crate::session::turn_context::TurnContext;
@@ -95,15 +95,22 @@ impl ShellCommandHandler {
         let command = Self::base_command(shell.as_ref(), &params.command, use_login_shell);
         #[allow(deprecated)]
         let cwd = turn_context.resolve_path(params.workdir.clone());
+        let provider_env_keys = turn_context
+            .config
+            .model_providers
+            .values()
+            .filter_map(|provider| provider.env_key.as_deref())
+            .chain(turn_context.config.model_provider.env_key.as_deref());
 
         Ok(ExecParams {
             command,
             cwd,
             expiration: params.timeout_ms.into(),
             capture_policy: ExecCapturePolicy::ShellTool,
-            env: create_env(
+            env: create_shell_tool_env(
                 &turn_context.config.permissions.shell_environment_policy,
                 Some(thread_id),
+                provider_env_keys,
             ),
             network: turn_context.network.clone(),
             network_environment_id: turn_context

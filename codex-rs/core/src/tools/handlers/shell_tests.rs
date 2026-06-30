@@ -4,7 +4,7 @@ use std::sync::Arc;
 use codex_protocol::models::ShellCommandToolCallParams;
 use pretty_assertions::assert_eq;
 
-use crate::exec_env::create_env;
+use crate::exec_env::create_shell_tool_env;
 use crate::sandboxing::SandboxPermissions;
 use crate::session::tests::make_session_and_context;
 use crate::shell::Shell;
@@ -82,9 +82,16 @@ async fn shell_command_handler_to_exec_params_uses_session_shell_and_turn_contex
         .derive_exec_args(&command, /*use_login_shell*/ true);
     #[allow(deprecated)]
     let expected_cwd = turn_context.resolve_path(workdir.clone());
-    let expected_env = create_env(
+    let provider_env_keys = turn_context
+        .config
+        .model_providers
+        .values()
+        .filter_map(|provider| provider.env_key.as_deref())
+        .chain(turn_context.config.model_provider.env_key.as_deref());
+    let expected_env = create_shell_tool_env(
         &turn_context.config.permissions.shell_environment_policy,
         Some(session.thread_id),
+        provider_env_keys,
     );
 
     let params = ShellCommandToolCallParams {
@@ -116,6 +123,57 @@ async fn shell_command_handler_to_exec_params_uses_session_shell_and_turn_contex
     assert_eq!(exec_params.sandbox_permissions, sandbox_permissions);
     assert_eq!(exec_params.justification, justification);
     assert_eq!(exec_params.arg0, None);
+}
+
+#[tokio::test]
+async fn shell_command_handler_removes_provider_auth_env_from_exec_params() {
+    let (session, mut turn_context) = make_session_and_context().await;
+    let mut config = (*turn_context.config).clone();
+    config.permissions.shell_environment_policy.r#set.insert(
+        "OPENAI_API_KEY".to_string(),
+        "openai-provider-secret".to_string(),
+    );
+    config.permissions.shell_environment_policy.r#set.insert(
+        "CORP_MODEL_TOKEN".to_string(),
+        "custom-provider-secret".to_string(),
+    );
+    config
+        .permissions
+        .shell_environment_policy
+        .r#set
+        .insert("GENERIC_API_KEY".to_string(), "workflow-secret".to_string());
+    let mut custom_provider = config.model_provider.clone();
+    custom_provider.env_key = Some("CORP_MODEL_TOKEN".to_string());
+    config
+        .model_providers
+        .insert("corp".to_string(), custom_provider);
+    turn_context.config = Arc::new(config);
+    let params = ShellCommandToolCallParams {
+        command: "echo hello".to_string(),
+        workdir: None,
+        login: None,
+        timeout_ms: None,
+        sandbox_permissions: None,
+        additional_permissions: None,
+        prefix_rule: None,
+        justification: None,
+    };
+
+    let exec_params = ShellCommandHandler::to_exec_params(
+        &params,
+        &session,
+        &turn_context,
+        session.thread_id,
+        /*allow_login_shell*/ true,
+    )
+    .expect("exec params");
+
+    assert!(!exec_params.env.contains_key("OPENAI_API_KEY"));
+    assert!(!exec_params.env.contains_key("CORP_MODEL_TOKEN"));
+    assert_eq!(
+        exec_params.env.get("GENERIC_API_KEY").map(String::as_str),
+        Some("workflow-secret")
+    );
 }
 
 #[test]

@@ -34,8 +34,10 @@ pub fn write_mock_responses_config_toml(
         Some(true) => "requires_openai_auth = true\n".to_string(),
         Some(false) | None => String::new(),
     };
+    // Custom providers must not reuse reserved built-in display names; see
+    // validate_reserved_model_provider_names.
     let provider_name = if matches!(requires_openai_auth, Some(true)) {
-        "OpenAI"
+        "OpenAI Test Mock"
     } else {
         "Mock provider for test"
     };
@@ -74,6 +76,10 @@ model_provider = "{model_provider_id}"
 [features]
 {feature_entries}
 {provider_block}
+
+[mcp_servers.codex_apps]
+url = "https://localhost.invalid/mcp"
+enabled = false
 "#
         ),
     )
@@ -102,6 +108,10 @@ base_url = "{server_uri}/v1"
 wire_api = "responses"
 request_max_retries = 0
 stream_max_retries = 0
+
+[mcp_servers.codex_apps]
+url = "https://localhost.invalid/mcp"
+enabled = false
 "#
         ),
     )

@@ -564,6 +564,10 @@ fn built_in_config_file_contents_resolves_known_roles() {
         None
     );
     assert!(
+        built_in::config_file_contents(Path::new("nazgul.toml"))
+            .is_some_and(|contents| contents.contains("You are the Nazgul"))
+    );
+    assert!(
         built_in::config_file_contents(Path::new("troll.toml"))
             .is_some_and(|contents| contents.contains("You are the Troll"))
     );
@@ -571,4 +575,20 @@ fn built_in_config_file_contents_resolves_known_roles() {
         built_in::config_file_contents(Path::new("orc.toml"))
             .is_some_and(|contents| contents.contains("You are the Orc"))
     );
+}
+
+#[tokio::test]
+async fn apply_nazgul_role_sets_developer_instructions() {
+    let (_home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+
+    apply_role_to_config(&mut config, Some("nazgul"))
+        .await
+        .expect("nazgul role should apply");
+
+    let developer_instructions = config
+        .developer_instructions
+        .as_deref()
+        .expect("nazgul role should set developer instructions");
+    assert!(developer_instructions.contains("You are the Nazgul"));
+    assert!(developer_instructions.contains("You are not an individual contributor or coder"));
 }

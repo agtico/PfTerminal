@@ -23,6 +23,9 @@ use super::provider::ClaudeProviderTransport;
 use super::turn_types::ClaudeBridgeKind;
 use super::turn_types::ClaudeBridgePlan;
 use super::turn_types::ClaudeCommandPlan;
+
+const ANTHROPIC_AUTH_ENV_KEYS: [&str; 2] = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
+
 pub(crate) fn ensure_vault_label_exists(codex_home: &Path, label: &str) -> Result<()> {
     let vault = Vault::new(codex_home.to_path_buf());
     match vault.exists(label) {
@@ -137,19 +140,21 @@ pub(crate) fn build_claude_command_plan(
     })?;
 
     let mut env = BTreeMap::new();
+    let mut env_remove = Vec::new();
     if let Some(base_url) = base_url_override.as_deref().or(profile.base_url) {
         env.insert("ANTHROPIC_BASE_URL".to_string(), base_url.to_string());
     }
     if bridge.is_some() {
+        env_remove.extend(ANTHROPIC_AUTH_ENV_KEYS.map(ToString::to_string));
         env.insert("ANTHROPIC_API_KEY".to_string(), String::new());
         env.insert(
             "ANTHROPIC_AUTH_TOKEN".to_string(),
             "pfterminal-local-bridge".to_string(),
         );
     } else if let Some(label) = profile.vault_label {
-        let secret = reveal_provider_secret(codex_home, label)?;
+        ensure_vault_label_exists(codex_home, label)?;
+        env_remove.extend(ANTHROPIC_AUTH_ENV_KEYS.map(ToString::to_string));
         env.insert("ANTHROPIC_API_KEY".to_string(), String::new());
-        env.insert("ANTHROPIC_AUTH_TOKEN".to_string(), secret);
     }
     if profile.uses_bare_mode {
         env.insert(
@@ -233,6 +238,7 @@ pub(crate) fn build_claude_command_plan(
         executable: "claude".to_string(),
         args,
         env,
+        env_remove,
         cwd: pane.cwd.clone(),
         pane_id: pane.id.clone(),
         pane_title: pane.title.clone(),

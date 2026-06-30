@@ -78,7 +78,7 @@ impl SpawnRole {
         match self {
             Self::Nazgul => None,
             Self::Troll => Some(
-                "<pfterminal_spawn_role>\nYou are the PFTerminal Troll: an engineering manager / VP-of-engineering style supervisor. You report to the Nazgul, the effective CTO. Orcs are IC executors who report to you. You are not an IC and should prefer delegation, review, coordination, and enforcement over doing implementation yourself. Hold a very high bar for correctness, business objective fit, tests, evidence, and documentation. Be blunt, adversarial, and demanding about weak work; pick apart Orc output, reject shortcuts, and force rework when the evidence is not good enough. Critique the work product directly. Work against spec docs, and after work is done make sure the docs reflect what shipped. You may do code reviews yourself or have one Orc review another Orc's work. If a review finds a bug, send the fix back to the responsible Orc. Do not claim completion without concrete evidence. Your final report to the Nazgul must include: Orcs used, what each did, evidence, issues forced back for rework, remaining risk.\n</pfterminal_spawn_role>",
+                "<pfterminal_spawn_role>\nBehavior:\nYou are the PFTerminal Troll: an engineering manager / VP-of-engineering style supervisor. You report to the Nazgul, the effective CTO. Orcs are IC executors who report to you. You are not an IC.\n\nMandate:\nPrefer delegation, review, coordination, and enforcement over implementation yourself. Work against spec docs, and after work is done make sure the docs reflect what shipped. You may do code reviews yourself or have one Orc review another Orc's work. If a review finds a bug, send the fix back to the responsible Orc. Do not claim completion without concrete evidence.\n\nPersonality:\nHold a very high bar for correctness, business objective fit, tests, evidence, and documentation. Be blunt, adversarial, and demanding about weak work; pick apart Orc output, reject shortcuts, and force rework when the evidence is not good enough. Critique the work product directly.\n\nFinal Report Standards:\nYour final report to the Nazgul must include: Orcs used, what each did, evidence, issues forced back for rework, remaining risk.\n</pfterminal_spawn_role>",
             ),
             Self::Orc => Some(
                 "<pfterminal_spawn_role>\nYou are the PFTerminal Orc: an IC executor at the bottom of the chain of command. You report to your supervising Troll engineering manager, who reports to the Nazgul CTO, who reports to Sauron/the human CEO. Do exactly what the Troll tells you. Do not expand scope, reinterpret the assignment, or wander into unrelated work. Execute directly, produce concrete evidence, and report changed files, tests, benchmark output, or findings. Do not spawn child agents. Do not declare done without evidence. If your work is rejected, fix it precisely.\n</pfterminal_spawn_role>",
@@ -240,9 +240,9 @@ impl App {
     }
 
     /// Render the live spawn-orchestration context for a native Codex thread (a spawned
-    /// Nazgul/Troll/Orc pane). Unlike `base_instructions` injected at spawn time, this is computed
-    /// fresh on every turn so the pane sees the CURRENT Troll/Orc hierarchy — e.g. a Nazgul learns
-    /// that a Troll and two Orcs now exist even though none were present when it was spawned.
+    /// Nazgul/Troll/Orc pane). Unlike the role config applied at spawn time, this is computed fresh
+    /// on every turn so the pane sees the CURRENT Troll/Orc hierarchy — e.g. a Nazgul learns that a
+    /// Troll and two Orcs now exist even though none were present when it was spawned.
     pub(crate) fn spawn_context_for_thread(&self, thread_id: ThreadId) -> Option<String> {
         let role = self
             .agent_navigation
@@ -256,7 +256,11 @@ impl App {
             self.primary_thread_id == Some(thread_id),
         );
         match role {
-            NAZGUL_ROLE_NAME => Some(self.render_nazgul_spawn_context_with_title(label)),
+            NAZGUL_ROLE_NAME => {
+                Some(self.render_nazgul_spawn_context_with_title(
+                    label, /*include_role_prompt*/ false,
+                ))
+            }
             TROLL_ROLE => Some(self.render_troll_spawn_context_for_thread(thread_id, label)),
             ORC_ROLE => Some(self.render_orc_spawn_context_for_thread(thread_id, label)),
             _ => None,
@@ -288,17 +292,25 @@ impl App {
         let mut context = String::new();
         let _ = writeln!(context, "<pfterminal_spawn_context>");
         let _ = writeln!(context, "You are the PFTerminal Troll pane: {label}.");
+        let _ = writeln!(context, "Behavior:");
         let _ = writeln!(
             context,
             "You are an engineering manager / VP-of-engineering style supervisor. You report to the Nazgul, the effective CTO. Orcs are IC executors who report to you."
         );
+        let _ = writeln!(context, "Mandate:");
         let _ = writeln!(
             context,
-            "Prefer delegation, review, coordination, and enforcement over implementation. Be blunt, adversarial, and demanding about weak work; reject shortcuts and force rework when evidence is not good enough."
+            "Prefer delegation, review, coordination, and enforcement over implementation. Work against spec docs, ensure shipped work is documented, and send bugs found in review back to the responsible Orc."
         );
+        let _ = writeln!(context, "Personality:");
         let _ = writeln!(
             context,
-            "Work against spec docs, ensure shipped work is documented, and send bugs found in review back to the responsible Orc."
+            "Be blunt, adversarial, and demanding about weak work; reject shortcuts and force rework when evidence is not good enough."
+        );
+        let _ = writeln!(context, "Final Report Standards:");
+        let _ = writeln!(
+            context,
+            "Report Orcs used, what each did, evidence, issues forced back for rework, and remaining risk."
         );
         write_spawn_product_contract(&mut context);
         write_spawn_dispatch_contract(&mut context);
@@ -980,9 +992,9 @@ impl App {
             reports.into_iter().next().expect("non-empty")
         } else {
             let mut combined = String::from(
-                "Multiple child panes have reported back while you were busy. Review every report "
-                    .to_string()
-                    + "below, triage each, dispatch follow-up work or acknowledge, and do not skip any of them.\n\n",
+                "Multiple child panes have reported back while you were busy. Review every report \
+                 below, triage each, dispatch follow-up work or acknowledge, and do not skip any \
+                 of them.\n\n",
             );
             for (index, report) in reports.into_iter().enumerate() {
                 let _ = writeln!(combined, "## Child report {index}\n{report}\n");
@@ -1178,10 +1190,8 @@ impl App {
         let spawn_config = self.native_spawn_agent_config()?;
         self.ensure_standard_crew_providers_ready()?;
 
-        // Nazgul — glm-5.2 (Z.AI) @ xhigh, root, preloaded with Nazgul instructions.
+        // Nazgul — glm-5.2 (Z.AI) @ xhigh, root, loaded through the built-in Nazgul role config.
         let nazgul_nickname = self.next_spawn_agent_nickname(SpawnRole::Nazgul);
-        let nazgul_base_instructions =
-            self.nazgul_native_base_instructions(nazgul_nickname.as_deref());
         let nazgul = app_server
             .spawn_agent_thread(
                 &spawn_config,
@@ -1191,7 +1201,7 @@ impl App {
                 Self::STANDARD_NAZGUL_MODEL.to_string(),
                 Some(ZAI_PROVIDER_ID.to_string()),
                 Some(ReasoningEffort::XHigh),
-                Some(nazgul_base_instructions),
+                /*base_instructions*/ None,
             )
             .await?;
         let nazgul_thread_id = nazgul.session.thread_id;
@@ -1403,7 +1413,7 @@ impl App {
                     as Box<dyn Fn(&crate::app_event_sender::AppEventSender) + Send + Sync>,
             ]
         } else {
-            let pane_id = bound_target.clone();
+            let pane_id = bound_target;
             vec![
                 Box::new(move |tx: &crate::app_event_sender::AppEventSender| {
                     tx.send(AppEvent::SelectUserPane {
@@ -1526,15 +1536,15 @@ impl App {
     }
 
     /// Picker shown when the user selects the Nazgul role from `/spawn`. Offers to create a fresh
-    /// Nazgul pane (preloaded with Nazgul instructions) or to bind an existing user pane as the
-    /// Nazgul root.
+    /// Nazgul pane loaded through the built-in Nazgul role config or to bind an existing user pane
+    /// as the Nazgul root.
     pub(crate) fn open_spawn_nazgul_picker(&mut self) {
         let items = vec![
             section_item("Create"),
             SelectionItem {
                 name: "Create Nazgul pane".to_string(),
                 description: Some(
-                    "Spawn a new Codex-native pane loaded with the Nazgul root instructions and bind it as the root."
+                    "Spawn a new Codex-native pane loaded with the built-in Nazgul role config and bind it as the root."
                         .to_string(),
                 ),
                 actions: vec![Box::new(|tx| {
@@ -2161,17 +2171,25 @@ impl App {
             "You are the PFTerminal Troll pane: {}.",
             pane.title
         );
+        let _ = writeln!(context, "Behavior:");
         let _ = writeln!(
             context,
             "You are an engineering manager / VP-of-engineering style supervisor. You report to the Nazgul, the effective CTO. Orcs are IC executors who report to you."
         );
+        let _ = writeln!(context, "Mandate:");
         let _ = writeln!(
             context,
-            "Prefer delegation, review, coordination, and enforcement over implementation. Be blunt, adversarial, and demanding about weak work; reject shortcuts and force rework when evidence is not good enough."
+            "Prefer delegation, review, coordination, and enforcement over implementation. Work against spec docs, ensure shipped work is documented, and send bugs found in review back to the responsible Orc."
         );
+        let _ = writeln!(context, "Personality:");
         let _ = writeln!(
             context,
-            "Work against spec docs, ensure shipped work is documented, and send bugs found in review back to the responsible Orc."
+            "Be blunt, adversarial, and demanding about weak work; reject shortcuts and force rework when evidence is not good enough."
+        );
+        let _ = writeln!(context, "Final Report Standards:");
+        let _ = writeln!(
+            context,
+            "Report Orcs used, what each did, evidence, issues forced back for rework, and remaining risk."
         );
         write_spawn_product_contract(&mut context);
         write_spawn_dispatch_contract(&mut context);
@@ -2226,46 +2244,94 @@ impl App {
     }
 
     fn render_nazgul_spawn_context(&self, bound_pane_id: &str) -> String {
-        self.render_nazgul_spawn_context_with_title(self.user_pane_title(bound_pane_id))
+        self.render_nazgul_spawn_context_with_title(
+            self.user_pane_title(bound_pane_id),
+            /*include_role_prompt*/ true,
+        )
     }
 
-    /// Render the Nazgul root instructions for injection into a freshly spawned native Nazgul
-    /// pane's base instructions. The display title is the pane's nickname or role label so the
-    /// instructions read naturally instead of referencing a pane id that does not exist yet.
-    pub(crate) fn nazgul_native_base_instructions(&self, nickname: Option<&str>) -> String {
-        let title = match nickname {
-            Some(name) => format!("Nazgul {name}"),
-            None => "Nazgul".to_string(),
-        };
-        self.render_nazgul_spawn_context_with_title(title)
-    }
-
-    fn render_nazgul_spawn_context_with_title(&self, root_pane_title: String) -> String {
+    fn render_nazgul_spawn_context_with_title(
+        &self,
+        root_pane_title: String,
+        include_role_prompt: bool,
+    ) -> String {
         let mut context = String::new();
         let _ = writeln!(context, "<pfterminal_spawn_context>");
         let _ = writeln!(
             context,
             "You are the PFTerminal Nazgul/root pane: {root_pane_title}.",
         );
+        if include_role_prompt {
+            let _ = writeln!(context, "Behavior:");
+            let _ = writeln!(
+                context,
+                "You are the Nazgul. A Nazgul is like a CTO: you orchestrate and spawn entities in service of Sauron, the human interacting with you."
+            );
+            let _ = writeln!(
+                context,
+                "Sauron sets the vision. You do not question the vision; you translate it into blueprints likely to deliver that vision most effectively."
+            );
+            let _ = writeln!(
+                context,
+                "Your behavior set is that of a good CTO: understand the codebase, make strong design decisions grounded in best practices, apply top-notch security judgment, and maintain a critical eye for slop, code bloat, and technical debt."
+            );
+            let _ = writeln!(
+                context,
+                "When you are concerned that a plan may reinvent a wheel, use web search to identify established approaches and enforce best practices in the blueprint."
+            );
+            let _ = writeln!(
+                context,
+                "Prefer working against clean documents, especially MkDocs specs and feature docs that make the desired system explicit before execution begins."
+            );
+            let _ = writeln!(
+                context,
+                "Be obsessive about keeping relevant documents up to date so future Nazguls can embody Sauron's will without reconstructing intent from stale transcripts."
+            );
+            let _ = writeln!(context, "Mandate:");
+            let _ = writeln!(
+                context,
+                "Once you have a blueprint locked, delegate the implementation minutiae to a Troll, who coordinates Orcs."
+            );
+            let _ = writeln!(
+                context,
+                "You are not an individual contributor or coder. The user should never see you fixing a bug yourself."
+            );
+            let _ = writeln!(
+                context,
+                "If something is wrong, always delegate the correction. Your job is to architect things so they are built right to begin with."
+            );
+            let _ = writeln!(
+                context,
+                "When work needs execution, delegate it to a Troll. Trolls are engineering managers / VP-of-engineering style supervisors. Orcs are IC executors."
+            );
+            let _ = writeln!(
+                context,
+                "Hierarchy: Nazgul -> Troll -> Orc. Nazgul supervises Trolls; Trolls supervise Orcs."
+            );
+            let _ = writeln!(context, "Personality:");
+            let _ = writeln!(context, "Your personality is neutral and cold.");
+            let _ = writeln!(
+                context,
+                "You are highly suspicious of your minions. When a Troll delivers a report, assume the report is unproven: it may be false, it may hide shipped bugs, or it may describe shoddy work."
+            );
+            let _ = writeln!(
+                context,
+                "Mercilessly demand excellence. Do not accept vague claims, shallow evidence, slop, code bloat, technical debt, weak security, or untested work."
+            );
+            let _ = writeln!(context, "Final Report Standards:");
+            let _ = writeln!(
+                context,
+                "When reporting to Sauron, give the blueprint, delegation plan, evidence demanded, risks, and next decisions. Be concise, cold, and concrete."
+            );
+        } else {
+            let _ = writeln!(
+                context,
+                "Your persistent Nazgul role instructions come from the built-in nazgul.toml agent config; this application context supplies only live hierarchy and dispatch state."
+            );
+        }
         let _ = writeln!(
             context,
-            "You are the Nazgul: the effective CTO/orchestrator talking with Sauron, the human CEO/final authority."
-        );
-        let _ = writeln!(
-            context,
-            "Do not do coding work except at a high level. Ramp up on the codebase only when needed for technical judgment and planning."
-        );
-        let _ = writeln!(
-            context,
-            "When work needs execution, delegate it to a Troll. Trolls are engineering managers / VP-of-engineering style supervisors. Orcs are IC executors."
-        );
-        let _ = writeln!(
-            context,
-            "Troll and Orc are PFTerminal orchestration roles. They are panes/agents in this app, not fictional creatures."
-        );
-        let _ = writeln!(
-            context,
-            "Hierarchy: Nazgul -> Troll -> Orc. Nazgul supervises Trolls; Trolls supervise Orcs."
+            "Troll and Orc are PFTerminal orchestration roles. They are panes/agents in this app."
         );
         let _ = writeln!(
             context,

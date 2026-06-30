@@ -1232,6 +1232,15 @@ impl ThreadRequestProcessor {
             }
             None => None,
         };
+        if let Some(agent_role) = spawn_session_source
+            .as_ref()
+            .and_then(CoreSessionSource::get_agent_role)
+            .filter(|role| codex_core::config::agent_role_config_exists(&config, role.as_str()))
+        {
+            codex_core::config::apply_agent_role_to_config(&mut config, Some(agent_role.as_str()))
+                .await
+                .map_err(invalid_request)?;
+        }
         let dynamic_tools = dynamic_tools.unwrap_or_default();
         let is_spawn_agent_thread = spawn_session_source.is_some();
         if !dynamic_tools.is_empty() {

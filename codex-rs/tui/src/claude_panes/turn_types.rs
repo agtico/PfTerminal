@@ -69,6 +69,7 @@ pub(crate) struct ClaudeCommandPlan {
     pub(crate) executable: String,
     pub(crate) args: Vec<String>,
     pub(crate) env: BTreeMap<String, String>,
+    pub(crate) env_remove: Vec<String>,
     pub(crate) cwd: PathBuf,
     pub(crate) pane_id: String,
     pub(crate) pane_title: String,
@@ -209,6 +210,7 @@ impl std::fmt::Debug for ClaudeCommandPlan {
             .field("executable", &self.executable)
             .field("args", &self.args)
             .field("env_keys", &env_keys)
+            .field("env_remove", &self.env_remove)
             .field("cwd", &self.cwd)
             .field("pane_id", &self.pane_id)
             .field("profile_title", &self.profile_title)

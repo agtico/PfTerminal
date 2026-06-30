@@ -1,5 +1,7 @@
 # Agent Vault Access Proposal
 
+Status: current security sprint.
+
 ## Goal
 
 PFTerminal agents, subagents, and Claude panes need to use provider API keys

@@ -2191,25 +2191,13 @@ impl App {
                     self.chat_widget.add_error_message(err.to_string());
                     return Ok(AppRunControl::Continue);
                 }
-                let mut spawn_config = match self.native_spawn_agent_config() {
+                let spawn_config = match self.native_spawn_agent_config() {
                     Ok(config) => config,
                     Err(err) => {
                         self.chat_widget.add_error_message(err.to_string());
                         return Ok(AppRunControl::Continue);
                     }
                 };
-                // A freshly spawned Nazgul pane is always loaded with the Nazgul root
-                // instructions so it knows its CTO/orchestrator role and the spawn hierarchy from
-                // its first turn. Troll/Orc panes keep the default base instructions; their role
-                // context is supplied by the app-server role layer.
-                let base_instructions = if role == crate::spawn_orchestration::SpawnRole::Nazgul {
-                    Some(self.nazgul_native_base_instructions(agent_nickname.as_deref()))
-                } else {
-                    None
-                };
-                // Keep the spawn config's persisted base instructions from clobbering the role
-                // payload we just built; the per-thread base_instructions override below wins.
-                spawn_config.base_instructions = base_instructions.clone();
                 match app_server
                     .spawn_agent_thread(
                         &spawn_config,
@@ -2219,7 +2207,7 @@ impl App {
                         model.clone(),
                         provider.clone(),
                         effort.clone(),
-                        base_instructions,
+                        /*base_instructions*/ None,
                     )
                     .await
                 {
@@ -2324,9 +2312,9 @@ impl App {
                     return Ok(AppRunControl::Continue);
                 }
                 // Inject the live spawn hierarchy as additional context so native spawn panes
-                // (Nazgul/Troll/Orc) see the CURRENT tree on every turn, not the frozen spawn-time
-                // base_instructions. Without this a Nazgul created before its Troll/Orcs would
-                // forever answer "none spawned yet" even after the TUI shows them in the status tree.
+                // (Nazgul/Troll/Orc) see the CURRENT tree on every turn, not only the spawn-time
+                // role config. Without this a Nazgul created before its Troll/Orcs would forever
+                // answer "none spawned yet" even after the TUI shows them in the status tree.
                 let additional_context = self.spawn_additional_context_for_thread(thread_id);
                 match app_server
                     .turn_start(

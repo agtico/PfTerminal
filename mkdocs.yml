@@ -46,19 +46,29 @@ nav:
       - Configuration: config.md
       - Example Config: example-config.md
       - Slash Commands: slash_commands.md
-  - Current Sprint:
+  - Current Security Sprint:
       - Overview: current-sprint/index.md
-      - Credential Store: current-sprint/authentication.md
-      - GLM 5.2 Tool Compatibility: current-sprint/glm-52-tool-compatibility.md
-      - Hammer Reduction Process: current-sprint/hammer-reduction-process.md
-      - Tool Call Runaway Remedy: current-sprint/tool-call-runaway-remedy.md
-      - PFTerminal Subagents: current-sprint/subagents.md
-      - Spawn Orchestration: current-sprint/spawn-orchestration.md
-      - Spawn Orchestration Acceptance: current-sprint/spawn-orchestration-acceptance.md
       - Agent Vault Access: current-sprint/agent-vault-access.md
-      - Codex Account Login: current-sprint/codex-account-login.md
-      - Claude Headless Panes: current-sprint/claude-headless-panes.md
-      - Claude Code Completion Spec: current-sprint/claude-code-integration-completion-spec.md
+  - Features:
+      - Overview: features/index.md
+      - Spawn Orchestration: features/spawn-orchestration.md
+      - Spawn Acceptance Evidence: features/spawn-orchestration-acceptance.md
+      - "/tasknode Slash Command": features/tasknode.md
+      - Claude Headless Panes: features/claude-headless-panes.md
+      - Claude Code Completion Spec: features/claude-code-integration-completion-spec.md
+      - Codex Account Login: features/codex-account-login.md
+      - GLM 5.2 Tool Compatibility: features/glm-52-tool-compatibility.md
+      - Provider Hammer Reduction: features/hammer-reduction-process.md
+      - Tool-Call Runaway Guard: features/tool-call-runaway-remedy.md
+      - Native Provider Performance: features/native-provider-performance.md
+      - Subagents: features/subagents.md
+  - Orchestration:
+      - Overview: orchestration/index.md
+      - Nazgul: orchestration/nazgul.md
+      - Troll: orchestration/troll.md
+      - Orc: orchestration/orc.md
+  - TBD:
+      - Overview: TBD/index.md
   - Integrations:
       - Overview: integrations/index.md
       - Ambient: integrations/ambient.md

@@ -1439,10 +1439,10 @@ fn drain_spawn_agent_task_for(
 ) -> Option<String> {
     let mut matched = None;
     while let Ok(event) = rx.try_recv() {
-        if let AppEvent::SubmitSpawnAgentTask { thread_id: t, task } = event {
-            if t == thread_id {
-                matched = Some(task);
-            }
+        if let AppEvent::SubmitSpawnAgentTask { thread_id: t, task } = event
+            && t == thread_id
+        {
+            matched = Some(task);
         }
     }
     matched
@@ -1491,7 +1491,7 @@ async fn child_report_to_idle_parent_triggers_a_processing_turn() {
     assert!(
         app.spawn_pending_reports_by_thread
             .get(&troll_thread_id)
-            .map_or(true, |q| q.is_empty())
+            .is_none_or(std::collections::VecDeque::is_empty)
     );
 }
 
@@ -1546,7 +1546,7 @@ async fn child_report_to_busy_parent_is_queued_not_dropped_then_flushed_on_idle(
     assert!(
         app.spawn_pending_reports_by_thread
             .get(&troll_thread_id)
-            .map_or(true, |q| q.is_empty())
+            .is_none_or(std::collections::VecDeque::is_empty)
     );
 }
 
@@ -1597,7 +1597,7 @@ async fn multiple_reports_to_busy_parent_flush_as_one_combined_turn() {
     assert_eq!(
         app.spawn_pending_reports_by_thread
             .get(&troll_thread_id)
-            .map_or(0, |q| q.len()),
+            .map_or(0, std::collections::VecDeque::len),
         2,
         "both reports should be queued"
     );
@@ -1614,7 +1614,7 @@ async fn multiple_reports_to_busy_parent_flush_as_one_combined_turn() {
     assert!(
         app.spawn_pending_reports_by_thread
             .get(&troll_thread_id)
-            .map_or(true, |q| q.is_empty())
+            .is_none_or(std::collections::VecDeque::is_empty)
     );
 }
 
@@ -1655,7 +1655,7 @@ async fn duplicate_child_report_is_not_requeued() {
     assert_eq!(
         app.spawn_pending_reports_by_thread
             .get(&troll_thread_id)
-            .map_or(0, |q| q.len()),
+            .map_or(0, std::collections::VecDeque::len),
         1,
         "identical back-to-back report should be deduped, not enqueued twice"
     );
@@ -2637,6 +2637,14 @@ async fn native_nazgul_sees_live_troll_and_orc_tree_even_if_spawned_before_them(
     assert!(
         context.contains("Euclid [nazgul]"),
         "context uses the Nazgul picker label, got: {context}"
+    );
+    assert!(
+        context.contains("built-in nazgul.toml agent config"),
+        "native Nazgul role prompt should come from role config, got: {context}"
+    );
+    assert!(
+        !context.contains("You are not an individual contributor or coder"),
+        "native Nazgul context should not duplicate the persistent role prompt, got: {context}"
     );
     assert!(
         context.contains("Burzum [troll]"),

@@ -1,17 +1,20 @@
-# Task Node GitHub Bridge
+# `/tasknode` Slash Command
 
-Status: terminal bridge and parity pass implemented locally. PFTerminal now has
-task-card rendering, evidence guidance, task request commands, request tracking,
-read-only rewards/balance, and GitHub-linked Task Node session storage. Task
-Node has matching terminal task rendering and task request endpoints pending
-merge/deploy.
+Status: slash-command feature and terminal parity pass implemented locally.
+PFTerminal now has `/tasknode` task-card rendering, evidence guidance, task
+request commands, request tracking, read-only rewards/balance, and
+GitHub-linked Task Node session storage. Task Node has matching terminal task
+rendering and task request endpoints pending merge/deploy.
 
-## User Story
+The feature is the `/tasknode` slash command. The Task Node terminal bridge is
+the backend/API support that makes the slash command useful.
+
+## Command Surface
 
 I am a GitHub-authenticated user in PFTerminal and I want to natively interact
 with the Task Node.
 
-The first native surface is:
+The native PFTerminal surface is:
 
 ```text
 /tasknode
@@ -24,6 +27,27 @@ requesting a personal task with text. The v0 bridge must not implement wallet
 creation, seed import, private-key signing, payout flows, or crypto sends.
 Read-only balance and recent reward views are allowed when the Task Node account
 already has a linked wallet.
+
+Supported command family:
+
+```text
+/tasknode
+/tasknode link
+/tasknode status
+/tasknode tasks [tab]
+/tasknode outstanding
+/tasknode verification
+/tasknode refused
+/tasknode rewarded
+/tasknode task <task-id>
+/tasknode request [text]
+/tasknode context
+/tasknode chat [text]
+/tasknode requests
+/tasknode balance
+/tasknode rewards
+/tasknode logout
+```
 
 ## Current Findings
 
@@ -267,7 +291,7 @@ mint the Task Node terminal session.
 - Logout removes the PFTerminal vault record and calls Task Node revocation when
   possible.
 
-## Task Node Bridge API
+## `/tasknode` Backend API
 
 The bridge should be a thin authenticated API over existing Task Node account
 and task read models.
@@ -649,17 +673,23 @@ ledger can be added later if Task Node exposes one.
 
 ### Slash Command
 
-Add `SlashCommand::Tasknode`:
+`SlashCommand::Tasknode` is wired as:
 
 - command string: `/tasknode`
 - description: `interact with Task Node tasks and rewards`
 - inline args:
   - `/tasknode link`
   - `/tasknode status`
-  - `/tasknode tasks`
+  - `/tasknode tasks [tab]`
+  - `/tasknode outstanding`
   - `/tasknode task <task-id>`
   - `/tasknode request [text]`
+  - `/tasknode context`
+  - `/tasknode chat [text]`
   - `/tasknode requests`
+  - `/tasknode verification`
+  - `/tasknode refused`
+  - `/tasknode rewarded`
   - `/tasknode balance`
   - `/tasknode rewards`
   - `/tasknode logout`

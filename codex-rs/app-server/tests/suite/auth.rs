@@ -136,7 +136,7 @@ async fn get_auth_status_no_auth() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_auth_status_with_api_key() -> Result<()> {
     let codex_home = TempDir::new()?;
-    create_config_toml(codex_home.path())?;
+    create_config_toml_custom_provider(codex_home.path(), /*requires_openai_auth*/ true)?;
 
     let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
@@ -164,7 +164,7 @@ async fn get_auth_status_with_api_key() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_auth_status_with_personal_access_token_omits_token() -> Result<()> {
     let codex_home = TempDir::new()?;
-    create_config_toml(codex_home.path())?;
+    create_config_toml_custom_provider(codex_home.path(), /*requires_openai_auth*/ true)?;
 
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -255,7 +255,7 @@ async fn get_auth_status_with_api_key_when_auth_not_required() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_auth_status_with_api_key_no_include_token() -> Result<()> {
     let codex_home = TempDir::new()?;
-    create_config_toml(codex_home.path())?;
+    create_config_toml_custom_provider(codex_home.path(), /*requires_openai_auth*/ true)?;
 
     let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
@@ -283,7 +283,7 @@ async fn get_auth_status_with_api_key_no_include_token() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_auth_status_with_api_key_refresh_requested() -> Result<()> {
     let codex_home = TempDir::new()?;
-    create_config_toml(codex_home.path())?;
+    create_config_toml_custom_provider(codex_home.path(), /*requires_openai_auth*/ true)?;
 
     let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
@@ -317,7 +317,7 @@ async fn get_auth_status_with_api_key_refresh_requested() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_auth_status_omits_token_after_permanent_refresh_failure() -> Result<()> {
     let codex_home = TempDir::new()?;
-    create_config_toml(codex_home.path())?;
+    create_config_toml_custom_provider(codex_home.path(), /*requires_openai_auth*/ true)?;
     write_chatgpt_auth(
         codex_home.path(),
         ChatGptAuthFixture::new("stale-access-token")
@@ -398,7 +398,7 @@ async fn get_auth_status_omits_token_after_permanent_refresh_failure() -> Result
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_auth_status_omits_token_after_proactive_refresh_failure() -> Result<()> {
     let codex_home = TempDir::new()?;
-    create_config_toml(codex_home.path())?;
+    create_config_toml_custom_provider(codex_home.path(), /*requires_openai_auth*/ true)?;
     write_chatgpt_auth(
         codex_home.path(),
         ChatGptAuthFixture::new("stale-access-token")
@@ -465,7 +465,7 @@ async fn get_auth_status_omits_token_after_proactive_refresh_failure() -> Result
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_auth_status_returns_token_after_proactive_refresh_recovery() -> Result<()> {
     let codex_home = TempDir::new()?;
-    create_config_toml(codex_home.path())?;
+    create_config_toml_custom_provider(codex_home.path(), /*requires_openai_auth*/ true)?;
     write_chatgpt_auth(
         codex_home.path(),
         ChatGptAuthFixture::new("stale-access-token")
@@ -535,6 +535,20 @@ async fn get_auth_status_returns_token_after_proactive_refresh_recovery() -> Res
             .last_refresh(Some(Utc::now())),
         AuthCredentialsStoreMode::File,
     )?;
+
+    drop(mcp);
+    let mut mcp = TestAppServer::new_with_env(
+        codex_home.path(),
+        &[
+            ("OPENAI_API_KEY", None),
+            (
+                REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR,
+                Some(refresh_url.as_str()),
+            ),
+        ],
+    )
+    .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let recovered_request_id = mcp
         .send_get_auth_status_request(GetAuthStatusParams {
