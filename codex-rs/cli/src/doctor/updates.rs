@@ -22,7 +22,9 @@ use super::npm_global_root_check;
 use super::run_command;
 
 const VERSION_FILE_NAME: &str = "version.json";
-const GITHUB_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
+const OPENAI_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
+const PFTERMINAL_LATEST_RELEASE_URL: &str =
+    "https://api.github.com/repos/agtico/PfTerminal/releases/latest";
 const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.json";
 
 /// Builds the update-health row for the current installation.
@@ -142,20 +144,22 @@ fn update_action_label(context: &InstallContext) -> &'static str {
 fn fetch_latest_version(context: &InstallContext) -> Result<String, String> {
     match &context.method {
         InstallMethod::Brew => fetch_homebrew_cask_version(),
-        InstallMethod::Npm
-        | InstallMethod::Bun
-        | InstallMethod::Standalone { .. }
-        | InstallMethod::Other => fetch_latest_github_release_version(),
+        InstallMethod::Npm | InstallMethod::Bun => {
+            fetch_latest_github_release_version(OPENAI_LATEST_RELEASE_URL)
+        }
+        InstallMethod::Standalone { .. } | InstallMethod::Other => {
+            fetch_latest_github_release_version(PFTERMINAL_LATEST_RELEASE_URL)
+        }
     }
 }
 
-fn fetch_latest_github_release_version() -> Result<String, String> {
+fn fetch_latest_github_release_version(latest_release_url: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct ReleaseInfo {
         tag_name: String,
     }
 
-    let info = http_get_json::<ReleaseInfo>(GITHUB_LATEST_RELEASE_URL)?;
+    let info = http_get_json::<ReleaseInfo>(latest_release_url)?;
     info.tag_name
         .strip_prefix("rust-v")
         .map(str::to_string)

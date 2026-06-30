@@ -55,7 +55,9 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
 
 // We use the latest version from the cask if installation is via homebrew - homebrew does not immediately pick up the latest release and can lag behind.
 const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.json";
-const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
+const OPENAI_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
+const PFTERMINAL_LATEST_RELEASE_URL: &str =
+    "https://api.github.com/repos/agtico/PfTerminal/releases/latest";
 
 #[derive(Deserialize, Debug, Clone)]
 struct ReleaseInfo {
@@ -80,7 +82,8 @@ async fn check_for_update(version_file: &Path, action: Option<UpdateAction>) -> 
             version
         }
         Some(UpdateAction::NpmGlobalLatest) | Some(UpdateAction::BunGlobalLatest) => {
-            let latest_version = fetch_latest_github_release_version().await?;
+            let latest_version =
+                fetch_latest_github_release_version(OPENAI_LATEST_RELEASE_URL).await?;
             let package_info = create_client()
                 .get(npm_registry::PACKAGE_URL)
                 .send()
@@ -92,7 +95,7 @@ async fn check_for_update(version_file: &Path, action: Option<UpdateAction>) -> 
             latest_version
         }
         Some(UpdateAction::StandaloneUnix) | Some(UpdateAction::StandaloneWindows) | None => {
-            fetch_latest_github_release_version().await?
+            fetch_latest_github_release_version(PFTERMINAL_LATEST_RELEASE_URL).await?
         }
     };
 
@@ -112,11 +115,11 @@ async fn check_for_update(version_file: &Path, action: Option<UpdateAction>) -> 
     Ok(())
 }
 
-async fn fetch_latest_github_release_version() -> anyhow::Result<String> {
+async fn fetch_latest_github_release_version(latest_release_url: &str) -> anyhow::Result<String> {
     let ReleaseInfo {
         tag_name: latest_tag_name,
     } = create_client()
-        .get(LATEST_RELEASE_URL)
+        .get(latest_release_url)
         .send()
         .await?
         .error_for_status()?

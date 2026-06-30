@@ -7,7 +7,7 @@ on:
         description: "Release version; must match codex-rs/Cargo.toml."
         required: true
         type: string
-        default: "0.0.0"
+        default: "0.1.0"
       publish_release:
         description: "Create or update the matching GitHub release."
         required: true
@@ -407,6 +407,7 @@ jobs:
           find downloaded -type f -name 'pfterminal-package-*.zip' -exec cp {} release-dist/ \;
           find downloaded -type f -name 'PFTerminal-*.dmg' -exec cp {} release-dist/ \;
           cp scripts/install/install.sh release-dist/install.sh
+          cp scripts/install/install.ps1 release-dist/install.ps1
 
           find release-dist -maxdepth 1 -type f \( -name 'pfterminal-package-*.tar.gz' -o -name 'pfterminal-package-*.zip' \) -print |
             sort |
