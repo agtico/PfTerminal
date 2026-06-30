@@ -59,6 +59,114 @@ Use:
 - `/model` or `pfterminal -m <model>` to choose a model.
 - `/spawn` to create and route multi-agent work.
 
+## Core Slash Commands
+
+Slash commands are typed inside the interactive `pfterminal` chat. PFTerminal
+inherits the normal Codex slash commands and adds a few commands for providers,
+credentials, panes, spawned agents, and Task Node.
+
+### `/providers`
+
+Use `/providers` when a model or provider needs credentials. It opens the
+provider setup menu and stores API keys or account-backed auth in the encrypted
+PFTerminal vault.
+
+Common uses:
+
+- Add an Ambient, Z.AI, OpenRouter, Baseten, Vercel, or Anthropic API key.
+- Add or refresh OpenAI Codex account auth.
+- Check which provider key a selected model expects.
+
+### `/vault`
+
+Use `/vault` to inspect and manage encrypted local credentials. Secrets are
+stored under `$HOME/.pfterminal` and are not typed into normal chat history.
+
+Useful forms:
+
+- `/vault` opens the vault action menu.
+- `/vault list` lists stored credential labels.
+- `/vault show <label>` shows credential metadata without revealing the raw
+  secret.
+- `/vault credential add` opens a masked entry flow for adding a new secret.
+
+### `/panes`
+
+Use `/panes` to switch between the main Codex conversation, native Codex agent
+threads, and Claude Code panes. A pane has its own visible transcript and
+running state, so long-running work can continue in one pane while you inspect
+another.
+
+The main pane is `Codex Main`. Other panes may be native Codex agent panes or
+Claude panes created from the pane picker or through `/spawn`.
+
+### `/spawn`
+
+Use `/spawn` for managed multi-agent work. It can create or bind the hierarchy
+PFTerminal uses for larger tasks:
+
+- **Nazgul**: the supervising/root pane.
+- **Troll**: a coordinating implementation or review pane.
+- **Orc**: a focused worker pane.
+
+Useful forms:
+
+- `/spawn` opens the role picker.
+- `/spawn status` shows the current hierarchy, running state, and recent
+  dispatches.
+- `/spawn nazgul`, `/spawn troll`, and `/spawn orc` create or bind specific
+  roles.
+
+Use `/spawn` when you want work split across persistent panes instead of asking
+the current chat to do everything in one thread.
+
+## Codex Sessions vs Claude Panes
+
+The default PFTerminal experience is a native Codex session. In that mode,
+PFTerminal runs the Codex harness directly: it manages the active model,
+tooling, permissions, local context, and command execution in the main terminal
+session.
+
+A Claude pane is different. It is a managed Claude Code subprocess wrapped by
+PFTerminal through the local exec/pane runner. PFTerminal starts the Claude Code
+process, feeds it the task, tracks its output, stores pane artifacts under
+`$HOME/.pfterminal/panes`, and shows the result inside the PFTerminal pane UI.
+
+In practice:
+
+- Use native Codex when you want the normal PFTerminal/Codex harness.
+- Use a Claude pane when you specifically want Claude Code behavior inside a
+  separate, inspectable pane.
+- Switching to a Claude pane with `/panes` does not turn the whole terminal into
+  Claude. It opens that pane's own subprocess-backed transcript.
+- Claude Plan panes use Claude Code's own plan auth. API-key Claude routes use
+  keys stored through `/providers` or `/vault`.
+
+## Task Node Quick Guide
+
+`/tasknode` connects PFTerminal to Task Node tasks, rewards, context, and chat.
+To use it, you need an account registered on
+[tasknode.postfiat.org](https://tasknode.postfiat.org). If you are not
+registered there, PFTerminal can open the menu but cannot show your tasks or
+submit Task Node actions.
+
+Useful forms:
+
+- `/tasknode` opens the Task Node menu.
+- `/tasknode link` starts or refreshes the GitHub-backed Task Node link flow.
+- `/tasknode status` shows account, wallet, and task status.
+- `/tasknode tasks` lists outstanding Task Node work.
+- `/tasknode task <task-id>` opens one task.
+- `/tasknode request` starts a personal task request.
+- `/tasknode requests` shows active task requests.
+- `/tasknode balance` and `/tasknode rewards` show PFT reward state.
+- `/tasknode chat` and `/tasknode context` open Task Node chat and context
+  surfaces.
+
+Terminal session tokens are stored locally through the encrypted vault. If
+linking fails, register or sign in at `https://tasknode.postfiat.org`, then run
+`/tasknode link` again.
+
 More setup detail:
 
 - [Install And First Run](docs/install.md)
