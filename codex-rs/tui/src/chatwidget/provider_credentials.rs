@@ -10,6 +10,7 @@ const CODEX_ACCOUNT_DEVICE_LOGIN_VIEW_ID: &str = "codex-account-device-login";
 #[derive(Debug, Clone, Copy)]
 enum ProviderCredentialOption {
     CodexAccount,
+    ClaudeCodePlan,
     ProviderApiKey {
         provider_name: &'static str,
         env_key: &'static str,
@@ -18,6 +19,11 @@ enum ProviderCredentialOption {
 
 const PROVIDER_CREDENTIAL_OPTIONS: &[ProviderCredentialOption] = &[
     ProviderCredentialOption::CodexAccount,
+    ProviderCredentialOption::ClaudeCodePlan,
+    ProviderCredentialOption::ProviderApiKey {
+        provider_name: "Anthropic",
+        env_key: "ANTHROPIC_API_KEY",
+    },
     ProviderCredentialOption::ProviderApiKey {
         provider_name: "Ambient",
         env_key: "AMBIENT_API_KEY",
@@ -177,6 +183,20 @@ fn provider_credential_item(option: &ProviderCredentialOption) -> SelectionItem 
             dismiss_on_select: true,
             ..Default::default()
         },
+        ProviderCredentialOption::ClaudeCodePlan => SelectionItem {
+            name: "Provider: Claude Code Plan".to_string(),
+            description: Some("Uses Claude Code OAuth/subscription auth".to_string()),
+            actions: vec![Box::new(|tx| {
+                tx.send(AppEvent::InsertHistoryCell(Box::new(
+                    history_cell::new_info_event(
+                        "Claude Code plan auth is managed by Claude Code. Run `claude auth` or `claude /login`, then choose `claude-opus-4-8-plan` from /model to use Opus 4.8 through the Codex harness.".to_string(),
+                        /*hint*/ None,
+                    ),
+                )));
+            })],
+            dismiss_on_select: true,
+            ..Default::default()
+        },
         ProviderCredentialOption::ProviderApiKey {
             provider_name,
             env_key,
@@ -201,6 +221,7 @@ fn provider_credential_item(option: &ProviderCredentialOption) -> SelectionItem 
 
 fn provider_credential_display_name(provider_name: &str, env_key: &str) -> String {
     let key_name = match env_key {
+        "ANTHROPIC_API_KEY" => "API Key",
         "AMBIENT_API_KEY" => "API Key",
         "ZAI_API_KEY" => "API Key",
         "OPENROUTER_API_KEY" => "API Key",
@@ -362,6 +383,8 @@ mod tests {
             names,
             vec![
                 "Provider: OpenAI Codex Account",
+                "Provider: Claude Code Plan",
+                "Provider: Anthropic API Key",
                 "Provider: Ambient API Key",
                 "Provider: Z.AI API Key",
                 "Provider: OpenRouter API Key",
@@ -375,6 +398,14 @@ mod tests {
         );
         assert_eq!(
             rows[1].description.as_deref(),
+            Some("Uses Claude Code OAuth/subscription auth")
+        );
+        assert_eq!(
+            rows[2].description.as_deref(),
+            Some("Store ANTHROPIC_API_KEY in the vault")
+        );
+        assert_eq!(
+            rows[3].description.as_deref(),
             Some("Store AMBIENT_API_KEY in the vault")
         );
     }
@@ -392,6 +423,16 @@ mod tests {
         ));
 
         (rows[1].actions[0])(&sender);
+        assert!(matches!(rx.try_recv(), Ok(AppEvent::InsertHistoryCell(_))));
+
+        (rows[2].actions[0])(&sender);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::OpenProviderApiKeyAdd { provider_name, env_key })
+                if provider_name == "Anthropic" && env_key == "ANTHROPIC_API_KEY"
+        ));
+
+        (rows[3].actions[0])(&sender);
         assert!(matches!(
             rx.try_recv(),
             Ok(AppEvent::OpenProviderApiKeyAdd { provider_name, env_key })

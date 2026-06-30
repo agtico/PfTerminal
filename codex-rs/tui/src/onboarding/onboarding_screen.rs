@@ -30,6 +30,8 @@ use ratatui::widgets::WidgetRef;
 
 use codex_model_provider_info::AMBIENT_API_KEY_ENV_VAR;
 use codex_model_provider_info::AMBIENT_PROVIDER_ID;
+use codex_model_provider_info::ANTHROPIC_API_KEY_ENV_VAR;
+use codex_model_provider_info::ANTHROPIC_PROVIDER_ID;
 use codex_model_provider_info::BASETEN_API_KEY_ENV_VAR;
 use codex_model_provider_info::BASETEN_PROVIDER_ID;
 use codex_model_provider_info::OPENROUTER_API_KEY_ENV_VAR;
@@ -119,6 +121,11 @@ const BASETEN_PROVIDER_NAME: &str = "Baseten";
 const VERCEL_PROVIDER_NAME: &str = "Vercel";
 
 const RECOMMENDED_PROVIDER_API_KEY_OPTIONS: &[(&str, &str, &str)] = &[
+    (
+        ANTHROPIC_PROVIDER_ID,
+        "Anthropic",
+        ANTHROPIC_API_KEY_ENV_VAR,
+    ),
     (AMBIENT_PROVIDER_ID, "Ambient", AMBIENT_API_KEY_ENV_VAR),
     (ZAI_PROVIDER_ID, "Z.AI", ZAI_API_KEY_ENV_VAR),
     (
@@ -184,17 +191,19 @@ fn sort_and_dedupe_provider_api_key_options(options: &mut Vec<ApiKeyProviderOpti
 
 fn provider_api_key_sort_rank(provider_id: &str) -> usize {
     match provider_id {
-        AMBIENT_PROVIDER_ID => 0,
-        ZAI_PROVIDER_ID => 1,
-        OPENROUTER_PROVIDER_ID => 2,
-        BASETEN_PROVIDER_ID => 3,
-        VERCEL_PROVIDER_ID => 4,
-        _ => 5,
+        ANTHROPIC_PROVIDER_ID => 0,
+        AMBIENT_PROVIDER_ID => 1,
+        ZAI_PROVIDER_ID => 2,
+        OPENROUTER_PROVIDER_ID => 3,
+        BASETEN_PROVIDER_ID => 4,
+        VERCEL_PROVIDER_ID => 5,
+        _ => 6,
     }
 }
 
 pub(crate) fn provider_api_key_display_name(provider: &ApiKeyProviderOption) -> String {
     match provider.env_var.as_str() {
+        ANTHROPIC_API_KEY_ENV_VAR => "Provider: Anthropic API Key".to_string(),
         AMBIENT_API_KEY_ENV_VAR => "Provider: Ambient API Key".to_string(),
         ZAI_API_KEY_ENV_VAR => "Provider: Z.AI API Key".to_string(),
         OPENROUTER_API_KEY_ENV_VAR => "Provider: OpenRouter API Key".to_string(),

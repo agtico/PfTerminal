@@ -37,13 +37,20 @@ pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItem>) {
     // Store the insertion position (index of call) alongside the item so
     // we can insert in reverse order and avoid index shifting.
     let mut missing_outputs_to_insert: Vec<(usize, ResponseItem)> = Vec::new();
+    let mut missing_function_outputs = 0usize;
+    let mut missing_function_sample: Option<String> = None;
+    let mut missing_tool_search_outputs = 0usize;
+    let mut missing_tool_search_sample: Option<String> = None;
 
     for (idx, item) in items.iter().enumerate() {
         match item {
             ResponseItem::FunctionCall { call_id, .. }
                 if !function_output_ids.contains(call_id.as_str()) =>
             {
-                info!("Function call output is missing for call id: {call_id}");
+                missing_function_outputs += 1;
+                if missing_function_sample.is_none() {
+                    missing_function_sample = Some(call_id.clone());
+                }
                 missing_outputs_to_insert.push((
                     idx,
                     ResponseItem::FunctionCallOutput {
@@ -58,7 +65,10 @@ pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItem>) {
                 call_id: Some(call_id),
                 ..
             } if !tool_search_output_ids.contains(call_id.as_str()) => {
-                info!("Tool search output is missing for call id: {call_id}");
+                missing_tool_search_outputs += 1;
+                if missing_tool_search_sample.is_none() {
+                    missing_tool_search_sample = Some(call_id.clone());
+                }
                 missing_outputs_to_insert.push((
                     idx,
                     ResponseItem::ToolSearchOutput {
@@ -119,6 +129,21 @@ pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItem>) {
     for (idx, output_item) in missing_outputs_to_insert.into_iter().rev() {
         items.insert(idx + 1, output_item);
     }
+
+    if missing_function_outputs > 0 {
+        info!(
+            count = missing_function_outputs,
+            sample_call_id = missing_function_sample.as_deref(),
+            "function call outputs are missing; inserted aborted outputs"
+        );
+    }
+    if missing_tool_search_outputs > 0 {
+        info!(
+            count = missing_tool_search_outputs,
+            sample_call_id = missing_tool_search_sample.as_deref(),
+            "tool search outputs are missing; inserted completed outputs"
+        );
+    }
 }
 
 pub(crate) fn remove_orphan_outputs(items: &mut Vec<ResponseItem>) {
@@ -160,19 +185,35 @@ pub(crate) fn remove_orphan_outputs(items: &mut Vec<ResponseItem>) {
         })
         .collect();
 
+    let mut orphan_function_outputs = 0usize;
+    let mut orphan_function_empty_call_ids = 0usize;
+    let mut orphan_function_sample: Option<String> = None;
+    let mut orphan_custom_tool_outputs = 0usize;
+    let mut orphan_custom_tool_sample: Option<String> = None;
+    let mut orphan_tool_search_outputs = 0usize;
+    let mut orphan_tool_search_sample: Option<String> = None;
+
     items.retain(|item| match item {
         ResponseItem::FunctionCallOutput { call_id, .. } => {
             let has_match =
                 function_call_ids.contains(call_id) || local_shell_call_ids.contains(call_id);
             if !has_match {
-                warn!("Orphan function call output for call id: {call_id}");
+                orphan_function_outputs += 1;
+                if call_id.trim().is_empty() {
+                    orphan_function_empty_call_ids += 1;
+                } else if orphan_function_sample.is_none() {
+                    orphan_function_sample = Some(call_id.clone());
+                }
             }
             has_match
         }
         ResponseItem::CustomToolCallOutput { call_id, .. } => {
             let has_match = custom_tool_call_ids.contains(call_id);
             if !has_match {
-                warn!("Orphan custom tool call output for call id: {call_id}");
+                orphan_custom_tool_outputs += 1;
+                if orphan_custom_tool_sample.is_none() {
+                    orphan_custom_tool_sample = Some(call_id.clone());
+                }
             }
             has_match
         }
@@ -183,13 +224,39 @@ pub(crate) fn remove_orphan_outputs(items: &mut Vec<ResponseItem>) {
         } => {
             let has_match = tool_search_call_ids.contains(call_id);
             if !has_match {
-                warn!("Orphan tool search output for call id: {call_id}");
+                orphan_tool_search_outputs += 1;
+                if orphan_tool_search_sample.is_none() {
+                    orphan_tool_search_sample = Some(call_id.clone());
+                }
             }
             has_match
         }
         ResponseItem::ToolSearchOutput { call_id: None, .. } => true,
         _ => true,
     });
+
+    if orphan_function_outputs > 0 {
+        warn!(
+            count = orphan_function_outputs,
+            empty_call_ids = orphan_function_empty_call_ids,
+            sample_call_id = orphan_function_sample.as_deref(),
+            "orphan function call outputs removed"
+        );
+    }
+    if orphan_custom_tool_outputs > 0 {
+        warn!(
+            count = orphan_custom_tool_outputs,
+            sample_call_id = orphan_custom_tool_sample.as_deref(),
+            "orphan custom tool call outputs removed"
+        );
+    }
+    if orphan_tool_search_outputs > 0 {
+        warn!(
+            count = orphan_tool_search_outputs,
+            sample_call_id = orphan_tool_search_sample.as_deref(),
+            "orphan tool search outputs removed"
+        );
+    }
 }
 
 pub(crate) fn remove_corresponding_for(items: &mut Vec<ResponseItem>, item: &ResponseItem) {

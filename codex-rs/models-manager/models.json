@@ -18,7 +18,7 @@
       "max_context_window": 202752,
       "auto_compact_token_limit": null,
       "default_reasoning_summary": "none",
-      "slug": "zai-org/GLM-5.2-FP8",
+      "slug": "z-ai/glm-5.2",
       "display_name": "Ambient GLM 5.2",
       "description": "Ambient's default GLM 5.2 coding model.",
       "default_reasoning_level": "medium",
@@ -296,52 +296,6 @@
       "availability_nux": null,
       "upgrade": null,
       "priority": 0,
-      "base_instructions": "You are PFTerminal, a coding agent. Help the user complete software tasks in the current workspace. Be direct, inspect the code before changing it, keep edits scoped, and verify your work when practical. When searching, use rg or rg --files first. Never run recursive grep over a repo root; if rg is unavailable, restrict grep to source directories and exclude .git, target, node_modules, dist, build, .next, and vendor.",
-      "model_messages": null,
-      "experimental_supported_tools": [],
-      "service_tiers": [],
-      "additional_speed_tiers": [],
-      "supports_reasoning_summaries": false,
-      "supports_search_tool": false
-    },
-    {
-      "support_verbosity": false,
-      "default_verbosity": null,
-      "apply_patch_tool_type": "freeform",
-      "web_search_tool_type": "text",
-      "input_modalities": [
-        "text"
-      ],
-      "supports_image_detail_original": false,
-      "truncation_policy": {
-        "mode": "tokens",
-        "limit": 10000
-      },
-      "supports_parallel_tool_calls": true,
-      "context_window": 1048576,
-      "max_context_window": 1048576,
-      "auto_compact_token_limit": null,
-      "default_reasoning_summary": "none",
-      "slug": "z-ai/glm-5.2",
-      "display_name": "OpenRouter GLM 5.2",
-      "description": "OpenRouter: GLM 5.2 - $0.98/M input, $3.08/M output.",
-      "default_reasoning_level": "high",
-      "supported_reasoning_levels": [
-        {
-          "effort": "high",
-          "description": "High. OpenRouter GLM reasoning effort=high."
-        },
-        {
-          "effort": "xhigh",
-          "description": "Extra high. OpenRouter GLM reasoning effort=xhigh."
-        }
-      ],
-      "shell_type": "shell_command",
-      "visibility": "list",
-      "supported_in_api": true,
-      "availability_nux": null,
-      "upgrade": null,
-      "priority": 1,
       "base_instructions": "You are PFTerminal, a coding agent. Help the user complete software tasks in the current workspace. Be direct, inspect the code before changing it, keep edits scoped, and verify your work when practical. When searching, use rg or rg --files first. Never run recursive grep over a repo root; if rg is unavailable, restrict grep to source directories and exclude .git, target, node_modules, dist, build, .next, and vendor.",
       "model_messages": null,
       "experimental_supported_tools": [],
@@ -742,6 +696,122 @@
       "service_tiers": [],
       "additional_speed_tiers": [],
       "supports_reasoning_summaries": true
+    },
+    {
+      "support_verbosity": false,
+      "default_verbosity": null,
+      "apply_patch_tool_type": "freeform",
+      "web_search_tool_type": "text",
+      "input_modalities": [
+        "text"
+      ],
+      "supports_image_detail_original": false,
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 10000
+      },
+      "supports_parallel_tool_calls": true,
+      "context_window": 1000000,
+      "max_context_window": 1000000,
+      "auto_compact_token_limit": null,
+      "default_reasoning_summary": "none",
+      "slug": "claude-opus-4-8-plan",
+      "display_name": "Claude Opus 4.8 Plan",
+      "description": "Claude Opus 4.8 through Claude Code subscription auth in the Codex harness.",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        {
+          "effort": "low",
+          "description": "Lower latency and token use for narrow edits."
+        },
+        {
+          "effort": "medium",
+          "description": "Moderate reasoning for everyday coding."
+        },
+        {
+          "effort": "high",
+          "description": "Default Opus 4.8 reasoning for complex coding."
+        },
+        {
+          "effort": "xhigh",
+          "description": "Deeper reasoning for difficult implementation work."
+        },
+        {
+          "effort": "max",
+          "description": "Maximum adaptive reasoning; use when token spend is acceptable."
+        }
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "availability_nux": null,
+      "upgrade": null,
+      "priority": 0,
+      "base_instructions": "You are PFTerminal, a coding agent. Help the user complete software tasks in the current workspace. Be direct, inspect the code before changing it, keep edits scoped, and verify your work when practical. When searching, use rg or rg --files first. Never run recursive grep over a repo root; if rg is unavailable, restrict grep to source directories and exclude .git, target, node_modules, dist, build, .next, and vendor.",
+      "model_messages": null,
+      "experimental_supported_tools": [],
+      "service_tiers": [],
+      "additional_speed_tiers": [],
+      "supports_reasoning_summaries": false,
+      "supports_search_tool": false
+    },
+    {
+      "support_verbosity": false,
+      "default_verbosity": null,
+      "apply_patch_tool_type": "freeform",
+      "web_search_tool_type": "text",
+      "input_modalities": [
+        "text"
+      ],
+      "supports_image_detail_original": false,
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 10000
+      },
+      "supports_parallel_tool_calls": true,
+      "context_window": 1000000,
+      "max_context_window": 1000000,
+      "auto_compact_token_limit": null,
+      "default_reasoning_summary": "none",
+      "slug": "claude-opus-4-8",
+      "display_name": "Claude Opus 4.8",
+      "description": "Claude Opus 4.8 through the Anthropic Messages API.",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        {
+          "effort": "low",
+          "description": "Lower latency and token use for narrow edits."
+        },
+        {
+          "effort": "medium",
+          "description": "Moderate reasoning for everyday coding."
+        },
+        {
+          "effort": "high",
+          "description": "Default Opus 4.8 reasoning for complex coding."
+        },
+        {
+          "effort": "xhigh",
+          "description": "Deeper reasoning for difficult implementation work."
+        },
+        {
+          "effort": "max",
+          "description": "Maximum adaptive reasoning; use when token spend is acceptable."
+        }
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "availability_nux": null,
+      "upgrade": null,
+      "priority": 0,
+      "base_instructions": "You are PFTerminal, a coding agent. Help the user complete software tasks in the current workspace. Be direct, inspect the code before changing it, keep edits scoped, and verify your work when practical. When searching, use rg or rg --files first. Never run recursive grep over a repo root; if rg is unavailable, restrict grep to source directories and exclude .git, target, node_modules, dist, build, .next, and vendor.",
+      "model_messages": null,
+      "experimental_supported_tools": [],
+      "service_tiers": [],
+      "additional_speed_tiers": [],
+      "supports_reasoning_summaries": false,
+      "supports_search_tool": false
     },
     {
       "prefer_websockets": true,

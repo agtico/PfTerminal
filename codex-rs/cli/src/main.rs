@@ -42,6 +42,8 @@ use std::io::IsTerminal;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 use supports_color::Stream;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -138,6 +140,10 @@ enum Subcommand {
 
     /// Internal vault helpers for PFTerminal integrations.
     Vault(VaultCommand),
+
+    /// Internal: print the active Claude Code OAuth token for the Codex-native Claude Plan provider.
+    #[clap(hide = true, name = "internal-claude-oauth-token")]
+    InternalClaudeOauthToken,
 
     /// Agent JSON helper for GitHub-linked Task Node terminal sessions.
     Tasknode(tasknode_cmd::TaskNodeCli),
@@ -1485,6 +1491,9 @@ async fn cli_main(
             );
             run_vault_command(vault_cli).await?;
         }
+        Some(Subcommand::InternalClaudeOauthToken) => {
+            run_internal_claude_oauth_token().await?;
+        }
         Some(Subcommand::Tasknode(mut tasknode_cli)) => {
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
@@ -2176,6 +2185,67 @@ async fn run_vault_command(command: VaultCommand) -> anyhow::Result<()> {
     }
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct ClaudeCodeCredentials {
+    #[serde(rename = "claudeAiOauth")]
+    claude_ai_oauth: Option<ClaudeCodeOauthCredentials>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ClaudeCodeOauthCredentials {
+    #[serde(rename = "accessToken")]
+    access_token: Option<String>,
+    #[serde(rename = "expiresAt")]
+    expires_at: Option<u64>,
+}
+
+async fn run_internal_claude_oauth_token() -> anyhow::Result<()> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("HOME is not set; cannot read Claude Code credentials"))?;
+    let credentials_path = home.join(".claude").join(".credentials.json");
+    let contents = tokio::fs::read_to_string(&credentials_path)
+        .await
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "Claude Code credentials not found at {} ({err}). Run `claude /login` with your Claude subscription.",
+                credentials_path.display()
+            )
+        })?;
+    let credentials: ClaudeCodeCredentials = serde_json::from_str(&contents).map_err(|err| {
+        anyhow::anyhow!(
+            "Claude Code credentials at {} are not valid JSON ({err}). Run `claude /login` again.",
+            credentials_path.display()
+        )
+    })?;
+    let oauth = credentials.claude_ai_oauth.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Claude Code OAuth credentials are missing. Run `claude /login` and choose Claude account with subscription."
+        )
+    })?;
+    let access_token = oauth
+        .access_token
+        .filter(|token| !token.trim().is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!("Claude Code OAuth access token is missing. Run `claude /login` again.")
+        })?;
+    let expires_at = oauth.expires_at.ok_or_else(|| {
+        anyhow::anyhow!("Claude Code OAuth token expiry is missing. Run `claude /login` again.")
+    })?;
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    if expires_at <= now_ms.saturating_add(60_000) {
+        anyhow::bail!(
+            "Claude Code OAuth token is expired or about to expire. Run `claude /login` to refresh your Claude subscription auth."
+        );
+    }
+
+    std::io::stdout().write_all(access_token.as_bytes())?;
+    Ok(())
+}
+
 async fn run_vault_auth_helper(
     config_overrides: CliConfigOverrides,
     command: VaultAuthHelperCommand,
@@ -2303,6 +2373,7 @@ fn provider_vault_label_allowed_for_auth_helper(label: &str) -> bool {
     matches!(
         label,
         "provider/zai_api_key"
+            | "provider/anthropic_api_key"
             | "provider/ambient_api_key"
             | "provider/baseten_api_key"
             | "provider/openrouter_api_key"
@@ -2379,7 +2450,8 @@ fn unsupported_subcommand_name_for_strict_config(
         | Some(Subcommand::Delete(_))
         | Some(Subcommand::Unarchive(_))
         | Some(Subcommand::Fork(_))
-        | Some(Subcommand::Doctor(_)) => None,
+        | Some(Subcommand::Doctor(_))
+        | Some(Subcommand::InternalClaudeOauthToken) => None,
         Some(Subcommand::AppServer(app_server)) if app_server.subcommand.is_none() => None,
         Some(Subcommand::AppServer(app_server)) => {
             Some(app_server_subcommand_name(app_server.subcommand.as_ref()))
@@ -3106,6 +3178,9 @@ mod tests {
 
         assert_eq!(command.label, "provider/zai_api_key");
         assert!(provider_vault_label_allowed_for_auth_helper(&command.label));
+        assert!(provider_vault_label_allowed_for_auth_helper(
+            "provider/anthropic_api_key"
+        ));
         assert!(provider_vault_label_allowed_for_auth_helper(
             "provider/ambient_api_key"
         ));

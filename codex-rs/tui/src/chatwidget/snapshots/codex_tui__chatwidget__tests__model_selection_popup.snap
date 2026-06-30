@@ -1,23 +1,19 @@
 ---
 source: tui/src/chatwidget/tests/popups_and_settings.rs
-assertion_line: 2569
+assertion_line: 2575
 expression: popup
 ---
   Select Model and Effort
-  Access hidden models by running pfterminal -m <model_name> or in your config
+  OpenAI Codex, Ambient, and Z.AI plan-backed models
 
-      Coding Plans                  OpenAI Codex, Ambient, and Z.AI plan-
-                                    backed models
-› 1. zai-org/GLM-5.2-FP8 (current)  Ambient's default GLM 5.2 coding model.
+  [Coding Plans]  API Key Models
+
+› 1. z-ai/glm-5.2 (current)  Ambient's default GLM 5.2 coding model.
   2. moonshotai/kimi-k2.7-code      Ambient's Kimi K2.7 Code model.
   3. glm-5.2                        GLM 5.2 through the Z.AI coding plan API.
   4. gpt-5.5                        Frontier model for complex coding,
                                     research, and real-world work.
-      Pay Per API Call              OpenRouter, Baseten, and Vercel metered
-                                    models
-  5. z-ai/glm-5.2                   OpenRouter: GLM 5.2 - $0.98/M input,
-                                    $3.08/M output.
-  6. zai-org/GLM-5.2                Baseten: GLM 5.2 - $1.50/M input, $0.30/M
-                                    cached input, $4.50/M output.
+  5. claude-opus-4-8-plan           Claude Opus 4.8 through Claude Code
+                                    subscription auth in the Codex harness.
 
-  Press enter to confirm or esc to go back
+  Use Left/Right to switch groups. Press Enter to confirm or Esc to go back

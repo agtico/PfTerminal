@@ -253,7 +253,7 @@ fn omits_text_when_not_set() {
 #[test]
 fn ambient_fast_request_serializes_plain_string_input() {
     let req = ResponsesApiRequest {
-        model: "zai-org/GLM-5.2-FP8".to_string(),
+        model: "z-ai/glm-5.2".to_string(),
         instructions: String::new(),
         previous_response_id: None,
         input: vec![ResponseItem::Message {

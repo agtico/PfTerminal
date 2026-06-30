@@ -13,6 +13,7 @@ use codex_protocol::config_types::ModelProviderAuthInfo;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::EnvVarError;
 use codex_protocol::error::Result as CodexResult;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use http::HeaderMap;
 use http::header::HeaderName;
 use http::header::HeaderValue;
@@ -35,10 +36,20 @@ const MAX_REQUEST_MAX_RETRIES: u64 = 100;
 const OPENAI_PROVIDER_NAME: &str = "OpenAI";
 pub const OPENAI_PROVIDER_ID: &str = "openai";
 pub const CHATGPT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+const ANTHROPIC_PROVIDER_NAME: &str = "Anthropic";
+pub const ANTHROPIC_PROVIDER_ID: &str = "anthropic";
+pub const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
+pub const ANTHROPIC_DEFAULT_MODEL: &str = "claude-opus-4-8";
+pub const ANTHROPIC_API_KEY_ENV_VAR: &str = "ANTHROPIC_API_KEY";
+const CLAUDE_PLAN_PROVIDER_NAME: &str = "Claude Plan";
+pub const CLAUDE_PLAN_PROVIDER_ID: &str = "claude-plan";
+pub const CLAUDE_PLAN_MODEL: &str = "claude-opus-4-8-plan";
+pub const CLAUDE_PLAN_UPSTREAM_MODEL: &str = ANTHROPIC_DEFAULT_MODEL;
 const AMBIENT_PROVIDER_NAME: &str = "Ambient";
 pub const AMBIENT_PROVIDER_ID: &str = "ambient";
 pub const AMBIENT_BASE_URL: &str = "https://api.ambient.xyz/v1";
-pub const AMBIENT_DEFAULT_MODEL: &str = "zai-org/GLM-5.2-FP8";
+pub const AMBIENT_DEFAULT_MODEL: &str = "z-ai/glm-5.2";
+pub const AMBIENT_LEGACY_GLM_5_2_FP8_MODEL: &str = "zai-org/GLM-5.2-FP8";
 pub const AMBIENT_KIMI_K2_7_CODE_MODEL: &str = "moonshotai/kimi-k2.7-code";
 pub const AMBIENT_API_KEY_ENV_VAR: &str = "AMBIENT_API_KEY";
 const ZAI_PROVIDER_NAME: &str = "Z.AI";
@@ -82,7 +93,8 @@ fn provider_api_key_vault_instructions() -> String {
         "  Add or replace provider API keys. Keys are stored in the vault.",
         "",
         "  Search providers",
-        "> Provider: Ambient API Key     Store AMBIENT_API_KEY in the vault",
+        "> Provider: Anthropic API Key   Store ANTHROPIC_API_KEY in the vault",
+        "  Provider: Ambient API Key     Store AMBIENT_API_KEY in the vault",
         "  Provider: Z.AI API Key        Store ZAI_API_KEY in the vault",
         "  Provider: OpenRouter API Key  Store OPENROUTER_API_KEY in the vault",
         "  Provider: Baseten API Key     Store BASETEN_API_KEY in the vault",
@@ -102,8 +114,10 @@ const AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_VALUE: &str = "codex";
 pub const LEGACY_OLLAMA_CHAT_PROVIDER_ID: &str = "ollama-chat";
 pub const OLLAMA_CHAT_PROVIDER_REMOVED_ERROR: &str = "`ollama-chat` is no longer supported.\nHow to fix: replace `ollama-chat` with `ollama` in `model_provider`, `oss_provider`, or `--local-provider`.\nMore info: https://github.com/openai/codex/discussions/7782";
 const OSS_PROVIDER_NAME: &str = "gpt-oss";
-pub const BUILT_IN_MODEL_PROVIDER_NAMES: [&str; 12] = [
+pub const BUILT_IN_MODEL_PROVIDER_NAMES: [&str; 14] = [
     OPENAI_PROVIDER_NAME,
+    ANTHROPIC_PROVIDER_NAME,
+    CLAUDE_PLAN_PROVIDER_NAME,
     AMBIENT_PROVIDER_NAME,
     ZAI_PROVIDER_NAME,
     ZAI_ANTHROPIC_PROVIDER_NAME,
@@ -438,6 +452,61 @@ impl ModelProviderInfo {
         }
     }
 
+    pub fn create_anthropic_provider() -> ModelProviderInfo {
+        ModelProviderInfo {
+            name: ANTHROPIC_PROVIDER_NAME.into(),
+            base_url: Some(ANTHROPIC_BASE_URL.into()),
+            env_key: Some(ANTHROPIC_API_KEY_ENV_VAR.into()),
+            env_key_instructions: Some(provider_api_key_vault_instructions()),
+            experimental_bearer_token: None,
+            auth: None,
+            aws: None,
+            wire_api: WireApi::Anthropic,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    }
+
+    pub fn create_claude_plan_provider() -> ModelProviderInfo {
+        ModelProviderInfo {
+            name: CLAUDE_PLAN_PROVIDER_NAME.into(),
+            base_url: Some(ANTHROPIC_BASE_URL.into()),
+            env_key: None,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            auth: Some(ModelProviderAuthInfo {
+                command: "pfterminal".to_string(),
+                args: vec!["internal-claude-oauth-token".to_string()],
+                timeout_ms: std::num::NonZeroU64::new(5_000)
+                    .expect("provider auth timeout must be non-zero"),
+                refresh_interval_ms: 60_000,
+                cwd: AbsolutePathBuf::from_absolute_path_checked("/")
+                    .expect("root path must be absolute"),
+            }),
+            aws: None,
+            wire_api: WireApi::Anthropic,
+            query_params: None,
+            http_headers: Some(HashMap::from([(
+                "anthropic-beta".to_string(),
+                "claude-code-20250219,oauth-2025-04-20".to_string(),
+            )])),
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    }
+
     pub fn create_ambient_provider() -> ModelProviderInfo {
         ModelProviderInfo {
             name: AMBIENT_PROVIDER_NAME.into(),
@@ -692,6 +761,20 @@ impl ModelProviderInfo {
         self.name == OPENAI_PROVIDER_NAME
     }
 
+    pub fn is_anthropic(&self) -> bool {
+        self.name == ANTHROPIC_PROVIDER_NAME
+    }
+
+    pub fn is_claude_plan(&self) -> bool {
+        self.name == CLAUDE_PLAN_PROVIDER_NAME
+    }
+
+    /// Direct Anthropic API keys are sent as `x-api-key`; the other built-in
+    /// provider API keys remain Bearer tokens.
+    pub fn api_key_header_name(&self) -> Option<&'static str> {
+        (self.env_key.as_deref() == Some(ANTHROPIC_API_KEY_ENV_VAR)).then_some("x-api-key")
+    }
+
     pub fn is_ambient(&self) -> bool {
         self.name == AMBIENT_PROVIDER_NAME
     }
@@ -737,6 +820,8 @@ pub fn built_in_model_providers(
 ) -> HashMap<String, ModelProviderInfo> {
     use ModelProviderInfo as P;
     let openai_provider = P::create_openai_provider(openai_base_url);
+    let anthropic_provider = P::create_anthropic_provider();
+    let claude_plan_provider = P::create_claude_plan_provider();
     let ambient_provider = P::create_ambient_provider();
     let zai_provider = P::create_zai_provider();
     let zai_anthropic_provider = P::create_zai_anthropic_provider();
@@ -753,6 +838,8 @@ pub fn built_in_model_providers(
     // providers, and the curated third-party coding providers exposed in the
     // login/model picker UX. Users can still add more providers in config.toml.
     [
+        (ANTHROPIC_PROVIDER_ID, anthropic_provider),
+        (CLAUDE_PLAN_PROVIDER_ID, claude_plan_provider),
         (AMBIENT_PROVIDER_ID, ambient_provider),
         (ZAI_PROVIDER_ID, zai_provider),
         (ZAI_ANTHROPIC_PROVIDER_ID, zai_anthropic_provider),

@@ -25,6 +25,7 @@ pub(crate) const STRUCTURED_WRITE_TOOL_NAME: &str = "structured_write";
 const MODEL_EDIT_COMPATIBILITY_METRIC: &str = "codex.model_edit_compatibility";
 const MAX_STRUCTURED_WRITE_BYTES: usize = 256 * 1024;
 const MAX_STRUCTURED_EDIT_FILE_BYTES: usize = 512 * 1024;
+const STRUCTURED_EDIT_HEREDOC_REJECTION: &str = "source file edits via Python heredoc are disabled for this model profile. Do not retry the shell heredoc. Use structured_edit with path, old_string, and new_string for existing files, or structured_write with path, content, and mode=create_only/overwrite for new or full-file writes. Use exec_command only for inspection or commands that do not write source files.";
 
 pub(crate) fn emit_model_edit_compat_metric(
     turn_context: &TurnContext,
@@ -101,8 +102,7 @@ pub(crate) fn reject_source_write_heredoc_when_structured_edit_enabled(
             "python_source_write",
         );
         return Err(FunctionCallError::RespondToModel(
-            "source file edits via Python heredoc are disabled for this model profile; use structured_edit for existing files or structured_write for new/full-file writes"
-                .to_string(),
+            STRUCTURED_EDIT_HEREDOC_REJECTION.to_string(),
         ));
     }
     Ok(())
@@ -241,7 +241,7 @@ fn create_structured_edit_tool(multi_environment: bool) -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: STRUCTURED_EDIT_TOOL_NAME.to_string(),
-        description: "Modify an existing UTF-8 text file by replacing exact text. This is an edit tool only, not a read or inspection tool; during read-only review, use shell commands such as `rg` and `sed -n` and do not call this tool. Use this instead of apply_patch when the model is not reliable at Codex patch grammar. The edit is converted to the same internal apply_patch runtime for diff preview, approvals, sandboxing, and tool events."
+        description: "Modify an existing UTF-8 text file by replacing exact text. This is an edit tool only, not a read or inspection tool; during read-only review, use shell commands such as `rg` and `sed -n` and do not call this tool. Use this instead of apply_patch or shell/Python heredoc rewrites when this tool is visible. The edit is converted to the same internal apply_patch runtime for diff preview, approvals, sandboxing, and tool events."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -291,7 +291,7 @@ fn create_structured_write_tool(multi_environment: bool) -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: STRUCTURED_WRITE_TOOL_NAME.to_string(),
-        description: "Create or intentionally overwrite a UTF-8 text file. This is a write tool only, not a read or inspection tool; do not call it during read-only review. Prefer structured_edit for changes to existing files. Writes are converted to the same internal apply_patch runtime for diff preview, approvals, sandboxing, and tool events."
+        description: "Create or intentionally overwrite a UTF-8 text file. This is a write tool only, not a read or inspection tool; do not call it during read-only review. When this tool is visible, use it instead of shell/Python heredoc rewrites for new files or deliberate full-file replacements. Prefer structured_edit for changes to existing files. Writes are converted to the same internal apply_patch runtime for diff preview, approvals, sandboxing, and tool events."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -855,7 +855,7 @@ mod tests {
         turn.model_info.slug = "glm-5.2".to_string();
         assert_model_error(
             reject_source_write_heredoc_when_structured_edit_enabled(&turn, command),
-            "structured_edit",
+            "Do not retry the shell heredoc",
         );
     }
 
@@ -953,6 +953,7 @@ mod tests {
             .expect("edit description");
         assert!(edit_description.contains("not a read or inspection tool"));
         assert!(edit_description.contains("read-only review"));
+        assert!(edit_description.contains("shell/Python heredoc rewrites"));
 
         let old_string_description = edit
             .pointer("/parameters/properties/old_string/description")
@@ -971,5 +972,6 @@ mod tests {
             .expect("write description");
         assert!(write_description.contains("not a read or inspection tool"));
         assert!(write_description.contains("read-only review"));
+        assert!(write_description.contains("shell/Python heredoc rewrites"));
     }
 }

@@ -4,14 +4,19 @@
 //! into another, especially while Plan mode is active.
 
 use super::*;
+use crate::bottom_pane::SelectionTab;
 use codex_model_provider_info::AMAZON_BEDROCK_GPT_5_4_MODEL_ID;
 use codex_model_provider_info::AMAZON_BEDROCK_GPT_5_5_MODEL_ID;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
 use codex_model_provider_info::AMBIENT_DEFAULT_MODEL;
 use codex_model_provider_info::AMBIENT_KIMI_K2_7_CODE_MODEL;
 use codex_model_provider_info::AMBIENT_PROVIDER_ID;
+use codex_model_provider_info::ANTHROPIC_DEFAULT_MODEL;
+use codex_model_provider_info::ANTHROPIC_PROVIDER_ID;
 use codex_model_provider_info::BASETEN_DEFAULT_MODEL;
 use codex_model_provider_info::BASETEN_PROVIDER_ID;
+use codex_model_provider_info::CLAUDE_PLAN_MODEL;
+use codex_model_provider_info::CLAUDE_PLAN_PROVIDER_ID;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_model_provider_info::OPENROUTER_ANTHROPIC_PROVIDER_ID;
 use codex_model_provider_info::OPENROUTER_DEFAULT_MODEL;
@@ -31,6 +36,8 @@ const OPENROUTER_MINIMAX_M3_MODEL: &str = "minimax/minimax-m3";
 const OPENROUTER_OWL_ALPHA_MODEL: &str = "openrouter/owl-alpha";
 const OPENROUTER_GEMINI_3_5_FLASH_MODEL: &str = "google/gemini-3.5-flash";
 const OPENAI_GPT_5_5_MODEL: &str = "gpt-5.5";
+const MODEL_PICKER_CODING_TAB_ID: &str = "coding-plans";
+const MODEL_PICKER_API_KEY_TAB_ID: &str = "api-key-models";
 
 impl ChatWidget {
     /// Open a popup to choose a quick auto model. Selecting "All models"
@@ -200,6 +207,12 @@ impl ChatWidget {
         if trimmed == ZAI_DEFAULT_MODEL || trimmed.starts_with("glm-") {
             return Some(ZAI_PROVIDER_ID.to_string());
         }
+        if trimmed == CLAUDE_PLAN_MODEL {
+            return Some(CLAUDE_PLAN_PROVIDER_ID.to_string());
+        }
+        if trimmed == ANTHROPIC_DEFAULT_MODEL || trimmed.starts_with("claude-") {
+            return Some(ANTHROPIC_PROVIDER_ID.to_string());
+        }
         if trimmed == OPENROUTER_DEFAULT_MODEL {
             return Some(OPENROUTER_ANTHROPIC_PROVIDER_ID.to_string());
         }
@@ -267,10 +280,13 @@ impl ChatWidget {
             let provider = Self::model_provider_for_selection(&preset.model);
             let item = self.model_picker_item(preset);
             match provider.as_deref() {
-                Some(AMBIENT_PROVIDER_ID | ZAI_PROVIDER_ID) => coding_plan_items.push(item),
+                Some(AMBIENT_PROVIDER_ID | CLAUDE_PLAN_PROVIDER_ID | ZAI_PROVIDER_ID) => {
+                    coding_plan_items.push(item)
+                }
                 Some(OPENAI_PROVIDER_ID) => coding_plan_items.push(item),
                 Some(
-                    BASETEN_PROVIDER_ID
+                    ANTHROPIC_PROVIDER_ID
+                    | BASETEN_PROVIDER_ID
                     | OPENROUTER_PROVIDER_ID
                     | OPENROUTER_ANTHROPIC_PROVIDER_ID
                     | VERCEL_PROVIDER_ID
@@ -279,30 +295,60 @@ impl ChatWidget {
                 _ => {}
             }
         }
-
-        let mut items: Vec<SelectionItem> = Vec::new();
-        if !coding_plan_items.is_empty() {
-            items.push(Self::model_picker_section_header(
-                "Coding Plans",
-                "OpenAI Codex, Ambient, and Z.AI plan-backed models",
-            ));
+        let (items, tabs, initial_tab_id, footer_hint) = if !coding_plan_items.is_empty()
+            && !pay_per_api_call_items.is_empty()
+        {
+            let current_provider = Self::model_provider_for_selection(self.current_model());
+            let initial_tab_id = if Self::is_api_key_model_provider(current_provider.as_deref()) {
+                MODEL_PICKER_API_KEY_TAB_ID
+            } else {
+                MODEL_PICKER_CODING_TAB_ID
+            };
+            (
+                Vec::new(),
+                vec![
+                    SelectionTab {
+                        id: MODEL_PICKER_CODING_TAB_ID.to_string(),
+                        label: "Coding Plans".to_string(),
+                        header: self.model_menu_header(
+                            "Select Model and Effort",
+                            "OpenAI Codex, Ambient, and Z.AI plan-backed models",
+                        ),
+                        items: coding_plan_items,
+                    },
+                    SelectionTab {
+                        id: MODEL_PICKER_API_KEY_TAB_ID.to_string(),
+                        label: "API Key Models".to_string(),
+                        header: self.model_menu_header(
+                            "Select Model and Effort",
+                            "Anthropic, OpenRouter, Baseten, and Vercel API-key models",
+                        ),
+                        items: pay_per_api_call_items,
+                    },
+                ],
+                Some(initial_tab_id.to_string()),
+                Some(Self::model_picker_tabbed_footer_hint_line()),
+            )
+        } else {
+            let mut items = Vec::new();
             items.append(&mut coding_plan_items);
-        }
-        if !pay_per_api_call_items.is_empty() {
-            items.push(Self::model_picker_section_header(
-                "Pay Per API Call",
-                "OpenRouter, Baseten, and Vercel metered models",
-            ));
             items.append(&mut pay_per_api_call_items);
-        }
+            (items, Vec::new(), None, Some(standard_popup_hint_line()))
+        };
 
-        let header = self.model_menu_header(
-            "Select Model and Effort",
-            "Access hidden models by running pfterminal -m <model_name> or in your config.toml",
-        );
+        let header = if tabs.is_empty() {
+            self.model_menu_header(
+                "Select Model and Effort",
+                "Access hidden models by running pfterminal -m <model_name> or in your config.toml",
+            )
+        } else {
+            Box::new(())
+        };
         self.bottom_pane.show_selection_view(SelectionViewParams {
-            footer_hint: Some(self.bottom_pane.standard_popup_hint_line()),
+            footer_hint,
             items,
+            tabs,
+            initial_tab_id,
             header,
             ..Default::default()
         });
@@ -332,14 +378,8 @@ impl ChatWidget {
         }
     }
 
-    fn model_picker_section_header(name: &str, description: &str) -> SelectionItem {
-        SelectionItem {
-            name: name.to_string(),
-            description: Some(description.to_string()),
-            is_disabled: true,
-            search_value: Some(format!("{name} {description}")),
-            ..Default::default()
-        }
+    fn model_picker_tabbed_footer_hint_line() -> Line<'static> {
+        Line::from("Use Left/Right to switch groups. Press Enter to confirm or Esc to go back")
     }
 
     pub(crate) fn show_in_pfterminal_model_picker(preset: &ModelPreset) -> bool {
@@ -352,6 +392,8 @@ impl ChatWidget {
             Some(OPENAI_PROVIDER_ID) => Self::is_openai_coding_plan_model(&preset.model),
             Some(
                 AMBIENT_PROVIDER_ID
+                | CLAUDE_PLAN_PROVIDER_ID
+                | ANTHROPIC_PROVIDER_ID
                 | ZAI_PROVIDER_ID
                 | BASETEN_PROVIDER_ID
                 | OPENROUTER_PROVIDER_ID
@@ -365,6 +407,20 @@ impl ChatWidget {
 
     fn is_openai_coding_plan_model(model: &str) -> bool {
         model.trim() == OPENAI_GPT_5_5_MODEL
+    }
+
+    fn is_api_key_model_provider(provider: Option<&str>) -> bool {
+        matches!(
+            provider,
+            Some(
+                ANTHROPIC_PROVIDER_ID
+                    | BASETEN_PROVIDER_ID
+                    | OPENROUTER_PROVIDER_ID
+                    | OPENROUTER_ANTHROPIC_PROVIDER_ID
+                    | VERCEL_PROVIDER_ID
+                    | VERCEL_ANTHROPIC_FAST_PROVIDER_ID
+            )
+        )
     }
 
     fn model_selection_actions(
@@ -765,6 +821,14 @@ mod tests {
             Some(ZAI_PROVIDER_ID)
         );
         assert_eq!(
+            ChatWidget::model_provider_for_selection(CLAUDE_PLAN_MODEL).as_deref(),
+            Some(CLAUDE_PLAN_PROVIDER_ID)
+        );
+        assert_eq!(
+            ChatWidget::model_provider_for_selection(ANTHROPIC_DEFAULT_MODEL).as_deref(),
+            Some(ANTHROPIC_PROVIDER_ID)
+        );
+        assert_eq!(
             ChatWidget::model_provider_for_selection(BASETEN_DEFAULT_MODEL).as_deref(),
             Some(BASETEN_PROVIDER_ID)
         );
@@ -812,6 +876,14 @@ mod tests {
     fn pfterminal_picker_allows_only_gpt_5_5_for_openai() {
         assert!(ChatWidget::show_in_pfterminal_model_picker(&preset(
             AMBIENT_KIMI_K2_7_CODE_MODEL,
+            true
+        )));
+        assert!(ChatWidget::show_in_pfterminal_model_picker(&preset(
+            ANTHROPIC_DEFAULT_MODEL,
+            true
+        )));
+        assert!(ChatWidget::show_in_pfterminal_model_picker(&preset(
+            CLAUDE_PLAN_MODEL,
             true
         )));
         assert!(ChatWidget::show_in_pfterminal_model_picker(&preset(

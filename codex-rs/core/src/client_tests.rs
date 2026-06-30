@@ -20,7 +20,11 @@ use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider::BearerAuthProvider;
 use codex_model_provider_info::AMBIENT_DEFAULT_MODEL;
+use codex_model_provider_info::AMBIENT_LEGACY_GLM_5_2_FP8_MODEL;
+use codex_model_provider_info::ANTHROPIC_DEFAULT_MODEL;
 use codex_model_provider_info::CHATGPT_CODEX_BASE_URL;
+use codex_model_provider_info::CLAUDE_PLAN_MODEL;
+use codex_model_provider_info::CLAUDE_PLAN_UPSTREAM_MODEL;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::VERCEL_DEFAULT_MODEL;
 use codex_model_provider_info::WireApi;
@@ -173,6 +177,61 @@ fn test_ambient_model_info() -> ModelInfo {
         "experimental_supported_tools": []
     }))
     .expect("deserialize Ambient test model info")
+}
+
+fn test_anthropic_opus_model_info() -> ModelInfo {
+    serde_json::from_value(json!({
+        "slug": ANTHROPIC_DEFAULT_MODEL,
+        "display_name": "Claude Opus 4.8",
+        "description": "Claude Opus 4.8",
+        "default_reasoning_level": "high",
+        "supported_reasoning_levels": [
+            {"effort": "low", "description": "Low"},
+            {"effort": "medium", "description": "Medium"},
+            {"effort": "high", "description": "High"},
+            {"effort": "xhigh", "description": "XHigh"},
+            {"effort": "max", "description": "Max"}
+        ],
+        "shell_type": "shell_command",
+        "visibility": "list",
+        "supported_in_api": true,
+        "priority": 1,
+        "upgrade": null,
+        "base_instructions": "base instructions",
+        "model_messages": null,
+        "supports_reasoning_summaries": false,
+        "support_verbosity": false,
+        "default_verbosity": null,
+        "apply_patch_tool_type": null,
+        "truncation_policy": {"mode": "tokens", "limit": 10000},
+        "supports_parallel_tool_calls": true,
+        "supports_image_detail_original": false,
+        "context_window": 1000000,
+        "auto_compact_token_limit": null,
+        "experimental_supported_tools": []
+    }))
+    .expect("deserialize Anthropic Opus test model info")
+}
+
+fn test_claude_plan_model_info() -> ModelInfo {
+    let mut model = test_anthropic_opus_model_info();
+    model.slug = CLAUDE_PLAN_MODEL.to_string();
+    model.display_name = "Claude Opus 4.8 Plan".to_string();
+    model
+}
+
+fn count_cache_control_markers(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Array(values) => values.iter().map(count_cache_control_markers).sum(),
+        serde_json::Value::Object(object) => {
+            usize::from(object.contains_key("cache_control"))
+                + object
+                    .values()
+                    .map(count_cache_control_markers)
+                    .sum::<usize>()
+        }
+        _ => 0,
+    }
 }
 
 fn test_vercel_model_info() -> ModelInfo {
@@ -672,6 +731,7 @@ fn ambient_chat_completions_request_disables_thinking_unless_deep_reasoning_is_e
     let standard = client
         .build_chat_completions_request(&prompt, &model_info, Some(ReasoningEffortConfig::Medium))
         .expect("standard Ambient chat request");
+    assert_eq!(standard.model, AMBIENT_DEFAULT_MODEL);
     assert_eq!(standard.emit_usage, Some(true));
     assert_eq!(standard.enable_thinking, Some(false));
     assert_eq!(standard.reasoning_effort, None);
@@ -694,6 +754,13 @@ fn ambient_chat_completions_request_disables_thinking_unless_deep_reasoning_is_e
     assert_eq!(max.emit_usage, Some(true));
     assert_eq!(max.enable_thinking, Some(true));
     assert_eq!(max.reasoning_effort.as_deref(), Some("max"));
+
+    let mut legacy_model_info = model_info;
+    legacy_model_info.slug = AMBIENT_LEGACY_GLM_5_2_FP8_MODEL.to_string();
+    let legacy = client
+        .build_chat_completions_request(&prompt, &legacy_model_info, None)
+        .expect("legacy Ambient chat request");
+    assert_eq!(legacy.model, AMBIENT_DEFAULT_MODEL);
 }
 
 #[test]
@@ -908,21 +975,38 @@ fn anthropic_messages_request_adds_cache_control_and_replays_tools() {
                 metadata: None,
             },
         ],
-        tools: vec![ToolSpec::Function(ResponsesApiTool {
-            name: "exec_command".to_string(),
-            description: "Run a command.".to_string(),
-            strict: true,
-            defer_loading: None,
-            parameters: JsonSchema::object(
-                BTreeMap::from([(
-                    "cmd".to_string(),
-                    JsonSchema::string(Some("Command to run.".to_string())),
-                )]),
-                Some(vec!["cmd".to_string()]),
-                Some(false.into()),
-            ),
-            output_schema: None,
-        })],
+        tools: vec![
+            ToolSpec::Function(ResponsesApiTool {
+                name: "exec_command".to_string(),
+                description: "Run a command.".to_string(),
+                strict: true,
+                defer_loading: None,
+                parameters: JsonSchema::object(
+                    BTreeMap::from([(
+                        "cmd".to_string(),
+                        JsonSchema::string(Some("Command to run.".to_string())),
+                    )]),
+                    Some(vec!["cmd".to_string()]),
+                    Some(false.into()),
+                ),
+                output_schema: None,
+            }),
+            ToolSpec::Function(ResponsesApiTool {
+                name: "read_file".to_string(),
+                description: "Read a file.".to_string(),
+                strict: true,
+                defer_loading: None,
+                parameters: JsonSchema::object(
+                    BTreeMap::from([(
+                        "path".to_string(),
+                        JsonSchema::string(Some("Path to read.".to_string())),
+                    )]),
+                    Some(vec!["path".to_string()]),
+                    Some(false.into()),
+                ),
+                output_schema: None,
+            }),
+        ],
         ..Default::default()
     };
     let model_info = test_ambient_model_info();
@@ -939,6 +1023,11 @@ fn anthropic_messages_request_adds_cache_control_and_replays_tools() {
     );
     assert_eq!(
         body.pointer("/tools/0/cache_control/type"),
+        None,
+        "only the final tool should carry the Anthropic cache breakpoint"
+    );
+    assert_eq!(
+        body.pointer("/tools/1/cache_control/type"),
         Some(&json!("ephemeral"))
     );
     assert_eq!(
@@ -965,6 +1054,11 @@ fn anthropic_messages_request_adds_cache_control_and_replays_tools() {
         body.pointer("/messages/2/content/1/cache_control/type"),
         Some(&json!("ephemeral"))
     );
+    assert_eq!(
+        count_cache_control_markers(&body),
+        4,
+        "Anthropic Messages rejects more than four cache_control blocks"
+    );
 
     let max_request = client
         .build_anthropic_messages_request(
@@ -980,6 +1074,67 @@ fn anthropic_messages_request_adds_cache_control_and_replays_tools() {
             .and_then(|thinking| thinking.get("type"))
             .and_then(serde_json::Value::as_str),
         Some("enabled")
+    );
+
+    let opus_model = test_anthropic_opus_model_info();
+    let opus_request = client
+        .build_anthropic_messages_request(&prompt, &opus_model, Some(ReasoningEffortConfig::XHigh))
+        .expect("Anthropic Opus request");
+    let body = serde_json::to_value(&opus_request).expect("serialize Opus request");
+    assert_eq!(
+        body.pointer("/thinking/type")
+            .and_then(serde_json::Value::as_str),
+        Some("adaptive")
+    );
+    assert_eq!(
+        body.pointer("/thinking/budget_tokens"),
+        None,
+        "Opus 4.8 rejects fixed thinking budgets"
+    );
+    assert_eq!(
+        body.pointer("/output_config/effort")
+            .and_then(serde_json::Value::as_str),
+        Some("xhigh")
+    );
+
+    let claude_plan_model = test_claude_plan_model_info();
+    let claude_plan_request = client
+        .build_anthropic_messages_request(
+            &prompt,
+            &claude_plan_model,
+            Some(ReasoningEffortConfig::XHigh),
+        )
+        .expect("Claude Plan request");
+    let body = serde_json::to_value(&claude_plan_request).expect("serialize Claude Plan request");
+    assert_eq!(
+        body.pointer("/model").and_then(serde_json::Value::as_str),
+        Some(CLAUDE_PLAN_UPSTREAM_MODEL),
+        "PFTerminal's visible Claude Plan slug must not be sent upstream"
+    );
+    assert_eq!(
+        body.pointer("/system/0/text")
+            .and_then(serde_json::Value::as_str),
+        Some("You are Claude Code, Anthropic's official CLI for Claude."),
+        "Claude Plan OAuth requests need the Claude Code identity block"
+    );
+    assert_eq!(
+        body.pointer("/system/0/cache_control/type"),
+        None,
+        "Claude Plan identity must not add a fifth Anthropic cache breakpoint"
+    );
+    assert_eq!(
+        body.pointer("/system/1/cache_control/type"),
+        None,
+        "Claude Plan keeps the Codex instruction block uncached to preserve the four-block limit"
+    );
+    assert!(
+        count_cache_control_markers(&body) <= 4,
+        "Anthropic Messages rejects more than four cache_control blocks"
+    );
+    assert_eq!(
+        body.pointer("/output_config/effort")
+            .and_then(serde_json::Value::as_str),
+        Some("xhigh")
     );
 }
 

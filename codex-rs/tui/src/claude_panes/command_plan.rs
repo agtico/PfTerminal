@@ -50,6 +50,7 @@ pub(crate) fn allowed_provider_vault_label(label: &str) -> bool {
     matches!(
         label,
         "provider/zai_api_key"
+            | "provider/anthropic_api_key"
             | "provider/ambient_api_key"
             | "provider/baseten_api_key"
             | "provider/openrouter_api_key"
@@ -212,9 +213,10 @@ pub(crate) fn build_claude_command_plan(
         "--model".to_string(),
         profile.claude_model.to_string(),
     ]);
-    if profile.uses_bare_mode {
-        args.extend(["--setting-sources".to_string(), "project".to_string()]);
+    if matches!(profile.kind, ClaudeProviderProfileKind::ClaudePlan) {
+        args.extend(["--effort".to_string(), "high".to_string()]);
     }
+    args.extend(["--setting-sources".to_string(), "project".to_string()]);
     let (command_mode, command_session_id) = if let Some(session_id) = &pane.claude_session_id {
         args.push("--resume".to_string());
         args.push(session_id.clone());

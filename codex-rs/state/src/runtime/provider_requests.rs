@@ -448,7 +448,7 @@ mod tests {
     fn key() -> ProviderRequestKey {
         ProviderRequestKey {
             provider_id: "ambient".to_string(),
-            model: "zai-org/GLM-5.2-FP8".to_string(),
+            model: "z-ai/glm-5.2".to_string(),
             key_fingerprint: "env:AMBIENT_API_KEY:test".to_string(),
         }
     }

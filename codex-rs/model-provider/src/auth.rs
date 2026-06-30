@@ -9,6 +9,7 @@ use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::error::CodexErr;
 use http::HeaderMap;
+use http::HeaderName;
 use http::HeaderValue;
 
 use crate::bearer_auth_provider::BearerAuthProvider;
@@ -19,6 +20,29 @@ const BEDROCK_API_KEY_UNSUPPORTED_MESSAGE: &str =
 #[derive(Clone, Debug)]
 struct AgentIdentityAuthProvider {
     auth: codex_login::auth::AgentIdentityAuth,
+}
+
+#[derive(Clone, Debug)]
+struct ApiKeyHeaderAuthProvider {
+    header_name: HeaderName,
+    api_key: String,
+}
+
+impl ApiKeyHeaderAuthProvider {
+    fn new(header_name: &'static str, api_key: String) -> codex_protocol::error::Result<Self> {
+        Ok(Self {
+            header_name: HeaderName::from_static(header_name),
+            api_key,
+        })
+    }
+}
+
+impl AuthProvider for ApiKeyHeaderAuthProvider {
+    fn add_auth_headers(&self, headers: &mut HeaderMap) {
+        if let Ok(header) = HeaderValue::from_str(&self.api_key) {
+            let _ = headers.insert(self.header_name.clone(), header);
+        }
+    }
 }
 
 impl AuthProvider for AgentIdentityAuthProvider {
@@ -88,11 +112,11 @@ pub(crate) fn resolve_provider_auth(
     if provider.env_key.is_some()
         && let Some(auth) = auth
     {
-        return Ok(auth_provider_from_auth(auth));
+        return auth_provider_from_provider_key_auth(auth, provider);
     }
 
-    if let Some(auth) = bearer_auth_for_provider(provider)? {
-        return Ok(Arc::new(auth));
+    if let Some(auth) = api_key_auth_for_provider(provider)? {
+        return Ok(auth);
     }
 
     Ok(match auth {
@@ -101,18 +125,45 @@ pub(crate) fn resolve_provider_auth(
     })
 }
 
-fn bearer_auth_for_provider(
+fn api_key_auth_for_provider(
     provider: &ModelProviderInfo,
-) -> codex_protocol::error::Result<Option<BearerAuthProvider>> {
+) -> codex_protocol::error::Result<Option<SharedAuthProvider>> {
     if let Some(api_key) = provider.api_key()? {
-        return Ok(Some(BearerAuthProvider::new(api_key)));
+        return api_key_auth_provider(provider, api_key).map(Some);
     }
 
     if let Some(token) = provider.experimental_bearer_token.clone() {
-        return Ok(Some(BearerAuthProvider::new(token)));
+        return Ok(Some(Arc::new(BearerAuthProvider::new(token))));
     }
 
     Ok(None)
+}
+
+fn auth_provider_from_provider_key_auth(
+    auth: &CodexAuth,
+    provider: &ModelProviderInfo,
+) -> codex_protocol::error::Result<SharedAuthProvider> {
+    if provider.api_key_header_name().is_some()
+        && let Ok(token) = auth.get_token()
+    {
+        return api_key_auth_provider(provider, token);
+    }
+
+    Ok(auth_provider_from_auth(auth))
+}
+
+fn api_key_auth_provider(
+    provider: &ModelProviderInfo,
+    api_key: String,
+) -> codex_protocol::error::Result<SharedAuthProvider> {
+    if let Some(header_name) = provider.api_key_header_name() {
+        return Ok(Arc::new(ApiKeyHeaderAuthProvider::new(
+            header_name,
+            api_key,
+        )?));
+    }
+
+    Ok(Arc::new(BearerAuthProvider::new(api_key)))
 }
 
 /// Builds request-header auth for a first-party Codex auth snapshot.
@@ -166,5 +217,26 @@ mod tests {
             Err(err) => panic!("unexpected auth error: {err:?}"),
             Ok(_) => panic!("Bedrock API key auth should be rejected"),
         }
+    }
+
+    #[test]
+    fn anthropic_provider_api_key_auth_uses_x_api_key_header() {
+        let provider = ModelProviderInfo::create_anthropic_provider();
+        let auth = CodexAuth::from_api_key("anthropic-key");
+
+        let auth = resolve_provider_auth(Some(&auth), &provider).expect("auth should resolve");
+        let headers = auth.to_auth_headers();
+
+        assert_eq!(
+            headers.get(http::header::AUTHORIZATION),
+            None,
+            "Anthropic API keys must not be sent as Bearer tokens"
+        );
+        assert_eq!(
+            headers
+                .get("x-api-key")
+                .and_then(|value| value.to_str().ok()),
+            Some("anthropic-key")
+        );
     }
 }

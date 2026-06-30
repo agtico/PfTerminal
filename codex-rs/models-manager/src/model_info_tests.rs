@@ -1,5 +1,6 @@
 use super::*;
 use crate::ModelsManagerConfig;
+use codex_protocol::config_types::Personality;
 use pretty_assertions::assert_eq;
 
 #[test]
@@ -15,6 +16,45 @@ fn reasoning_summaries_override_true_enables_support() {
     expected.supports_reasoning_summaries = true;
 
     assert_eq!(updated, expected);
+}
+
+#[test]
+fn glm_model_slug_gets_local_personality_messages() {
+    let model = model_info_from_slug("glm-5.2");
+
+    assert!(model.supports_personality());
+    assert!(
+        model
+            .get_model_instructions(Some(Personality::Pragmatic))
+            .contains(LOCAL_PRAGMATIC_TEMPLATE)
+    );
+    assert!(
+        !model
+            .get_model_instructions(Some(Personality::Pragmatic))
+            .contains("based on GPT-5")
+    );
+}
+
+#[test]
+fn config_overrides_fill_missing_personality_for_remote_glm_models() {
+    let mut model = model_info_from_slug("remote-placeholder");
+    model.slug = "z-ai/glm-5.2".to_string();
+    model.model_messages = None;
+
+    let updated = with_config_overrides(
+        model,
+        &ModelsManagerConfig {
+            personality_enabled: true,
+            ..Default::default()
+        },
+    );
+
+    assert!(updated.supports_personality());
+    assert!(
+        updated
+            .get_model_instructions(Some(Personality::Pragmatic))
+            .contains(LOCAL_PRAGMATIC_TEMPLATE)
+    );
 }
 
 #[test]

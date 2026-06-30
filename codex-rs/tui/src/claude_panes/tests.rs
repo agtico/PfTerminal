@@ -1705,6 +1705,18 @@ fn command_plan_uses_session_id_then_resume_without_secret_in_args() {
             .iter()
             .any(|arg| arg == "--exclude-dynamic-system-prompt-sections")
     );
+    assert!(
+        first
+            .args
+            .windows(2)
+            .any(|w| w[0] == "--effort" && w[1] == "high")
+    );
+    assert!(
+        first
+            .args
+            .windows(2)
+            .any(|w| w[0] == "--setting-sources" && w[1] == "project")
+    );
     assert!(!first.args.iter().any(|arg| arg == "--tools"));
     assert!(!first.args.iter().any(|arg| arg.contains("secret")));
 
@@ -2011,6 +2023,7 @@ fn turn_audit_serializes_reasoning_events() {
 #[test]
 fn allowed_auth_helper_labels_are_provider_scoped() {
     assert!(allowed_provider_vault_label("provider/zai_api_key"));
+    assert!(allowed_provider_vault_label("provider/anthropic_api_key"));
     assert!(allowed_provider_vault_label("provider/ambient_api_key"));
     assert!(allowed_provider_vault_label("provider/baseten_api_key"));
     assert!(allowed_provider_vault_label("provider/openrouter_api_key"));
@@ -2184,7 +2197,7 @@ fn ambient_tool_calls_are_translated_to_anthropic_tool_uses() {
     });
     let calls = bridge_tool_calls_from_ambient_response(&upstream);
     let response = anthropic_tool_use_response(
-        "zai-org/GLM-5.2-FP8",
+        "z-ai/glm-5.2",
         &calls,
         &json!({"prompt_tokens": 5, "cached_tokens": 2, "completion_tokens": 3}),
     );
@@ -2231,7 +2244,7 @@ fn ambient_retry_after_delay_parses_seconds_and_caps_large_values() {
 #[test]
 fn anthropic_stream_events_preserve_upstream_usage_in_protocol_fields() {
     let start = anthropic_stream_start_event(
-        "zai-org/GLM-5.2-FP8",
+        "z-ai/glm-5.2",
         &serde_json::json!({
             "prompt_tokens": 120,
             "cached_tokens": 80,

@@ -82,7 +82,7 @@ async fn request_permissions_routes_to_guardian_when_reviewer_is_enabled() {
     .to_string();
     let guardian_request_log = mount_sse_once_chat_completions(
         &server,
-        chat_completions_sse("zai-org/GLM-5.2-FP8", &guardian_assessment),
+        chat_completions_sse("z-ai/glm-5.2", &guardian_assessment),
     )
     .await;
 
@@ -374,7 +374,7 @@ async fn strict_auto_review_turn_grant_forces_guardian_for_shell_command_policy_
     .to_string();
     let guardian_request_log = mount_sse_once_chat_completions(
         &server,
-        chat_completions_sse("zai-org/GLM-5.2-FP8", &guardian_assessment),
+        chat_completions_sse("z-ai/glm-5.2", &guardian_assessment),
     )
     .await;
 

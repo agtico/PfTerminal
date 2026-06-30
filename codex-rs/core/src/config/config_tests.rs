@@ -67,10 +67,15 @@ use codex_features::Feature;
 use codex_features::FeaturesToml;
 use codex_model_provider_info::AMBIENT_DEFAULT_MODEL;
 use codex_model_provider_info::AMBIENT_KIMI_K2_7_CODE_MODEL;
+use codex_model_provider_info::AMBIENT_LEGACY_GLM_5_2_FP8_MODEL;
 use codex_model_provider_info::AMBIENT_PROVIDER_ID;
+use codex_model_provider_info::ANTHROPIC_DEFAULT_MODEL;
+use codex_model_provider_info::ANTHROPIC_PROVIDER_ID;
 use codex_model_provider_info::BASETEN_ANTHROPIC_PROVIDER_ID;
 use codex_model_provider_info::BASETEN_DEFAULT_MODEL;
 use codex_model_provider_info::BASETEN_PROVIDER_ID;
+use codex_model_provider_info::CLAUDE_PLAN_MODEL;
+use codex_model_provider_info::CLAUDE_PLAN_PROVIDER_ID;
 use codex_model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
 use codex_model_provider_info::OLLAMA_OSS_PROVIDER_ID;
 use codex_model_provider_info::OPENROUTER_ANTHROPIC_PROVIDER_ID;
@@ -725,6 +730,55 @@ async fn load_config_defaults_to_ambient_provider_and_model() -> std::io::Result
 }
 
 #[tokio::test]
+async fn load_config_anthropic_provider_defaults_to_opus_4_8() -> std::io::Result<()> {
+    let cfg = toml::from_str::<ConfigToml>(
+        r#"
+model_provider = "anthropic"
+"#,
+    )
+    .expect("config should deserialize");
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        tempdir()?.abs(),
+    )
+    .await?;
+
+    assert_eq!(config.model_provider_id, ANTHROPIC_PROVIDER_ID);
+    assert_eq!(config.model.as_deref(), Some(ANTHROPIC_DEFAULT_MODEL));
+    assert_eq!(config.model_provider.wire_api, WireApi::Anthropic);
+    assert_eq!(config.forced_login_method, Some(ForcedLoginMethod::Api));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_claude_plan_provider_defaults_to_plan_opus_4_8() -> std::io::Result<()> {
+    let cfg = toml::from_str::<ConfigToml>(
+        r#"
+model_provider = "claude-plan"
+"#,
+    )
+    .expect("config should deserialize");
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        tempdir()?.abs(),
+    )
+    .await?;
+
+    assert_eq!(config.model_provider_id, CLAUDE_PLAN_PROVIDER_ID);
+    assert_eq!(config.model.as_deref(), Some(CLAUDE_PLAN_MODEL));
+    assert_eq!(config.model_provider.wire_api, WireApi::Anthropic);
+    assert!(config.model_provider.auth.is_some());
+    assert_eq!(config.forced_login_method, None);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn load_config_accepts_legacy_configured_ambient_provider() -> std::io::Result<()> {
     let cfg = toml::from_str::<ConfigToml>(
         r#"
@@ -1012,6 +1066,30 @@ model_provider = "ambient"
 model = "gpt-5.5"
 "#,
     )
+    .expect("config should deserialize");
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        tempdir()?.abs(),
+    )
+    .await?;
+
+    assert_eq!(config.model_provider_id, AMBIENT_PROVIDER_ID);
+    assert_eq!(config.model.as_deref(), Some(AMBIENT_DEFAULT_MODEL));
+    assert_eq!(config.model_provider.wire_api, WireApi::Chat);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_ambient_provider_replaces_retired_glm_fp8_model() -> std::io::Result<()> {
+    let cfg = toml::from_str::<ConfigToml>(&format!(
+        r#"
+model_provider = "ambient"
+model = "{AMBIENT_LEGACY_GLM_5_2_FP8_MODEL}"
+"#
+    ))
     .expect("config should deserialize");
 
     let config = Config::load_from_base_config_with_overrides(

@@ -317,7 +317,8 @@ fn test_create_ambient_provider() {
             supports_websockets: false,
         }
     );
-    assert_eq!(AMBIENT_DEFAULT_MODEL, "zai-org/GLM-5.2-FP8");
+    assert_eq!(AMBIENT_DEFAULT_MODEL, "z-ai/glm-5.2");
+    assert_eq!(AMBIENT_LEGACY_GLM_5_2_FP8_MODEL, "zai-org/GLM-5.2-FP8");
     assert_eq!(AMBIENT_KIMI_K2_7_CODE_MODEL, "moonshotai/kimi-k2.7-code");
 }
 
@@ -346,6 +347,70 @@ fn test_create_zai_provider() {
         }
     );
     assert_eq!(ZAI_DEFAULT_MODEL, "glm-5.2");
+}
+
+#[test]
+fn test_create_anthropic_provider() {
+    assert_eq!(
+        ModelProviderInfo::create_anthropic_provider(),
+        ModelProviderInfo {
+            name: "Anthropic".to_string(),
+            base_url: Some(ANTHROPIC_BASE_URL.to_string()),
+            env_key: Some(ANTHROPIC_API_KEY_ENV_VAR.to_string()),
+            env_key_instructions: Some(provider_api_key_vault_instructions()),
+            experimental_bearer_token: None,
+            auth: None,
+            aws: None,
+            wire_api: WireApi::Anthropic,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    );
+    assert_eq!(ANTHROPIC_DEFAULT_MODEL, "claude-opus-4-8");
+}
+
+#[test]
+fn test_create_claude_plan_provider() {
+    assert_eq!(
+        ModelProviderInfo::create_claude_plan_provider(),
+        ModelProviderInfo {
+            name: "Claude Plan".to_string(),
+            base_url: Some(ANTHROPIC_BASE_URL.to_string()),
+            env_key: None,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            auth: Some(ModelProviderAuthInfo {
+                command: "pfterminal".to_string(),
+                args: vec!["internal-claude-oauth-token".to_string()],
+                timeout_ms: NonZeroU64::new(5_000).expect("timeout should be non-zero"),
+                refresh_interval_ms: 60_000,
+                cwd: AbsolutePathBuf::from_absolute_path_checked("/")
+                    .expect("root path should be absolute"),
+            }),
+            aws: None,
+            wire_api: WireApi::Anthropic,
+            query_params: None,
+            http_headers: Some(maplit::hashmap! {
+                "anthropic-beta".to_string() => "claude-code-20250219,oauth-2025-04-20".to_string(),
+            }),
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        }
+    );
+    assert_eq!(CLAUDE_PLAN_MODEL, "claude-opus-4-8-plan");
+    assert_eq!(CLAUDE_PLAN_UPSTREAM_MODEL, ANTHROPIC_DEFAULT_MODEL);
 }
 
 #[test]
@@ -385,6 +450,47 @@ fn test_built_in_model_providers_include_ambient() {
             .map(ModelProviderInfo::is_ambient),
         Some(true)
     );
+}
+
+#[test]
+fn test_built_in_model_providers_include_anthropic() {
+    let providers = built_in_model_providers(/*openai_base_url*/ None);
+
+    let anthropic = providers
+        .get(ANTHROPIC_PROVIDER_ID)
+        .expect("Anthropic provider should be built in");
+    assert!(anthropic.is_anthropic());
+    assert_eq!(anthropic.base_url.as_deref(), Some(ANTHROPIC_BASE_URL));
+    assert_eq!(
+        anthropic.env_key.as_deref(),
+        Some(ANTHROPIC_API_KEY_ENV_VAR)
+    );
+    assert_eq!(anthropic.wire_api, WireApi::Anthropic);
+    assert_eq!(anthropic.api_key_header_name(), Some("x-api-key"));
+    assert!(!anthropic.requires_openai_auth);
+}
+
+#[test]
+fn test_built_in_model_providers_include_claude_plan() {
+    let providers = built_in_model_providers(/*openai_base_url*/ None);
+
+    let claude_plan = providers
+        .get(CLAUDE_PLAN_PROVIDER_ID)
+        .expect("Claude Plan provider should be built in");
+    assert!(claude_plan.is_claude_plan());
+    assert_eq!(claude_plan.base_url.as_deref(), Some(ANTHROPIC_BASE_URL));
+    assert!(claude_plan.env_key.is_none());
+    assert!(claude_plan.auth.is_some());
+    assert_eq!(claude_plan.wire_api, WireApi::Anthropic);
+    assert_eq!(
+        claude_plan
+            .http_headers
+            .as_ref()
+            .and_then(|headers| headers.get("anthropic-beta"))
+            .map(String::as_str),
+        Some("claude-code-20250219,oauth-2025-04-20")
+    );
+    assert!(!claude_plan.requires_openai_auth);
 }
 
 #[test]

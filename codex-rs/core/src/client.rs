@@ -139,6 +139,10 @@ use codex_login::auth_env_telemetry::AuthEnvTelemetry;
 use codex_login::auth_env_telemetry::collect_auth_env_telemetry;
 use codex_model_provider::SharedModelProvider;
 use codex_model_provider::create_model_provider;
+use codex_model_provider_info::AMBIENT_DEFAULT_MODEL;
+use codex_model_provider_info::AMBIENT_LEGACY_GLM_5_2_FP8_MODEL;
+use codex_model_provider_info::CLAUDE_PLAN_MODEL;
+use codex_model_provider_info::CLAUDE_PLAN_UPSTREAM_MODEL;
 #[cfg(test)]
 use codex_model_provider_info::DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS;
 use codex_model_provider_info::ModelProviderInfo;
@@ -171,6 +175,9 @@ const RESPONSES_ENDPOINT: &str = "/responses";
 const CHAT_COMPLETIONS_ENDPOINT: &str = "/chat/completions";
 const ANTHROPIC_MESSAGES_ENDPOINT: &str = "/messages";
 const ANTHROPIC_MESSAGES_DEFAULT_MAX_TOKENS: i64 = 32_000;
+const ANTHROPIC_MESSAGES_MAX_CACHE_CONTROL_BLOCKS: usize = 4;
+const CLAUDE_CODE_IDENTITY_PROMPT: &str =
+    "You are Claude Code, Anthropic's official CLI for Claude.";
 const RESPONSES_COMPACT_ENDPOINT: &str = "/responses/compact";
 // `/responses/compact` is unary, so the timeout covers the full response rather than one idle
 // period between stream events.
@@ -1202,8 +1209,11 @@ impl ModelClient {
             apply_chat_cache_control(&mut messages);
         }
 
+        let upstream_model =
+            chat_completions_upstream_model(&model_info.slug, self.state.provider.info());
+
         Ok(ChatCompletionsRequest {
-            model: model_info.slug.clone(),
+            model: upstream_model.to_string(),
             messages,
             stream: true,
             stream_options: Some(ChatStreamOptions {
@@ -1231,12 +1241,22 @@ impl ModelClient {
     ) -> Result<AnthropicMessagesRequest> {
         let mut system = Vec::new();
         let instructions = prompt.base_instructions.text.trim();
-        if !instructions.is_empty() {
+        let is_claude_plan = model_info.slug.trim() == CLAUDE_PLAN_MODEL;
+        if is_claude_plan {
             system.push(json!({
                 "type": "text",
-                "text": instructions,
-                "cache_control": { "type": "ephemeral" },
+                "text": CLAUDE_CODE_IDENTITY_PROMPT,
             }));
+        }
+        if !instructions.is_empty() {
+            let mut instruction_block = json!({
+                "type": "text",
+                "text": instructions,
+            });
+            if !is_claude_plan && let Some(object) = instruction_block.as_object_mut() {
+                object.insert("cache_control".to_string(), json!({ "type": "ephemeral" }));
+            }
+            system.push(instruction_block);
         }
 
         let input = prompt.get_formatted_input_for_request(model_info.use_responses_lite);
@@ -1253,14 +1273,16 @@ impl ModelClient {
 
         let tools = create_tools_json_for_anthropic_messages(&prompt.tools)?;
         let tool_choice = (!tools.is_empty()).then(|| json!({ "type": "auto" }));
-        let thinking = anthropic_thinking_for_effort(
+        let upstream_model = anthropic_upstream_model(&model_info.slug);
+        let (thinking, output_config) = anthropic_reasoning_for_model_and_effort(
+            upstream_model,
             effort
                 .as_ref()
                 .or(model_info.default_reasoning_level.as_ref()),
         );
 
         Ok(AnthropicMessagesRequest {
-            model: model_info.slug.clone(),
+            model: upstream_model.to_string(),
             system,
             messages,
             tools,
@@ -1268,6 +1290,7 @@ impl ModelClient {
             stream: true,
             max_tokens: ANTHROPIC_MESSAGES_DEFAULT_MAX_TOKENS,
             thinking,
+            output_config,
         })
     }
 
@@ -2899,7 +2922,11 @@ fn apply_anthropic_cache_control_to_last_user_messages(messages: &mut [Value]) {
         })
         .collect::<Vec<_>>();
 
-    for index in user_indices.into_iter().rev().take(2) {
+    for index in user_indices
+        .into_iter()
+        .rev()
+        .take(ANTHROPIC_MESSAGES_MAX_CACHE_CONTROL_BLOCKS.saturating_sub(2))
+    {
         if let Some(message) = messages.get_mut(index) {
             mark_anthropic_message_cache_control(message);
         }
@@ -2921,6 +2948,60 @@ fn mark_anthropic_message_cache_control(message: &mut Value) {
     }
 }
 
+fn anthropic_reasoning_for_model_and_effort(
+    model: &str,
+    effort: Option<&ReasoningEffortConfig>,
+) -> (Option<Value>, Option<Value>) {
+    if anthropic_model_uses_adaptive_effort(model)
+        && let Some(effort) = effort.and_then(anthropic_adaptive_effort_value)
+    {
+        return (
+            Some(json!({ "type": "adaptive" })),
+            Some(json!({ "effort": effort })),
+        );
+    }
+
+    (anthropic_thinking_for_effort(effort), None)
+}
+
+fn chat_completions_upstream_model<'a>(model: &'a str, provider: &ModelProviderInfo) -> &'a str {
+    if provider.is_ambient() && model.trim() == AMBIENT_LEGACY_GLM_5_2_FP8_MODEL {
+        AMBIENT_DEFAULT_MODEL
+    } else {
+        model
+    }
+}
+
+fn anthropic_upstream_model(model: &str) -> &str {
+    if model.trim() == CLAUDE_PLAN_MODEL {
+        CLAUDE_PLAN_UPSTREAM_MODEL
+    } else {
+        model
+    }
+}
+
+fn anthropic_model_uses_adaptive_effort(model: &str) -> bool {
+    let model = model.trim();
+    model.starts_with("claude-opus-4-7")
+        || model.starts_with("claude-opus-4-8")
+        || model.starts_with("claude-fable-5")
+}
+
+fn anthropic_adaptive_effort_value(effort: &ReasoningEffortConfig) -> Option<String> {
+    match effort {
+        ReasoningEffortConfig::Low => Some("low".to_string()),
+        ReasoningEffortConfig::Medium => Some("medium".to_string()),
+        ReasoningEffortConfig::High => Some("high".to_string()),
+        ReasoningEffortConfig::XHigh => Some("xhigh".to_string()),
+        ReasoningEffortConfig::Custom(value)
+            if matches!(value.as_str(), "max" | "xhigh" | "high" | "medium" | "low") =>
+        {
+            Some(value.clone())
+        }
+        _ => None,
+    }
+}
+
 fn anthropic_thinking_for_effort(effort: Option<&ReasoningEffortConfig>) -> Option<Value> {
     match effort {
         Some(ReasoningEffortConfig::Custom(value))
@@ -2939,10 +3020,18 @@ fn anthropic_thinking_for_effort(effort: Option<&ReasoningEffortConfig>) -> Opti
 }
 
 fn create_tools_json_for_anthropic_messages(tools: &[ToolSpec]) -> Result<Vec<Value>> {
-    tools
+    let mut tools = tools
         .iter()
         .filter_map(|tool| tool_spec_to_anthropic_tool(tool))
-        .collect::<Result<Vec<_>>>()
+        .collect::<Result<Vec<_>>>()?;
+    mark_last_anthropic_tool_cache_control(&mut tools);
+    Ok(tools)
+}
+
+fn mark_last_anthropic_tool_cache_control(tools: &mut [Value]) {
+    if let Some(object) = tools.last_mut().and_then(Value::as_object_mut) {
+        object.insert("cache_control".to_string(), json!({ "type": "ephemeral" }));
+    }
 }
 
 fn tool_spec_to_anthropic_tool(tool: &ToolSpec) -> Option<Result<Value>> {
@@ -2983,7 +3072,6 @@ fn responses_tool_to_anthropic_tool(mut tool: Value) -> Option<Value> {
         anthropic_tool.insert("description".to_string(), description);
     }
     anthropic_tool.insert("input_schema".to_string(), input_schema);
-    anthropic_tool.insert("cache_control".to_string(), json!({ "type": "ephemeral" }));
     Some(Value::Object(anthropic_tool))
 }
 
@@ -3004,7 +3092,6 @@ fn freeform_tool_to_anthropic_tool(tool: &codex_tools::FreeformTool) -> Value {
             "type": "object",
             "properties": {},
         })),
-        "cache_control": { "type": "ephemeral" },
     })
 }
 

@@ -433,6 +433,8 @@ pub struct AnthropicMessagesRequest {
     pub max_tokens: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_config: Option<Value>,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]

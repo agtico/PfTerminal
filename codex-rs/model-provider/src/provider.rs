@@ -11,10 +11,12 @@ use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider_info::AMBIENT_DEFAULT_MODEL;
 use codex_model_provider_info::BASETEN_DEFAULT_MODEL;
+use codex_model_provider_info::CLAUDE_PLAN_MODEL;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OPENROUTER_DEFAULT_MODEL;
 use codex_model_provider_info::VERCEL_DEFAULT_MODEL;
 use codex_model_provider_info::ZAI_DEFAULT_MODEL;
+use codex_models_manager::bundled_models_response;
 use codex_models_manager::manager::OpenAiModelsManager;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_models_manager::manager::StaticModelsManager;
@@ -96,6 +98,11 @@ pub const DEFAULT_MEMORY_EXTRACTION_PREFERRED_MODEL: &str = "gpt-5.4-mini";
 /// Default model used for memory consolidation when a provider does not require
 /// a backend-specific model ID.
 pub const DEFAULT_MEMORY_CONSOLIDATION_PREFERRED_MODEL: &str = "gpt-5.4";
+
+fn bundled_static_model_catalog() -> ModelsResponse {
+    bundled_models_response()
+        .unwrap_or_else(|err| panic!("bundled models.json should parse: {err}"))
+}
 
 /// Runtime provider abstraction used by model execution.
 ///
@@ -265,6 +272,8 @@ impl ModelProvider for ConfiguredModelProvider {
     fn approval_review_preferred_model(&self) -> &'static str {
         if self.info.is_ambient() {
             AMBIENT_DEFAULT_MODEL
+        } else if self.info.is_claude_plan() {
+            CLAUDE_PLAN_MODEL
         } else if self.info.is_zai() {
             ZAI_DEFAULT_MODEL
         } else if self.info.is_openrouter() {
@@ -281,6 +290,8 @@ impl ModelProvider for ConfiguredModelProvider {
     fn memory_extraction_preferred_model(&self) -> &'static str {
         if self.info.is_ambient() {
             AMBIENT_DEFAULT_MODEL
+        } else if self.info.is_claude_plan() {
+            CLAUDE_PLAN_MODEL
         } else if self.info.is_zai() {
             ZAI_DEFAULT_MODEL
         } else if self.info.is_openrouter() {
@@ -297,6 +308,8 @@ impl ModelProvider for ConfiguredModelProvider {
     fn memory_consolidation_preferred_model(&self) -> &'static str {
         if self.info.is_ambient() {
             AMBIENT_DEFAULT_MODEL
+        } else if self.info.is_claude_plan() {
+            CLAUDE_PLAN_MODEL
         } else if self.info.is_zai() {
             ZAI_DEFAULT_MODEL
         } else if self.info.is_openrouter() {
@@ -392,7 +405,13 @@ impl ModelProvider for ConfiguredModelProvider {
         codex_home: PathBuf,
         config_model_catalog: Option<ModelsResponse>,
     ) -> SharedModelsManager {
-        match config_model_catalog {
+        let static_catalog = if self.info.is_anthropic() || self.info.is_claude_plan() {
+            Some(config_model_catalog.unwrap_or_else(bundled_static_model_catalog))
+        } else {
+            config_model_catalog
+        };
+
+        match static_catalog {
             Some(model_catalog) => Arc::new(StaticModelsManager::new(
                 self.auth_manager.clone(),
                 model_catalog,
@@ -421,6 +440,7 @@ mod tests {
     use codex_login::auth::BedrockApiKeyAuth;
     use codex_login::login_with_provider_api_key;
     use codex_model_provider_info::AMBIENT_DEFAULT_MODEL;
+    use codex_model_provider_info::ANTHROPIC_API_KEY_ENV_VAR;
     use codex_model_provider_info::BASETEN_DEFAULT_MODEL;
     use codex_model_provider_info::ModelProviderAwsAuthInfo;
     use codex_model_provider_info::OPENROUTER_DEFAULT_MODEL;
@@ -578,6 +598,67 @@ mod tests {
         assert_eq!(
             provider.memory_consolidation_preferred_model(),
             AMBIENT_DEFAULT_MODEL
+        );
+    }
+
+    #[test]
+    fn claude_plan_provider_uses_plan_model_for_helper_tasks() {
+        let provider = create_model_provider(
+            ModelProviderInfo::create_claude_plan_provider(),
+            /*auth_manager*/ None,
+        );
+
+        assert_eq!(
+            provider.approval_review_preferred_model(),
+            CLAUDE_PLAN_MODEL
+        );
+        assert_eq!(
+            provider.memory_extraction_preferred_model(),
+            CLAUDE_PLAN_MODEL
+        );
+        assert_eq!(
+            provider.memory_consolidation_preferred_model(),
+            CLAUDE_PLAN_MODEL
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_plan_provider_uses_static_model_catalog() {
+        let provider = create_model_provider(
+            ModelProviderInfo::create_claude_plan_provider(),
+            /*auth_manager*/ None,
+        );
+
+        let manager =
+            provider.models_manager(test_codex_home(), /*config_model_catalog*/ None);
+        let catalog = manager.raw_model_catalog(RefreshStrategy::Online).await;
+
+        assert!(
+            catalog
+                .models
+                .iter()
+                .any(|model| model.slug == CLAUDE_PLAN_MODEL),
+            "Claude Plan should not poll Anthropic /models during startup"
+        );
+    }
+
+    #[tokio::test]
+    async fn anthropic_provider_uses_static_model_catalog() {
+        let provider = create_model_provider(
+            ModelProviderInfo::create_anthropic_provider(),
+            /*auth_manager*/ None,
+        );
+
+        let manager =
+            provider.models_manager(test_codex_home(), /*config_model_catalog*/ None);
+        let catalog = manager.raw_model_catalog(RefreshStrategy::Online).await;
+
+        assert!(
+            catalog
+                .models
+                .iter()
+                .any(|model| model.slug == "claude-opus-4-8"),
+            "Anthropic API-key models should not be refreshed through OpenAI-compatible /models"
         );
     }
 
@@ -790,6 +871,31 @@ mod tests {
                 .get(http::header::AUTHORIZATION)
                 .and_then(|value| value.to_str().ok()),
             Some("Bearer env-provider-key")
+        );
+    }
+
+    #[tokio::test]
+    async fn anthropic_provider_env_key_uses_x_api_key_header() {
+        let _guard = EnvVarGuard::set(ANTHROPIC_API_KEY_ENV_VAR, "env-anthropic-key");
+        let provider = create_model_provider(
+            ModelProviderInfo::create_anthropic_provider(),
+            Some(AuthManager::from_auth_for_testing(
+                CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+            )),
+        );
+
+        let auth = provider
+            .api_auth()
+            .await
+            .expect("provider auth should resolve");
+        let headers = auth.to_auth_headers();
+
+        assert_eq!(headers.get(http::header::AUTHORIZATION), None);
+        assert_eq!(
+            headers
+                .get("x-api-key")
+                .and_then(|value| value.to_str().ok()),
+            Some("env-anthropic-key")
         );
     }
 

@@ -459,7 +459,7 @@ async fn chatgpt_cache_does_not_evict_pfterminal_provider_models() {
         .collect::<Vec<_>>();
 
     assert!(slugs.contains(&"gpt-5.5"));
-    assert!(slugs.contains(&"zai-org/GLM-5.2-FP8"));
+    assert!(slugs.contains(&"z-ai/glm-5.2"));
     assert!(slugs.contains(&"moonshotai/kimi-k2.7-code"));
     assert!(slugs.contains(&"glm-5.2"));
     assert!(slugs.contains(&"z-ai/glm-5.2"));
@@ -1001,7 +1001,7 @@ fn bundled_models_json_contains_ambient_models() {
     let ambient_default = response
         .models
         .iter()
-        .find(|model| model.slug == "zai-org/GLM-5.2-FP8")
+        .find(|model| model.slug == "z-ai/glm-5.2")
         .expect("bundled models.json should include the Ambient GLM 5.2 default");
 
     assert_eq!(ambient_default.display_name, "Ambient GLM 5.2");
@@ -1107,6 +1107,34 @@ fn bundled_models_json_contains_openrouter_models() {
             .unwrap_or_default()
             .contains("$0.98/M input, $3.08/M output")
     );
+
+    let claude_opus = response
+        .models
+        .iter()
+        .find(|model| model.slug == "claude-opus-4-8")
+        .expect("bundled models.json should include Claude Opus 4.8");
+
+    assert_eq!(claude_opus.display_name, "Claude Opus 4.8");
+    assert_eq!(claude_opus.context_window, Some(1_000_000));
+    assert_eq!(
+        claude_opus.default_reasoning_level,
+        Some(ReasoningEffort::High)
+    );
+    assert_eq!(
+        claude_opus
+            .supported_reasoning_levels
+            .iter()
+            .map(|level| level.effort.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+            ReasoningEffort::XHigh,
+            ReasoningEffort::Custom("max".to_string()),
+        ]
+    );
+    assert_eq!(claude_opus.visibility, ModelVisibility::List);
 
     for slug in [
         "minimax/minimax-m3",

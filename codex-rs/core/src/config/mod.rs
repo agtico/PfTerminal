@@ -78,10 +78,15 @@ use codex_mcp::ResolvedMcpCatalog;
 use codex_memories_read::memory_root;
 use codex_model_provider_info::AMBIENT_DEFAULT_MODEL;
 use codex_model_provider_info::AMBIENT_KIMI_K2_7_CODE_MODEL;
+use codex_model_provider_info::AMBIENT_LEGACY_GLM_5_2_FP8_MODEL;
 use codex_model_provider_info::AMBIENT_PROVIDER_ID;
+use codex_model_provider_info::ANTHROPIC_DEFAULT_MODEL;
+use codex_model_provider_info::ANTHROPIC_PROVIDER_ID;
 use codex_model_provider_info::BASETEN_ANTHROPIC_PROVIDER_ID;
 use codex_model_provider_info::BASETEN_DEFAULT_MODEL;
 use codex_model_provider_info::BASETEN_PROVIDER_ID;
+use codex_model_provider_info::CLAUDE_PLAN_MODEL;
+use codex_model_provider_info::CLAUDE_PLAN_PROVIDER_ID;
 use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
@@ -2456,8 +2461,12 @@ fn resolve_web_search_config(config_toml: &ConfigToml) -> Option<WebSearchConfig
 fn resolve_model_for_provider(model: Option<String>, model_provider_id: &str) -> Option<String> {
     match model_provider_id {
         AMBIENT_PROVIDER_ID => match model {
+            Some(model) if model.trim() == AMBIENT_LEGACY_GLM_5_2_FP8_MODEL => {
+                Some(AMBIENT_DEFAULT_MODEL.to_string())
+            }
             Some(model)
                 if model.trim().starts_with("ambient/")
+                    || model.trim().starts_with("z-ai/")
                     || model.trim() == AMBIENT_KIMI_K2_7_CODE_MODEL
                     || (model.trim().starts_with("zai-org/")
                         && model.trim() != BASETEN_DEFAULT_MODEL) =>
@@ -2469,6 +2478,18 @@ fn resolve_model_for_provider(model: Option<String>, model_provider_id: &str) ->
         ZAI_PROVIDER_ID | ZAI_ANTHROPIC_PROVIDER_ID => match model {
             Some(model) if model.trim().starts_with("glm-") => Some(model),
             _ => Some(ZAI_DEFAULT_MODEL.to_string()),
+        },
+        ANTHROPIC_PROVIDER_ID => match model {
+            Some(model)
+                if model.trim().starts_with("claude-") && model.trim() != CLAUDE_PLAN_MODEL =>
+            {
+                Some(model)
+            }
+            _ => Some(ANTHROPIC_DEFAULT_MODEL.to_string()),
+        },
+        CLAUDE_PLAN_PROVIDER_ID => match model {
+            Some(model) if model.trim() == CLAUDE_PLAN_MODEL => Some(model),
+            _ => Some(CLAUDE_PLAN_MODEL.to_string()),
         },
         OPENROUTER_PROVIDER_ID | OPENROUTER_ANTHROPIC_PROVIDER_ID => match model {
             Some(model) if model.trim().starts_with("z-ai/") => Some(model),
@@ -3545,6 +3566,7 @@ impl Config {
             .filter(|values| !values.is_empty());
 
         let ambient_provider_selected = model_provider_id == AMBIENT_PROVIDER_ID;
+        let anthropic_provider_selected = model_provider_id == ANTHROPIC_PROVIDER_ID;
         let baseten_provider_selected =
             matches!(model_provider_id.as_str(), BASETEN_PROVIDER_ID | BASETEN_ANTHROPIC_PROVIDER_ID);
         let openrouter_provider_selected = matches!(
@@ -3562,6 +3584,7 @@ impl Config {
             .forced_login_method
             .or_else(|| {
                 (ambient_provider_selected
+                    || anthropic_provider_selected
                     || baseten_provider_selected
                     || openrouter_provider_selected
                     || vercel_provider_selected

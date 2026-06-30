@@ -11,7 +11,9 @@ use codex_features::Stage;
 use codex_model_provider_info::AMBIENT_DEFAULT_MODEL;
 use codex_model_provider_info::AMBIENT_KIMI_K2_7_CODE_MODEL;
 use codex_model_provider_info::AMBIENT_PROVIDER_ID;
+use codex_model_provider_info::ANTHROPIC_DEFAULT_MODEL;
 use codex_model_provider_info::BASETEN_DEFAULT_MODEL;
+use codex_model_provider_info::CLAUDE_PLAN_MODEL;
 use codex_model_provider_info::OPENROUTER_DEFAULT_MODEL;
 use codex_model_provider_info::VERCEL_DEFAULT_MODEL;
 use codex_model_provider_info::VERCEL_GLM_5_2_FAST_MODEL;
@@ -2647,7 +2649,7 @@ async fn model_picker_hides_fake_openai_models_and_shows_curated_provider_models
         .try_list_models()
         .expect("model catalog should load");
     chat.open_all_models_popup(presets);
-    let popup = render_bottom_popup_with_height(&chat, /*width*/ 140, /*height*/ 36);
+    let popup = render_bottom_popup_with_height(&chat, /*width*/ 140, /*height*/ 40);
 
     assert!(
         popup.contains(AMBIENT_DEFAULT_MODEL),
@@ -2674,24 +2676,63 @@ async fn model_picker_hides_fake_openai_models_and_shows_curated_provider_models
         "expected direct Z.AI GLM model in /model picker:\n{popup}"
     );
     assert!(
-        popup.contains("Pay Per API Call"),
-        "expected Pay Per API Call section in /model picker:\n{popup}"
+        popup.contains(CLAUDE_PLAN_MODEL),
+        "expected Claude Plan to appear as a Codex-native /model option:\n{popup}"
     );
     assert!(
-        popup.contains(OPENROUTER_DEFAULT_MODEL),
-        "expected OpenRouter GLM 5.2 in /model picker:\n{popup}"
+        popup.contains("Claude Opus 4.8 through Claude Code subscription auth"),
+        "expected Claude Plan row to explain subscription auth:\n{popup}"
     );
     assert!(
-        popup.contains("OpenRouter: GLM 5.2 - $0.98/M input, $3.08/M output."),
-        "expected OpenRouter GLM price description in /model picker:\n{popup}"
+        popup.contains("API Key Models"),
+        "expected API Key Models tab in /model picker:\n{popup}"
+    );
+    let (mut anthropic_chat, _anthropic_rx, _anthropic_op_rx) =
+        make_chatwidget_manual(Some(ANTHROPIC_DEFAULT_MODEL)).await;
+    anthropic_chat.thread_id = Some(ThreadId::new());
+    let presets = anthropic_chat
+        .model_catalog
+        .try_list_models()
+        .expect("model catalog should load");
+    anthropic_chat.open_all_models_popup(presets);
+    let anthropic_popup =
+        render_bottom_popup_with_height(&anthropic_chat, /*width*/ 140, /*height*/ 28);
+
+    assert!(
+        anthropic_popup.contains("[API Key Models]"),
+        "expected Anthropic current model to open API Key Models tab:\n{anthropic_popup}"
     );
     assert!(
-        popup.contains(BASETEN_DEFAULT_MODEL),
-        "expected Baseten GLM 5.2 in /model picker:\n{popup}"
+        anthropic_popup.contains(ANTHROPIC_DEFAULT_MODEL),
+        "expected Anthropic API-key model in /model picker:\n{anthropic_popup}"
     );
     assert!(
-        popup.contains("Baseten: GLM 5.2 - $1.50/M input, $0.30/M cached input, $4.50/M output."),
-        "expected Baseten GLM price description in /model picker:\n{popup}"
+        anthropic_popup.contains(OPENROUTER_DEFAULT_MODEL),
+        "expected OpenRouter GLM 5.2 in API Key Models tab:\n{anthropic_popup}"
+    );
+    assert!(
+        anthropic_popup.contains("OpenRouter: GLM 5.2 - $0.98/M input, $3.08/M output."),
+        "expected OpenRouter GLM price description in API Key Models tab:\n{anthropic_popup}"
+    );
+    let (mut baseten_chat, _baseten_rx, _baseten_op_rx) =
+        make_chatwidget_manual(Some(BASETEN_DEFAULT_MODEL)).await;
+    baseten_chat.thread_id = Some(ThreadId::new());
+    let presets = baseten_chat
+        .model_catalog
+        .try_list_models()
+        .expect("model catalog should load");
+    baseten_chat.open_all_models_popup(presets);
+    let baseten_popup =
+        render_bottom_popup_with_height(&baseten_chat, /*width*/ 140, /*height*/ 28);
+
+    assert!(
+        baseten_popup.contains(BASETEN_DEFAULT_MODEL),
+        "expected Baseten GLM 5.2 in /model picker:\n{baseten_popup}"
+    );
+    assert!(
+        baseten_popup
+            .contains("Baseten: GLM 5.2 - $1.50/M input, $0.30/M cached input, $4.50/M output."),
+        "expected Baseten GLM price description in /model picker:\n{baseten_popup}"
     );
     let (mut vercel_chat, _vercel_rx, _vercel_op_rx) =
         make_chatwidget_manual(Some(VERCEL_DEFAULT_MODEL)).await;

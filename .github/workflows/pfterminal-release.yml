@@ -291,11 +291,100 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+  build-windows:
+    needs: validate
+    name: Build Windows package - ${{ matrix.target }}
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      CARGO_PROFILE_RELEASE_DEBUG: "0"
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_STRIP: "symbols"
+      TARGET: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Configure MSVC linker
+        uses: ./.github/actions/setup-msvc-env
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Build pfterminal package binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$TARGET" == "x86_64-pc-windows-msvc" ]]; then
+            export LIBSQLITE3_FLAGS=SQLITE_DISABLE_INTRINSIC
+          fi
+          cargo build \
+            --manifest-path codex-rs/Cargo.toml \
+            --target "$TARGET" \
+            --release \
+            --bin pfterminal \
+            --bin codex-command-runner \
+            --bin codex-windows-sandbox-setup
+
+      - name: Build standalone package archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/${TARGET}"
+          python scripts/build_codex_package.py \
+            --target "$TARGET" \
+            --variant pfterminal \
+            --entrypoint-bin "codex-rs/target/${TARGET}/release/pfterminal.exe" \
+            --extra-bin "codex=codex-rs/target/${TARGET}/release/pfterminal.exe" \
+            --codex-command-runner-bin "codex-rs/target/${TARGET}/release/codex-command-runner.exe" \
+            --codex-windows-sandbox-setup-bin "codex-rs/target/${TARGET}/release/codex-windows-sandbox-setup.exe" \
+            --cargo-profile release \
+            --package-dir "${RUNNER_TEMP}/pfterminal-package-${TARGET}" \
+            --archive-output "dist/${TARGET}/pfterminal-package-${TARGET}.zip" \
+            --force
+
+      - name: Smoke test package archive
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = "dist/${env:TARGET}/pfterminal-package-${env:TARGET}.zip"
+          $packageDir = Join-Path $env:RUNNER_TEMP "smoke-${env:TARGET}"
+          if (Test-Path $packageDir) {
+            Remove-Item -Recurse -Force $packageDir
+          }
+          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+          Expand-Archive -Path $archive -DestinationPath $packageDir
+          & (Join-Path $packageDir "bin/pfterminal.exe") --version
+          if (-not (Test-Path (Join-Path $packageDir "bin/codex.exe"))) { throw "missing codex.exe" }
+          if (-not (Test-Path (Join-Path $packageDir "codex-path/rg.exe"))) { throw "missing rg.exe" }
+          if (-not (Test-Path (Join-Path $packageDir "codex-resources/codex-command-runner.exe"))) { throw "missing command runner" }
+          if (-not (Test-Path (Join-Path $packageDir "codex-resources/codex-windows-sandbox-setup.exe"))) { throw "missing sandbox setup" }
+
+      - name: Upload Windows package archive
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: pfterminal-package-${{ matrix.target }}
+          path: dist/${{ matrix.target }}/pfterminal-package-${{ matrix.target }}.zip
+          if-no-files-found: error
+          compression-level: 0
+
   assemble-release-assets:
     needs:
       - validate
       - build-macos
       - build-linux
+      - build-windows
     name: Assemble release assets
     runs-on: ubuntu-latest
     steps:
@@ -315,10 +404,11 @@ jobs:
           set -euo pipefail
           mkdir -p release-dist
           find downloaded -type f -name 'pfterminal-package-*.tar.gz' -exec cp {} release-dist/ \;
+          find downloaded -type f -name 'pfterminal-package-*.zip' -exec cp {} release-dist/ \;
           find downloaded -type f -name 'PFTerminal-*.dmg' -exec cp {} release-dist/ \;
           cp scripts/install/install.sh release-dist/install.sh
 
-          find release-dist -maxdepth 1 -type f -name 'pfterminal-package-*.tar.gz' -print |
+          find release-dist -maxdepth 1 -type f \( -name 'pfterminal-package-*.tar.gz' -o -name 'pfterminal-package-*.zip' \) -print |
             sort |
             while IFS= read -r archive; do
               sha256sum "$archive" |
@@ -332,8 +422,8 @@ jobs:
                 awk -v name="$(basename "$dmg")" '{ print $1 "  " name }'
             done > release-dist/pfterminal-dmg_SHA256SUMS
 
-          expected_count=4
-          actual_count="$(find release-dist -maxdepth 1 -type f -name 'pfterminal-package-*.tar.gz' | wc -l | tr -d ' ')"
+          expected_count=5
+          actual_count="$(find release-dist -maxdepth 1 -type f \( -name 'pfterminal-package-*.tar.gz' -o -name 'pfterminal-package-*.zip' \) | wc -l | tr -d ' ')"
           if [[ "$actual_count" != "$expected_count" ]]; then
             echo "Expected ${expected_count} package archives, found ${actual_count}"
             find release-dist -maxdepth 1 -type f -print
