@@ -35,6 +35,12 @@ const MAX_REQUEST_MAX_RETRIES: u64 = 100;
 
 const OPENAI_PROVIDER_NAME: &str = "OpenAI";
 pub const OPENAI_PROVIDER_ID: &str = "openai";
+/// OpenAI backend compatibility version for protocol-gated model access.
+///
+/// This is intentionally separate from PFTerminal's product version. The OpenAI
+/// provider sends this value to first-party endpoints so fork-specific release
+/// numbering does not make the backend treat a compatible client as obsolete.
+pub const OPENAI_CODEX_COMPAT_VERSION: &str = "0.124.0";
 pub const CHATGPT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const ANTHROPIC_PROVIDER_NAME: &str = "Anthropic";
 pub const ANTHROPIC_PROVIDER_ID: &str = "anthropic";
@@ -427,9 +433,12 @@ impl ModelProviderInfo {
             wire_api: WireApi::Responses,
             query_params: None,
             http_headers: Some(
-                [("version".to_string(), env!("CARGO_PKG_VERSION").to_string())]
-                    .into_iter()
-                    .collect(),
+                [(
+                    "version".to_string(),
+                    OPENAI_CODEX_COMPAT_VERSION.to_string(),
+                )]
+                .into_iter()
+                .collect(),
             ),
             env_http_headers: Some(
                 [
