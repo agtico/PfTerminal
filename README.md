@@ -1,5 +1,9 @@
 # PFTerminal
 
+<p align="center">
+  <img src="docs/assets/images/pfterminal-logo.png" alt="PFTerminal - Post Fiat Terminal" width="720">
+</p>
+
 PFTerminal is a crypto-native AI services terminal based on the open-source
 Codex CLI. It defaults to Ambient GLM 5.2 and is being built as one secure
 terminal interface for AI-assisted coding and crypto-native workflows.

@@ -1,0 +1,36 @@
+<svg viewBox="0 0 1280 640" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">PFTerminal GitHub social preview</title>
+  <desc id="desc">PFTerminal branding with the Post Fiat glyph.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#000"/>
+      <stop offset="0.52" stop-color="#071007"/>
+      <stop offset="1" stop-color="#0f1d10"/>
+    </linearGradient>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ddffdc"/>
+      <stop offset="0.45" stop-color="#7fee64"/>
+      <stop offset="1" stop-color="#09af58"/>
+    </linearGradient>
+    <pattern id="grid" width="52" height="52" patternUnits="userSpaceOnUse">
+      <path d="M52 0H0V52" fill="none" stroke="rgba(221,255,220,.07)" stroke-width="1"/>
+    </pattern>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="12" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.50 0 0 0 0 0.93 0 0 0 0 0.39 0 0 0 0.7 0"/>
+      <feBlend in="SourceGraphic"/>
+    </filter>
+  </defs>
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <rect width="1280" height="640" fill="url(#grid)" opacity=".7"/>
+  <path d="M80 560 350 260 600 410 870 150 1200 510" fill="none" stroke="rgba(127,238,100,.18)" stroke-width="3"/>
+  <g transform="translate(92 112)">
+    <rect width="290" height="290" rx="38" fill="#061006" stroke="rgba(221,255,220,.28)" stroke-width="3"/>
+    <path d="M70 70 220 220m0-150L70 220" stroke="#ddffdc" stroke-width="28" stroke-linecap="round" fill="none" filter="url(#glow)"/>
+    <line x1="70" y1="220" x2="220" y2="220" stroke="#ddffdc" stroke-width="28" stroke-linecap="round" filter="url(#glow)"/>
+  </g>
+  <text x="440" y="276" fill="#7fee64" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="176" font-weight="700" letter-spacing="0">PFT</text>
+  <text x="454" y="350" fill="#ddffdc" font-family="Inter Tight, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="58" font-weight="650" letter-spacing="0">Post Fiat Terminal</text>
+  <text x="458" y="424" fill="#bad8b6" font-family="Inter Tight, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="34" font-weight="500" letter-spacing="0">Crypto-native AI services terminal</text>
+  <text x="92" y="548" fill="#83917f" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="26" font-weight="500" letter-spacing="0">github.com/agtico/PfTerminal</text>
+</svg>
