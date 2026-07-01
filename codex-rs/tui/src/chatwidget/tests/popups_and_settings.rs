@@ -13,6 +13,7 @@ use codex_model_provider_info::AMBIENT_KIMI_K2_7_CODE_MODEL;
 use codex_model_provider_info::AMBIENT_PROVIDER_ID;
 use codex_model_provider_info::ANTHROPIC_DEFAULT_MODEL;
 use codex_model_provider_info::BASETEN_DEFAULT_MODEL;
+use codex_model_provider_info::CLAUDE_FABLE_PLAN_MODEL;
 use codex_model_provider_info::CLAUDE_PLAN_MODEL;
 use codex_model_provider_info::OPENROUTER_DEFAULT_MODEL;
 use codex_model_provider_info::VERCEL_DEFAULT_MODEL;
@@ -2692,6 +2693,14 @@ async fn model_picker_hides_fake_openai_models_and_shows_curated_provider_models
     assert!(
         popup.contains("Claude Opus 4.8 through Claude Code subscription auth"),
         "expected Claude Plan row to explain subscription auth:\n{popup}"
+    );
+    assert!(
+        popup.contains(CLAUDE_FABLE_PLAN_MODEL),
+        "expected Claude Fable Plan to appear as a Codex-native /model option:\n{popup}"
+    );
+    assert!(
+        popup.contains("Claude Fable 5 through Claude Code subscription auth"),
+        "expected Claude Fable Plan row to explain subscription auth:\n{popup}"
     );
     assert!(
         popup.contains("API Key Models"),

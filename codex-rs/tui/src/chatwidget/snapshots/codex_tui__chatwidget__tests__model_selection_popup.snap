@@ -1,6 +1,6 @@
 ---
 source: tui/src/chatwidget/tests/popups_and_settings.rs
-assertion_line: 2575
+assertion_line: 2577
 expression: popup
 ---
   Select Model and Effort
@@ -14,6 +14,8 @@ expression: popup
   4. gpt-5.5                    Frontier model for complex coding, research,
                                 and real-world work.
   5. claude-opus-4-8-plan       Claude Opus 4.8 through Claude Code
+                                subscription auth in the Codex harness.
+  6. claude-fable-5-plan        Claude Fable 5 through Claude Code
                                 subscription auth in the Codex harness.
 
   Use Left/Right to switch groups. Press Enter to confirm or Esc to go back

@@ -51,6 +51,8 @@ const CLAUDE_PLAN_PROVIDER_NAME: &str = "Claude Plan";
 pub const CLAUDE_PLAN_PROVIDER_ID: &str = "claude-plan";
 pub const CLAUDE_PLAN_MODEL: &str = "claude-opus-4-8-plan";
 pub const CLAUDE_PLAN_UPSTREAM_MODEL: &str = ANTHROPIC_DEFAULT_MODEL;
+pub const CLAUDE_FABLE_PLAN_MODEL: &str = "claude-fable-5-plan";
+pub const CLAUDE_FABLE_PLAN_UPSTREAM_MODEL: &str = "claude-fable-5";
 const AMBIENT_PROVIDER_NAME: &str = "Ambient";
 pub const AMBIENT_PROVIDER_ID: &str = "ambient";
 pub const AMBIENT_BASE_URL: &str = "https://api.ambient.xyz/v1";
@@ -90,6 +92,18 @@ pub const VERCEL_ANTHROPIC_FAST_PROVIDER_ID: &str = "vercel-anthropic-fast";
 pub const VERCEL_DEFAULT_MODEL: &str = "zai/glm-5.2";
 pub const VERCEL_GLM_5_2_FAST_MODEL: &str = "zai/glm-5.2-fast";
 pub const VERCEL_API_KEY_ENV_VAR: &str = "AI_GATEWAY_API_KEY";
+
+pub fn claude_plan_upstream_model(model: &str) -> Option<&'static str> {
+    match model.trim() {
+        CLAUDE_PLAN_MODEL => Some(CLAUDE_PLAN_UPSTREAM_MODEL),
+        CLAUDE_FABLE_PLAN_MODEL => Some(CLAUDE_FABLE_PLAN_UPSTREAM_MODEL),
+        _ => None,
+    }
+}
+
+pub fn is_claude_plan_model(model: &str) -> bool {
+    claude_plan_upstream_model(model).is_some()
+}
 
 fn provider_api_key_vault_instructions() -> String {
     [

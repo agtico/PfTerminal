@@ -425,6 +425,17 @@ fn test_create_claude_plan_provider() {
     );
     assert_eq!(CLAUDE_PLAN_MODEL, "claude-opus-4-8-plan");
     assert_eq!(CLAUDE_PLAN_UPSTREAM_MODEL, ANTHROPIC_DEFAULT_MODEL);
+    assert_eq!(CLAUDE_FABLE_PLAN_MODEL, "claude-fable-5-plan");
+    assert_eq!(CLAUDE_FABLE_PLAN_UPSTREAM_MODEL, "claude-fable-5");
+    assert_eq!(
+        claude_plan_upstream_model(CLAUDE_PLAN_MODEL),
+        Some(CLAUDE_PLAN_UPSTREAM_MODEL)
+    );
+    assert_eq!(
+        claude_plan_upstream_model(CLAUDE_FABLE_PLAN_MODEL),
+        Some(CLAUDE_FABLE_PLAN_UPSTREAM_MODEL)
+    );
+    assert_eq!(claude_plan_upstream_model("claude-fable-5"), None);
 }
 
 #[test]

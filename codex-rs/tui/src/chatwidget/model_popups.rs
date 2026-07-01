@@ -15,6 +15,9 @@ use codex_model_provider_info::ANTHROPIC_DEFAULT_MODEL;
 use codex_model_provider_info::ANTHROPIC_PROVIDER_ID;
 use codex_model_provider_info::BASETEN_DEFAULT_MODEL;
 use codex_model_provider_info::BASETEN_PROVIDER_ID;
+#[cfg(test)]
+use codex_model_provider_info::CLAUDE_FABLE_PLAN_MODEL;
+#[cfg(test)]
 use codex_model_provider_info::CLAUDE_PLAN_MODEL;
 use codex_model_provider_info::CLAUDE_PLAN_PROVIDER_ID;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
@@ -27,6 +30,7 @@ use codex_model_provider_info::VERCEL_GLM_5_2_FAST_MODEL;
 use codex_model_provider_info::VERCEL_PROVIDER_ID;
 use codex_model_provider_info::ZAI_DEFAULT_MODEL;
 use codex_model_provider_info::ZAI_PROVIDER_ID;
+use codex_model_provider_info::is_claude_plan_model;
 #[cfg(test)]
 use codex_protocol::openai_models::ReasoningEffortPreset;
 #[cfg(test)]
@@ -207,7 +211,7 @@ impl ChatWidget {
         if trimmed == ZAI_DEFAULT_MODEL || trimmed.starts_with("glm-") {
             return Some(ZAI_PROVIDER_ID.to_string());
         }
-        if trimmed == CLAUDE_PLAN_MODEL {
+        if is_claude_plan_model(trimmed) {
             return Some(CLAUDE_PLAN_PROVIDER_ID.to_string());
         }
         if trimmed == ANTHROPIC_DEFAULT_MODEL || trimmed.starts_with("claude-") {
@@ -873,6 +877,18 @@ mod tests {
     }
 
     #[test]
+    fn model_provider_for_selection_maps_claude_plan_models() {
+        assert_eq!(
+            ChatWidget::model_provider_for_selection(CLAUDE_PLAN_MODEL).as_deref(),
+            Some(CLAUDE_PLAN_PROVIDER_ID)
+        );
+        assert_eq!(
+            ChatWidget::model_provider_for_selection(CLAUDE_FABLE_PLAN_MODEL).as_deref(),
+            Some(CLAUDE_PLAN_PROVIDER_ID)
+        );
+    }
+
+    #[test]
     fn pfterminal_picker_allows_only_gpt_5_5_for_openai() {
         assert!(ChatWidget::show_in_pfterminal_model_picker(&preset(
             AMBIENT_KIMI_K2_7_CODE_MODEL,
@@ -884,6 +900,10 @@ mod tests {
         )));
         assert!(ChatWidget::show_in_pfterminal_model_picker(&preset(
             CLAUDE_PLAN_MODEL,
+            true
+        )));
+        assert!(ChatWidget::show_in_pfterminal_model_picker(&preset(
+            CLAUDE_FABLE_PLAN_MODEL,
             true
         )));
         assert!(ChatWidget::show_in_pfterminal_model_picker(&preset(

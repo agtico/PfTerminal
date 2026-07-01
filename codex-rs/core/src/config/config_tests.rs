@@ -74,6 +74,7 @@ use codex_model_provider_info::ANTHROPIC_PROVIDER_ID;
 use codex_model_provider_info::BASETEN_ANTHROPIC_PROVIDER_ID;
 use codex_model_provider_info::BASETEN_DEFAULT_MODEL;
 use codex_model_provider_info::BASETEN_PROVIDER_ID;
+use codex_model_provider_info::CLAUDE_FABLE_PLAN_MODEL;
 use codex_model_provider_info::CLAUDE_PLAN_MODEL;
 use codex_model_provider_info::CLAUDE_PLAN_PROVIDER_ID;
 use codex_model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
@@ -774,6 +775,57 @@ model_provider = "claude-plan"
     assert_eq!(config.model_provider.wire_api, WireApi::Anthropic);
     assert!(config.model_provider.auth.is_some());
     assert_eq!(config.forced_login_method, None);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_claude_plan_provider_accepts_fable_plan_model() -> std::io::Result<()> {
+    let cfg = toml::from_str::<ConfigToml>(
+        r#"
+model_provider = "claude-plan"
+model = "claude-fable-5-plan"
+"#,
+    )
+    .expect("config should deserialize");
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        tempdir()?.abs(),
+    )
+    .await?;
+
+    assert_eq!(config.model_provider_id, CLAUDE_PLAN_PROVIDER_ID);
+    assert_eq!(config.model.as_deref(), Some(CLAUDE_FABLE_PLAN_MODEL));
+    assert_eq!(config.model_provider.wire_api, WireApi::Anthropic);
+    assert!(config.model_provider.auth.is_some());
+    assert_eq!(config.forced_login_method, None);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_anthropic_provider_rejects_plan_model_slugs() -> std::io::Result<()> {
+    let cfg = toml::from_str::<ConfigToml>(
+        r#"
+model_provider = "anthropic"
+model = "claude-fable-5-plan"
+"#,
+    )
+    .expect("config should deserialize");
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        tempdir()?.abs(),
+    )
+    .await?;
+
+    assert_eq!(config.model_provider_id, ANTHROPIC_PROVIDER_ID);
+    assert_eq!(config.model.as_deref(), Some(ANTHROPIC_DEFAULT_MODEL));
+    assert_eq!(config.model_provider.wire_api, WireApi::Anthropic);
+    assert_eq!(config.forced_login_method, Some(ForcedLoginMethod::Api));
 
     Ok(())
 }

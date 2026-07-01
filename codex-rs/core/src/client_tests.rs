@@ -23,6 +23,8 @@ use codex_model_provider_info::AMBIENT_DEFAULT_MODEL;
 use codex_model_provider_info::AMBIENT_LEGACY_GLM_5_2_FP8_MODEL;
 use codex_model_provider_info::ANTHROPIC_DEFAULT_MODEL;
 use codex_model_provider_info::CHATGPT_CODEX_BASE_URL;
+use codex_model_provider_info::CLAUDE_FABLE_PLAN_MODEL;
+use codex_model_provider_info::CLAUDE_FABLE_PLAN_UPSTREAM_MODEL;
 use codex_model_provider_info::CLAUDE_PLAN_MODEL;
 use codex_model_provider_info::CLAUDE_PLAN_UPSTREAM_MODEL;
 use codex_model_provider_info::ModelProviderInfo;
@@ -225,6 +227,13 @@ fn test_anthropic_fable_model_info() -> ModelInfo {
     model.slug = "claude-fable-5".to_string();
     model.display_name = "Claude Fable 5".to_string();
     model.default_reasoning_level = Some(ReasoningEffortConfig::XHigh);
+    model
+}
+
+fn test_claude_fable_plan_model_info() -> ModelInfo {
+    let mut model = test_anthropic_fable_model_info();
+    model.slug = CLAUDE_FABLE_PLAN_MODEL.to_string();
+    model.display_name = "Claude Fable 5 Plan".to_string();
     model
 }
 
@@ -1195,6 +1204,60 @@ fn anthropic_messages_request_adds_cache_control_and_replays_tools() {
         body.pointer("/output_config/effort")
             .and_then(serde_json::Value::as_str),
         Some("xhigh")
+    );
+
+    let fable_plan_model = test_claude_fable_plan_model_info();
+    let fable_plan_default_request = client
+        .build_anthropic_messages_request(&prompt, &fable_plan_model, /*effort*/ None)
+        .expect("Claude Fable Plan default request");
+    let body =
+        serde_json::to_value(&fable_plan_default_request).expect("serialize Fable Plan request");
+    assert_eq!(
+        body.pointer("/model").and_then(serde_json::Value::as_str),
+        Some(CLAUDE_FABLE_PLAN_UPSTREAM_MODEL),
+        "PFTerminal's visible Fable Plan slug must not be sent upstream"
+    );
+    assert_eq!(
+        body.pointer("/system/0/text")
+            .and_then(serde_json::Value::as_str),
+        Some("You are Claude Code, Anthropic's official CLI for Claude."),
+        "Fable Plan OAuth requests need the Claude Code identity block"
+    );
+    assert_ne!(
+        body.pointer("/thinking/type")
+            .and_then(serde_json::Value::as_str),
+        Some("disabled"),
+        "Fable Plan rejects explicit disabled thinking"
+    );
+    assert_eq!(
+        body.pointer("/thinking/budget_tokens"),
+        None,
+        "Fable Plan rejects fixed thinking budgets"
+    );
+    assert_eq!(
+        body.pointer("/output_config/effort")
+            .and_then(serde_json::Value::as_str),
+        Some("xhigh")
+    );
+
+    let fable_plan_none_request = client
+        .build_anthropic_messages_request(
+            &prompt,
+            &fable_plan_model,
+            Some(ReasoningEffortConfig::None),
+        )
+        .expect("Claude Fable Plan no-reasoning request");
+    let body =
+        serde_json::to_value(&fable_plan_none_request).expect("serialize Fable Plan none request");
+    assert_eq!(
+        body.get("thinking"),
+        None,
+        "Fable Plan's no-reasoning path must omit thinking instead of sending disabled"
+    );
+    assert_eq!(
+        body.get("output_config"),
+        None,
+        "Fable Plan should not send adaptive output_config for explicit none"
     );
 }
 
