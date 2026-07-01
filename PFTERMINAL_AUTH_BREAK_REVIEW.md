@@ -347,4 +347,43 @@ PFTTUI_ONBOARDOK
 PFTPROVIDERS_AFTERSAVEOK
 ```
 
+Installed release verification after publishing `rust-v0.1.1`:
+
+```text
+Installed with:
+PFTERMINAL_NON_INTERACTIVE=1 PFTERMINAL_RELEASE=0.1.1 sh -c 'curl -fsSL https://github.com/agtico/PfTerminal/releases/latest/download/install.sh | sh'
+
+Installed command:
+/home/pfrpc/.local/bin/pfterminal
+
+Installed version:
+codex-cli 0.1.1
+
+First-run installed TUI smoke, clean temporary PFTerminal home, no ZAI_API_KEY environment variable:
+Selected the pre-highlighted Z.AI provider key entry, pasted the key through the masked TUI field, accepted the trust step, then the same installed process answered:
+PFTINSTALLED_ONBOARDOK
+
+/providers installed TUI same-process recovery, clean temporary PFTerminal home:
+1. Seeded only Ambient auth so onboarding would not satisfy Z.AI.
+2. Started installed PFTerminal on Z.AI with no ZAI_API_KEY and no stored Z.AI key.
+3. Sent a request and confirmed the expected missing ZAI_API_KEY failure.
+4. Opened /providers, selected Z.AI, pasted the key through the masked TUI field.
+5. Confirmed "Stored Provider: Z.AI API Key in the vault."
+6. Sent another request in the same running installed process and received:
+PPROVOK
+```
+
+Release assets confirmed on GitHub:
+
+```text
+rust-v0.1.1
+install.sh
+PFTerminal-aarch64-apple-darwin.dmg
+PFTerminal-x86_64-apple-darwin.dmg
+pfterminal-package-aarch64-apple-darwin.tar.gz
+pfterminal-package-x86_64-apple-darwin.tar.gz
+pfterminal-package-aarch64-unknown-linux-musl.tar.gz
+pfterminal-package-x86_64-unknown-linux-gnu.tar.gz
+```
+
 Device-code auth was regression-tested at the TUI state-machine and app-server boundary. Full live browser/device completion still requires a user-controlled device auth flow.
