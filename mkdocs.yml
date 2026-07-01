@@ -63,6 +63,7 @@ nav:
       - Provider Hammer Reduction: features/hammer-reduction-process.md
       - Tool-Call Runaway Guard: features/tool-call-runaway-remedy.md
       - Native Provider Performance: features/native-provider-performance.md
+      - MkDocs Terminal Viewer: current-sprint/mkdocs-terminal-viewer.md
       - Subagents: features/subagents.md
   - Orchestration:
       - Overview: orchestration/index.md

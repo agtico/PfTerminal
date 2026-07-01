@@ -43,6 +43,23 @@ fn tasknode_new_chat_id() -> String {
 }
 
 impl ChatWidget {
+    fn open_mkdocs_viewer(&mut self, args: Option<String>) {
+        let tx = self.app_event_tx.clone();
+        let cwd = self
+            .current_cwd
+            .clone()
+            .unwrap_or_else(|| self.config.cwd.to_path_buf());
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                crate::mkdocs_viewer::load_mkdocs_site(&cwd, args.as_deref())
+                    .map_err(|err| err.to_string())
+            })
+            .await
+            .unwrap_or_else(|err| Err(format!("Failed to build MkDocs view: {err}")));
+            tx.send(AppEvent::MkDocsResult(result));
+        });
+    }
+
     /// Dispatch a bare slash command and record its staged local-history entry.
     ///
     /// The composer stages history before returning `InputResult::Command`; this wrapper commits
@@ -427,6 +444,9 @@ impl ChatWidget {
                     };
                     tx.send(AppEvent::DiffResult(text));
                 });
+            }
+            SlashCommand::Docs => {
+                self.open_mkdocs_viewer(/*page_hint*/ None);
             }
             SlashCommand::Mention => {
                 self.insert_str("@");
@@ -837,6 +857,9 @@ impl ChatWidget {
                 }
                 _ => self.add_error_message(RAW_USAGE.to_string()),
             },
+            SlashCommand::Docs => {
+                self.open_mkdocs_viewer(Some(trimmed.to_string()));
+            }
             SlashCommand::Rename if !trimmed.is_empty() => {
                 if !self.ensure_thread_rename_allowed() {
                     return;
@@ -1189,6 +1212,7 @@ impl ChatWidget {
             | SlashCommand::Raw
             | SlashCommand::Vim
             | SlashCommand::Diff
+            | SlashCommand::Docs
             | SlashCommand::App
             | SlashCommand::Rename
             | SlashCommand::TestApproval => QueueDrain::Continue,
