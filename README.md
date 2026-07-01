@@ -33,6 +33,35 @@ curl -fsSL https://github.com/agtico/PfTerminal/releases/latest/download/install
 The installer creates a `pfterminal` command, leaves any stock `codex` command
 alone, and stores PFTerminal state in `$HOME/.pfterminal` by default.
 
+## Remove Local Installations
+
+To remove the standalone Linux/macOS install while keeping local credentials,
+sessions, and settings:
+
+```bash
+rm -f "${PFTERMINAL_INSTALL_DIR:-$HOME/.local/bin}/pfterminal"
+rm -rf "${PFTERMINAL_HOME:-$HOME/.pfterminal}/packages/standalone"
+```
+
+If you installed the npm package instead:
+
+```bash
+npm uninstall -g @agticorp/pfterminal
+```
+
+If you installed it with Bun:
+
+```bash
+bun remove -g @agticorp/pfterminal
+```
+
+To delete all PFTerminal local state as well, including vault credentials,
+login state, session history, pane artifacts, and installed packages:
+
+```bash
+rm -rf "${PFTERMINAL_HOME:-$HOME/.pfterminal}"
+```
+
 ## Key Features
 
 - Ambient GLM 5.2 default model path.
