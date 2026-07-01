@@ -49,6 +49,7 @@ pub enum SlashCommand {
     Copy,
     Raw,
     Diff,
+    Docs,
     Mention,
     Status,
     Usage,
@@ -103,6 +104,7 @@ impl SlashCommand {
             SlashCommand::Copy => "copy last response as markdown",
             SlashCommand::Raw => "toggle raw scrollback mode for copy-friendly terminal selection",
             SlashCommand::Diff => "show git diff (including untracked files)",
+            SlashCommand::Docs => "open MkDocs documentation in the terminal",
             SlashCommand::Mention => "mention a file",
             SlashCommand::Skills => "use skills to improve how Codex performs specific tasks",
             SlashCommand::Import => "import setup, this project, and recent chats from Claude Code",
@@ -171,6 +173,7 @@ impl SlashCommand {
                 | SlashCommand::Keymap
                 | SlashCommand::Mcp
                 | SlashCommand::Raw
+                | SlashCommand::Docs
                 | SlashCommand::Usage
                 | SlashCommand::Pets
                 | SlashCommand::Side
@@ -190,6 +193,7 @@ impl SlashCommand {
             SlashCommand::Copy
                 | SlashCommand::Raw
                 | SlashCommand::Diff
+                | SlashCommand::Docs
                 | SlashCommand::Mention
                 | SlashCommand::Status
                 | SlashCommand::Usage
@@ -223,6 +227,7 @@ impl SlashCommand {
             | SlashCommand::MemoryDrop
             | SlashCommand::MemoryUpdate => false,
             SlashCommand::Diff
+            | SlashCommand::Docs
             | SlashCommand::Resume
             | SlashCommand::Model
             | SlashCommand::Personality

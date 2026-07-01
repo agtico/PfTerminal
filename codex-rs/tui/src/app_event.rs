@@ -54,6 +54,7 @@ use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
 
 use crate::history_cell::HistoryCell;
+use crate::mkdocs_viewer::MkDocsSite;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ThreadGoalSetMode {
@@ -652,6 +653,9 @@ pub(crate) enum AppEvent {
 
     /// Result of computing a `/diff` command.
     DiffResult(String),
+
+    /// Result of building the terminal-native MkDocs view for `/docs`.
+    MkDocsResult(Result<MkDocsSite, String>),
 
     /// Open the app link view in the bottom pane.
     OpenAppLink {

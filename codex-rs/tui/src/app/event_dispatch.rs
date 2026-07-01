@@ -392,6 +392,20 @@ impl App {
                 ));
                 tui.frame_requester().schedule_frame();
             }
+            AppEvent::MkDocsResult(result) => match result {
+                Ok(site) => {
+                    let _ = tui.enter_alt_screen();
+                    self.overlay = Some(Overlay::new_mkdocs(
+                        site,
+                        self.keymap.pager.clone(),
+                        self.keymap.list.clone(),
+                    ));
+                    tui.frame_requester().schedule_frame();
+                }
+                Err(error) => {
+                    self.chat_widget.add_error_message(error);
+                }
+            },
             AppEvent::OpenAppLink {
                 app_id,
                 title,

@@ -149,6 +149,8 @@ mod markdown_render;
 mod markdown_stream;
 mod markdown_text_merge;
 mod mention_codec;
+mod mkdocs_overlay;
+mod mkdocs_viewer;
 mod model_catalog;
 mod model_migration;
 mod motion;

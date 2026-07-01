@@ -16,4 +16,5 @@ not TBD backlog items.
 | Provider hammer protection | [Provider Hammer Reduction](hammer-reduction-process.md) |
 | Tool-call runaway guard | [Tool-Call Runaway Guard](tool-call-runaway-remedy.md) |
 | Native provider performance | [Native Provider Performance](native-provider-performance.md) |
+| MkDocs terminal viewer | [MkDocs Terminal Viewer](../current-sprint/mkdocs-terminal-viewer.md) |
 | Subagents | [Subagents](subagents.md) |
