@@ -2577,6 +2577,16 @@ async fn model_selection_popup_snapshot() {
 }
 
 #[tokio::test]
+async fn model_selection_popup_api_key_models_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some(ANTHROPIC_DEFAULT_MODEL)).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.open_model_popup();
+
+    let popup = render_bottom_popup_with_height(&chat, /*width*/ 100, /*height*/ 22);
+    assert_chatwidget_snapshot!("model_selection_popup_api_key_models", popup);
+}
+
+#[tokio::test]
 async fn personality_selection_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.3-codex")).await;
     chat.thread_id = Some(ThreadId::new());
@@ -2705,6 +2715,14 @@ async fn model_picker_hides_fake_openai_models_and_shows_curated_provider_models
     assert!(
         anthropic_popup.contains(ANTHROPIC_DEFAULT_MODEL),
         "expected Anthropic API-key model in /model picker:\n{anthropic_popup}"
+    );
+    assert!(
+        anthropic_popup.contains("claude-fable-5"),
+        "expected Claude Fable 5 API-key model in /model picker:\n{anthropic_popup}"
+    );
+    assert!(
+        anthropic_popup.contains("Anthropic's most capable model"),
+        "expected Claude Fable 5 description in API Key Models tab:\n{anthropic_popup}"
     );
     assert!(
         anthropic_popup.contains(OPENROUTER_DEFAULT_MODEL),

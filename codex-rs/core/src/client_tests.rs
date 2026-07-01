@@ -220,6 +220,14 @@ fn test_claude_plan_model_info() -> ModelInfo {
     model
 }
 
+fn test_anthropic_fable_model_info() -> ModelInfo {
+    let mut model = test_anthropic_opus_model_info();
+    model.slug = "claude-fable-5".to_string();
+    model.display_name = "Claude Fable 5".to_string();
+    model.default_reasoning_level = Some(ReasoningEffortConfig::XHigh);
+    model
+}
+
 fn count_cache_control_markers(value: &serde_json::Value) -> usize {
     match value {
         serde_json::Value::Array(values) => values.iter().map(count_cache_control_markers).sum(),
@@ -1130,6 +1138,58 @@ fn anthropic_messages_request_adds_cache_control_and_replays_tools() {
     assert!(
         count_cache_control_markers(&body) <= 4,
         "Anthropic Messages rejects more than four cache_control blocks"
+    );
+    assert_eq!(
+        body.pointer("/output_config/effort")
+            .and_then(serde_json::Value::as_str),
+        Some("xhigh")
+    );
+
+    let fable_model = test_anthropic_fable_model_info();
+    let fable_default_request = client
+        .build_anthropic_messages_request(&prompt, &fable_model, /*effort*/ None)
+        .expect("Anthropic Fable default request");
+    let body = serde_json::to_value(&fable_default_request).expect("serialize Fable request");
+    assert_ne!(
+        body.pointer("/thinking/type")
+            .and_then(serde_json::Value::as_str),
+        Some("disabled"),
+        "Fable rejects explicit disabled thinking"
+    );
+    assert_eq!(
+        body.pointer("/thinking/budget_tokens"),
+        None,
+        "Fable rejects fixed thinking budgets"
+    );
+
+    let fable_none_request = client
+        .build_anthropic_messages_request(&prompt, &fable_model, Some(ReasoningEffortConfig::None))
+        .expect("Anthropic Fable no-reasoning request");
+    let body = serde_json::to_value(&fable_none_request).expect("serialize Fable none request");
+    assert_eq!(
+        body.get("thinking"),
+        None,
+        "Fable's no-reasoning path must omit thinking instead of sending disabled"
+    );
+    assert_eq!(
+        body.get("output_config"),
+        None,
+        "Fable should not send adaptive output_config for explicit none"
+    );
+
+    let fable_xhigh_request = client
+        .build_anthropic_messages_request(&prompt, &fable_model, Some(ReasoningEffortConfig::XHigh))
+        .expect("Anthropic Fable xhigh request");
+    let body = serde_json::to_value(&fable_xhigh_request).expect("serialize Fable xhigh request");
+    assert_eq!(
+        body.pointer("/thinking/type")
+            .and_then(serde_json::Value::as_str),
+        Some("adaptive")
+    );
+    assert_eq!(
+        body.pointer("/thinking/budget_tokens"),
+        None,
+        "Fable rejects fixed thinking budgets"
     );
     assert_eq!(
         body.pointer("/output_config/effort")
