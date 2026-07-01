@@ -939,11 +939,62 @@ impl App {
                 self.chat_widget.open_all_models_popup(models);
             }
             AppEvent::OpenProviderApiKeyAdd {
+                provider_id,
                 provider_name,
                 env_key,
             } => {
                 self.chat_widget
-                    .open_provider_api_key_add(provider_name, env_key);
+                    .open_provider_api_key_add(provider_id, provider_name, env_key);
+            }
+            AppEvent::SaveProviderApiKey {
+                provider_id,
+                display_name,
+                api_key,
+            } => {
+                let request_handle = app_server.request_handle();
+                let tx = self.app_event_tx.clone();
+                tokio::spawn(async move {
+                    let result = request_handle
+                        .request_typed::<codex_app_server_protocol::LoginAccountResponse>(
+                            ClientRequest::LoginAccount {
+                                request_id: codex_app_server_protocol::RequestId::String(format!(
+                                    "provider-api-key-login-{}",
+                                    Uuid::new_v4()
+                                )),
+                                params:
+                                    codex_app_server_protocol::LoginAccountParams::ProviderApiKey {
+                                        provider: provider_id,
+                                        api_key: api_key.into_inner(),
+                                    },
+                            },
+                        )
+                        .await;
+
+                    match result {
+                        Ok(codex_app_server_protocol::LoginAccountResponse::ApiKey {}) => {
+                            tx.send(AppEvent::InsertHistoryCell(Box::new(
+                                history_cell::new_info_event(
+                                    format!("Stored {display_name} in the vault."),
+                                    /*hint*/ None,
+                                ),
+                            )));
+                        }
+                        Ok(other) => {
+                            tx.send(AppEvent::InsertHistoryCell(Box::new(
+                                history_cell::new_error_event(format!(
+                                    "Failed to store {display_name}: unexpected account/login/start response: {other:?}"
+                                )),
+                            )));
+                        }
+                        Err(err) => {
+                            tx.send(AppEvent::InsertHistoryCell(Box::new(
+                                history_cell::new_error_event(format!(
+                                    "Failed to store {display_name}: {err}"
+                                )),
+                            )));
+                        }
+                    }
+                });
             }
             AppEvent::OpenCodexAccountDeviceLogin => {
                 self.chat_widget.open_codex_account_device_login_pending();

@@ -3,7 +3,6 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::OnceLock;
 
 use codex_api::Provider;
 use codex_api::SharedAuthProvider;
@@ -214,7 +213,6 @@ pub fn create_model_provider(
 struct ConfiguredModelProvider {
     info: ModelProviderInfo,
     auth_manager: Option<Arc<AuthManager>>,
-    cached_provider_env_auth: Arc<OnceLock<Option<CodexAuth>>>,
 }
 
 impl ConfiguredModelProvider {
@@ -223,7 +221,6 @@ impl ConfiguredModelProvider {
         Self {
             info: provider_info,
             auth_manager,
-            cached_provider_env_auth: Arc::new(OnceLock::new()),
         }
     }
 
@@ -234,15 +231,11 @@ impl ConfiguredModelProvider {
             return Some(CodexAuth::from_api_key(&api_key));
         }
 
-        self.cached_provider_env_auth
-            .get_or_init(|| {
-                self.auth_manager
-                    .as_ref()
-                    .and_then(|auth_manager| auth_manager.provider_api_key(provider_key_id).ok())
-                    .flatten()
-                    .map(|api_key| CodexAuth::from_api_key(&api_key))
-            })
-            .clone()
+        self.auth_manager
+            .as_ref()
+            .and_then(|auth_manager| auth_manager.provider_api_key(provider_key_id).ok())
+            .flatten()
+            .map(|api_key| CodexAuth::from_api_key(&api_key))
     }
 }
 
@@ -871,6 +864,55 @@ mod tests {
                 .get(http::header::AUTHORIZATION)
                 .and_then(|value| value.to_str().ok()),
             Some("Bearer env-provider-key")
+        );
+    }
+
+    #[tokio::test]
+    async fn configured_provider_observes_provider_key_saved_after_missing_lookup() {
+        let env_key = format!("PFT_PROVIDER_LATE_KEY_{}", std::process::id());
+        let codex_home = test_codex_home().join(&env_key);
+        std::fs::create_dir_all(&codex_home).expect("temp codex home should be created");
+        unsafe { std::env::remove_var(&env_key) };
+
+        let provider = create_model_provider(
+            ModelProviderInfo {
+                env_key: Some(env_key.clone()),
+                ..provider_for("https://example.test/v1".to_string())
+            },
+            Some(AuthManager::from_auth_for_testing_with_home(
+                CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+                codex_home.clone(),
+            )),
+        );
+
+        let missing_auth = match provider.api_auth().await {
+            Ok(_) => panic!("provider auth should fail before key exists"),
+            Err(err) => err,
+        };
+        assert!(
+            missing_auth.to_string().contains(&env_key),
+            "error should name missing provider key {env_key}: {missing_auth}"
+        );
+
+        login_with_provider_api_key(
+            &codex_home,
+            &env_key,
+            "stored-provider-key",
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("stored provider key should be written");
+
+        let auth = provider
+            .api_auth()
+            .await
+            .expect("same provider instance should observe newly stored key");
+
+        assert_eq!(
+            auth.to_auth_headers()
+                .get(http::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer stored-provider-key")
         );
     }
 

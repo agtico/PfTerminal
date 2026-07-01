@@ -364,6 +364,10 @@ impl AuthModeWidget {
         !matches!(self.forced_login_method, Some(ForcedLoginMethod::Api))
     }
 
+    fn is_device_code_login_allowed(&self) -> bool {
+        self.provider_picker_enabled() || self.is_chatgpt_login_allowed()
+    }
+
     fn displayed_sign_in_options(&self) -> Vec<SignInOption> {
         if self.provider_picker_enabled() {
             let mut options = vec![SignInOption::DeviceCode];
@@ -432,7 +436,7 @@ impl AuthModeWidget {
                 }
             }
             SignInOption::DeviceCode => {
-                if self.is_chatgpt_login_allowed() {
+                if self.is_device_code_login_allowed() {
                     self.start_device_code_login();
                 }
             }
@@ -1335,6 +1339,25 @@ mod tests {
         );
         assert!(!rendered.contains("ChatGPT"), "rendered:\n{rendered}");
         assert!(rendered.contains("device code"), "rendered:\n{rendered}");
+    }
+
+    #[tokio::test]
+    async fn provider_key_picker_device_code_selection_starts_login() {
+        let (mut widget, _tmp) = widget_forced_chatgpt().await;
+        widget.forced_login_method = Some(ForcedLoginMethod::Api);
+        widget.highlighted_mode = SignInOption::DeviceCode;
+        widget.api_key_provider_options = vec![ApiKeyProviderOption {
+            id: "zai".to_string(),
+            name: "Z.AI".to_string(),
+            env_var: "ZAI_API_KEY".to_string(),
+        }];
+
+        widget.handle_sign_in_option(SignInOption::DeviceCode);
+
+        assert!(matches!(
+            &*widget.sign_in_state.read().unwrap(),
+            SignInState::ChatGptDeviceCode(state) if state.login_id().is_none()
+        ));
     }
 
     #[tokio::test]

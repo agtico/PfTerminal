@@ -3,6 +3,18 @@
 use super::*;
 use crate::bottom_pane::BottomPaneView;
 use crate::bottom_pane::ViewCompletion;
+use codex_model_provider_info::AMBIENT_API_KEY_ENV_VAR;
+use codex_model_provider_info::AMBIENT_PROVIDER_ID;
+use codex_model_provider_info::ANTHROPIC_API_KEY_ENV_VAR;
+use codex_model_provider_info::ANTHROPIC_PROVIDER_ID;
+use codex_model_provider_info::BASETEN_API_KEY_ENV_VAR;
+use codex_model_provider_info::BASETEN_PROVIDER_ID;
+use codex_model_provider_info::OPENROUTER_API_KEY_ENV_VAR;
+use codex_model_provider_info::OPENROUTER_PROVIDER_ID;
+use codex_model_provider_info::VERCEL_API_KEY_ENV_VAR;
+use codex_model_provider_info::VERCEL_PROVIDER_ID;
+use codex_model_provider_info::ZAI_API_KEY_ENV_VAR;
+use codex_model_provider_info::ZAI_PROVIDER_ID;
 
 const PROVIDER_CREDENTIALS_VIEW_ID: &str = "provider-credentials";
 const CODEX_ACCOUNT_DEVICE_LOGIN_VIEW_ID: &str = "codex-account-device-login";
@@ -12,6 +24,7 @@ enum ProviderCredentialOption {
     CodexAccount,
     ClaudeCodePlan,
     ProviderApiKey {
+        provider_id: &'static str,
         provider_name: &'static str,
         env_key: &'static str,
     },
@@ -21,28 +34,34 @@ const PROVIDER_CREDENTIAL_OPTIONS: &[ProviderCredentialOption] = &[
     ProviderCredentialOption::CodexAccount,
     ProviderCredentialOption::ClaudeCodePlan,
     ProviderCredentialOption::ProviderApiKey {
+        provider_id: ANTHROPIC_PROVIDER_ID,
         provider_name: "Anthropic",
-        env_key: "ANTHROPIC_API_KEY",
+        env_key: ANTHROPIC_API_KEY_ENV_VAR,
     },
     ProviderCredentialOption::ProviderApiKey {
+        provider_id: AMBIENT_PROVIDER_ID,
         provider_name: "Ambient",
-        env_key: "AMBIENT_API_KEY",
+        env_key: AMBIENT_API_KEY_ENV_VAR,
     },
     ProviderCredentialOption::ProviderApiKey {
+        provider_id: ZAI_PROVIDER_ID,
         provider_name: "Z.AI",
-        env_key: "ZAI_API_KEY",
+        env_key: ZAI_API_KEY_ENV_VAR,
     },
     ProviderCredentialOption::ProviderApiKey {
+        provider_id: OPENROUTER_PROVIDER_ID,
         provider_name: "OpenRouter",
-        env_key: "OPENROUTER_API_KEY",
+        env_key: OPENROUTER_API_KEY_ENV_VAR,
     },
     ProviderCredentialOption::ProviderApiKey {
+        provider_id: BASETEN_PROVIDER_ID,
         provider_name: "Baseten",
-        env_key: "BASETEN_API_KEY",
+        env_key: BASETEN_API_KEY_ENV_VAR,
     },
     ProviderCredentialOption::ProviderApiKey {
+        provider_id: VERCEL_PROVIDER_ID,
         provider_name: "Vercel",
-        env_key: "AI_GATEWAY_API_KEY",
+        env_key: VERCEL_API_KEY_ENV_VAR,
     },
 ];
 
@@ -65,10 +84,12 @@ impl ChatWidget {
         });
     }
 
-    pub(crate) fn open_provider_api_key_add(&mut self, provider_name: String, env_key: String) {
-        let codex_home = self.config.codex_home.as_path().to_path_buf();
-        let auth_credentials_store_mode = self.config.cli_auth_credentials_store_mode;
-        let keyring_backend_kind = self.config.auth_keyring_backend_kind();
+    pub(crate) fn open_provider_api_key_add(
+        &mut self,
+        provider_id: String,
+        provider_name: String,
+        env_key: String,
+    ) {
         let display_name = provider_credential_display_name(&provider_name, &env_key);
         let tx = self.app_event_tx.clone();
         let view = crate::bottom_pane::vault_secret_entry::VaultSecretEntryView::new_fixed_secret(
@@ -76,29 +97,11 @@ impl ChatWidget {
             format!("Add {display_name}"),
             format!("{env_key} (masked - not shown, not stored in chat)"),
             Box::new(move |_label: String, secret: String| {
-                match codex_login::login_with_provider_api_key(
-                    &codex_home,
-                    &env_key,
-                    &secret,
-                    auth_credentials_store_mode,
-                    keyring_backend_kind,
-                ) {
-                    Ok(()) => {
-                        tx.send(AppEvent::InsertHistoryCell(Box::new(
-                            history_cell::new_info_event(
-                                format!("Stored {display_name} in the vault."),
-                                /*hint*/ None,
-                            ),
-                        )));
-                    }
-                    Err(err) => {
-                        tx.send(AppEvent::InsertHistoryCell(Box::new(
-                            history_cell::new_error_event(format!(
-                                "Failed to store {display_name}: {err}"
-                            )),
-                        )));
-                    }
-                }
+                tx.send(AppEvent::SaveProviderApiKey {
+                    provider_id,
+                    display_name,
+                    api_key: crate::app_event::ProviderApiKeySecret::new(secret),
+                });
             }),
         );
         self.bottom_pane.show_view(Box::new(view));
@@ -198,9 +201,11 @@ fn provider_credential_item(option: &ProviderCredentialOption) -> SelectionItem 
             ..Default::default()
         },
         ProviderCredentialOption::ProviderApiKey {
+            provider_id,
             provider_name,
             env_key,
         } => {
+            let provider_id = provider_id.to_string();
             let provider_name = provider_name.to_string();
             let env_key = env_key.to_string();
             SelectionItem {
@@ -208,6 +213,7 @@ fn provider_credential_item(option: &ProviderCredentialOption) -> SelectionItem 
                 description: Some(format!("Store {env_key} in the vault")),
                 actions: vec![Box::new(move |tx| {
                     tx.send(AppEvent::OpenProviderApiKeyAdd {
+                        provider_id: provider_id.clone(),
                         provider_name: provider_name.clone(),
                         env_key: env_key.clone(),
                     });
@@ -428,15 +434,19 @@ mod tests {
         (rows[2].actions[0])(&sender);
         assert!(matches!(
             rx.try_recv(),
-            Ok(AppEvent::OpenProviderApiKeyAdd { provider_name, env_key })
-                if provider_name == "Anthropic" && env_key == "ANTHROPIC_API_KEY"
+            Ok(AppEvent::OpenProviderApiKeyAdd { provider_id, provider_name, env_key })
+                if provider_id == ANTHROPIC_PROVIDER_ID
+                    && provider_name == "Anthropic"
+                    && env_key == ANTHROPIC_API_KEY_ENV_VAR
         ));
 
         (rows[3].actions[0])(&sender);
         assert!(matches!(
             rx.try_recv(),
-            Ok(AppEvent::OpenProviderApiKeyAdd { provider_name, env_key })
-                if provider_name == "Ambient" && env_key == "AMBIENT_API_KEY"
+            Ok(AppEvent::OpenProviderApiKeyAdd { provider_id, provider_name, env_key })
+                if provider_id == AMBIENT_PROVIDER_ID
+                    && provider_name == "Ambient"
+                    && env_key == AMBIENT_API_KEY_ENV_VAR
         ));
     }
 

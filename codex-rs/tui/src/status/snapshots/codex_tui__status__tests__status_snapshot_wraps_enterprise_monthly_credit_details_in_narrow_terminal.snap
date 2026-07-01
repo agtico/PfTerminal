@@ -5,7 +5,7 @@ expression: sanitized
 /status
 
 ╭────────────────────────────────────────────╮
-│  >_ PFTerminal (v0.1.0)                    │
+│  >_ PFTerminal (v0.1.1)                    │
 │                                            │
 │  Model:                  gpt-5.1-codex-max │
 │  Model provider:         Ambient           │

@@ -32,6 +32,8 @@ const UPDATE_PID_FILE_NAME: &str = "app-server-updater.pid";
 const OPERATION_LOCK_FILE_NAME: &str = "daemon.lock";
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const STATE_DIR_NAME: &str = "app-server-daemon";
+const PFTERMINAL_INSTALLER_COMMAND: &str =
+    "curl -fsSL https://github.com/agtico/PfTerminal/releases/latest/download/install.sh | sh";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleCommand {
@@ -671,7 +673,7 @@ impl Daemon {
             "managed standalone Codex install not found at {managed_codex_path}\n\n\
              This command requires the standalone install managed by the Codex installer, because \
              the daemon starts and updates app-server from that fixed path.\n\n\
-             Install it with:\n  curl -fsSL https://chatgpt.com/codex/install.sh | sh\n\n\
+             Install it with:\n  {PFTERMINAL_INSTALLER_COMMAND}\n\n\
              Then rerun the command you just tried."
         ))
     }

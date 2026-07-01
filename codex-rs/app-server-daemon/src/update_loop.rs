@@ -48,6 +48,9 @@ const INITIAL_UPDATE_DELAY: Duration = Duration::from_secs(5 * 60);
 const RESTART_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 #[cfg(unix)]
 const UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
+#[cfg(unix)]
+const PFTERMINAL_INSTALLER_URL: &str =
+    "https://github.com/agtico/PfTerminal/releases/latest/download/install.sh";
 
 #[cfg(unix)]
 pub(crate) async fn run() -> Result<()> {
@@ -155,14 +158,14 @@ pub(crate) fn reexec_managed_updater(managed_codex_bin: &std::path::Path) -> Res
 
 #[cfg(unix)]
 async fn install_latest_standalone() -> Result<()> {
-    let script = reqwest::get("https://chatgpt.com/codex/install.sh")
+    let script = reqwest::get(PFTERMINAL_INSTALLER_URL)
         .await
-        .context("failed to fetch standalone Codex updater")?
+        .context("failed to fetch standalone PFTerminal updater")?
         .error_for_status()
-        .context("standalone Codex updater request failed")?
+        .context("standalone PFTerminal updater request failed")?
         .bytes()
         .await
-        .context("failed to read standalone Codex updater")?;
+        .context("failed to read standalone PFTerminal updater")?;
 
     let mut child = Command::new("/bin/sh")
         .arg("-s")
@@ -170,7 +173,7 @@ async fn install_latest_standalone() -> Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .context("failed to invoke standalone Codex updater")?;
+        .context("failed to invoke standalone PFTerminal updater")?;
     let mut stdin = child
         .stdin
         .take()
@@ -178,17 +181,17 @@ async fn install_latest_standalone() -> Result<()> {
     stdin
         .write_all(&script)
         .await
-        .context("failed to pass standalone Codex updater to shell")?;
+        .context("failed to pass standalone PFTerminal updater to shell")?;
     drop(stdin);
     let status = child
         .wait()
         .await
-        .context("failed to wait for standalone Codex updater")?;
+        .context("failed to wait for standalone PFTerminal updater")?;
 
     if status.success() {
         Ok(())
     } else {
-        anyhow::bail!("standalone Codex updater exited with status {status}")
+        anyhow::bail!("standalone PFTerminal updater exited with status {status}")
     }
 }
 

@@ -55,7 +55,6 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
 
 // We use the latest version from the cask if installation is via homebrew - homebrew does not immediately pick up the latest release and can lag behind.
 const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.json";
-const OPENAI_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
 const PFTERMINAL_LATEST_RELEASE_URL: &str =
     "https://api.github.com/repos/agtico/PfTerminal/releases/latest";
 
@@ -83,7 +82,7 @@ async fn check_for_update(version_file: &Path, action: Option<UpdateAction>) -> 
         }
         Some(UpdateAction::NpmGlobalLatest) | Some(UpdateAction::BunGlobalLatest) => {
             let latest_version =
-                fetch_latest_github_release_version(OPENAI_LATEST_RELEASE_URL).await?;
+                fetch_latest_github_release_version(PFTERMINAL_LATEST_RELEASE_URL).await?;
             let package_info = create_client()
                 .get(npm_registry::PACKAGE_URL)
                 .send()

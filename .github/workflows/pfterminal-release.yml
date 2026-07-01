@@ -7,7 +7,7 @@ on:
         description: "Release version; must match codex-rs/Cargo.toml."
         required: true
         type: string
-        default: "0.1.0"
+        default: "0.1.1"
       publish_release:
         description: "Create or update the matching GitHub release."
         required: true

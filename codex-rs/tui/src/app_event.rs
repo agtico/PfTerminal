@@ -8,6 +8,7 @@
 //! Exit is modelled explicitly via `AppEvent::Exit(ExitMode)` so callers can request shutdown-first
 //! quits without reaching into the app loop or coupling to shutdown/exit sequencing.
 
+use std::fmt;
 use std::path::PathBuf;
 
 use codex_app_server_protocol::AddCreditsNudgeCreditType;
@@ -129,6 +130,24 @@ pub(crate) enum RateLimitRefreshOrigin {
     StatusCommand { request_id: u64 },
     /// Refresh requested after a reset credit was successfully consumed.
     ResetConsume { request_id: u64 },
+}
+
+pub(crate) struct ProviderApiKeySecret(String);
+
+impl ProviderApiKeySecret {
+    pub(crate) fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    pub(crate) fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl fmt::Debug for ProviderApiKeySecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<redacted provider API key>")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1008,8 +1027,16 @@ pub(crate) enum AppEvent {
 
     /// Open masked entry for a provider API key.
     OpenProviderApiKeyAdd {
+        provider_id: String,
         provider_name: String,
         env_key: String,
+    },
+
+    /// Store a provider API key through app-server account login.
+    SaveProviderApiKey {
+        provider_id: String,
+        display_name: String,
+        api_key: ProviderApiKeySecret,
     },
 
     /// Start OpenAI Codex account device-code login from the Providers screen.
