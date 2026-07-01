@@ -84,6 +84,18 @@ cd ~/repos
 pfterminal
 ```
 
+For a local workspace where you want PFTerminal to run commands without
+approval prompts, launch it with `--yolo`:
+
+```bash
+cd ~/repos
+pfterminal --yolo
+```
+
+`--yolo` bypasses command approvals and sandbox prompts, so use it only in a
+workspace where you are comfortable letting the agent read and write files and
+run shell commands.
+
 Use:
 
 - `/providers` to add Ambient, Z.AI, OpenRouter, Baseten, Vercel, or OpenAI
