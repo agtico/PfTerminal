@@ -41,9 +41,9 @@ pub enum ReasoningEffort {
     None,
     Minimal,
     Low,
-    #[default]
     Medium,
     High,
+    #[default]
     XHigh,
     /// A model-defined effort value that this client does not know yet.
     Custom(String),
@@ -693,6 +693,11 @@ mod tests {
             personality_friendly: Some("friendly".to_string()),
             personality_pragmatic: Some("pragmatic".to_string()),
         }
+    }
+
+    #[test]
+    fn reasoning_effort_default_is_xhigh() {
+        assert_eq!(ReasoningEffort::default(), ReasoningEffort::XHigh);
     }
 
     #[test]

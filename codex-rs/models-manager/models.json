@@ -21,7 +21,7 @@
       "slug": "z-ai/glm-5.2",
       "display_name": "Ambient GLM 5.2",
       "description": "Ambient's default GLM 5.2 coding model.",
-      "default_reasoning_level": "medium",
+      "default_reasoning_level": "xhigh",
       "supported_reasoning_levels": [
         {
           "effort": "medium",
@@ -67,7 +67,7 @@
       "slug": "moonshotai/kimi-k2.7-code",
       "display_name": "Ambient Kimi K2.7 Code",
       "description": "Ambient's Kimi K2.7 Code model.",
-      "default_reasoning_level": "medium",
+      "default_reasoning_level": "xhigh",
       "supported_reasoning_levels": [
         {
           "effort": "medium",
@@ -113,7 +113,7 @@
       "slug": "zai/glm-5.2",
       "display_name": "Vercel GLM 5.2",
       "description": "Vercel: GLM 5.2 - $1.40/M input, $0.26/M cached input, $4.40/M output.",
-      "default_reasoning_level": "medium",
+      "default_reasoning_level": "xhigh",
       "supported_reasoning_levels": [
         {
           "effort": "medium",
@@ -159,7 +159,7 @@
       "slug": "zai/glm-5.2-fast",
       "display_name": "Vercel GLM 5.2 Fast",
       "description": "Vercel: GLM 5.2 Fast - $3.00/M input, $0.50/M cached input, $10.25/M output.",
-      "default_reasoning_level": "medium",
+      "default_reasoning_level": "xhigh",
       "supported_reasoning_levels": [
         {
           "effort": "medium",
@@ -279,7 +279,7 @@
       "slug": "glm-5.2",
       "display_name": "Z.AI GLM 5.2",
       "description": "GLM 5.2 through the Z.AI coding plan API.",
-      "default_reasoning_level": "medium",
+      "default_reasoning_level": "xhigh",
       "supported_reasoning_levels": [
         {
           "effort": "medium",
@@ -456,7 +456,7 @@
       "slug": "gpt-5.5",
       "display_name": "GPT-5.5",
       "description": "Frontier model for complex coding, research, and real-world work.",
-      "default_reasoning_level": "medium",
+      "default_reasoning_level": "xhigh",
       "supported_reasoning_levels": [
         {
           "effort": "low",
@@ -548,7 +548,7 @@
       "slug": "gpt-5.4",
       "display_name": "gpt-5.4",
       "description": "Strong model for everyday coding.",
-      "default_reasoning_level": "medium",
+      "default_reasoning_level": "xhigh",
       "supported_reasoning_levels": [
         {
           "effort": "low",
@@ -637,7 +637,7 @@
       "slug": "gpt-5.4-mini",
       "display_name": "GPT-5.4-Mini",
       "description": "Small, fast, and cost-efficient model for simpler coding tasks.",
-      "default_reasoning_level": "medium",
+      "default_reasoning_level": "xhigh",
       "supported_reasoning_levels": [
         {
           "effort": "low",
@@ -718,7 +718,7 @@
       "slug": "claude-opus-4-8-plan",
       "display_name": "Claude Opus 4.8 Plan",
       "description": "Claude Opus 4.8 through Claude Code subscription auth in the Codex harness.",
-      "default_reasoning_level": "high",
+      "default_reasoning_level": "xhigh",
       "supported_reasoning_levels": [
         {
           "effort": "low",
@@ -776,7 +776,7 @@
       "slug": "claude-opus-4-8",
       "display_name": "Claude Opus 4.8",
       "description": "Claude Opus 4.8 through the Anthropic Messages API.",
-      "default_reasoning_level": "high",
+      "default_reasoning_level": "xhigh",
       "supported_reasoning_levels": [
         {
           "effort": "low",
@@ -837,7 +837,7 @@
       "slug": "gpt-5.3-codex",
       "display_name": "gpt-5.3-codex",
       "description": "Coding-optimized model.",
-      "default_reasoning_level": "medium",
+      "default_reasoning_level": "xhigh",
       "supported_reasoning_levels": [
         {
           "effort": "low",
@@ -921,7 +921,7 @@
       "slug": "gpt-5.2",
       "display_name": "gpt-5.2",
       "description": "Optimized for professional work and long-running agents.",
-      "default_reasoning_level": "medium",
+      "default_reasoning_level": "xhigh",
       "supported_reasoning_levels": [
         {
           "effort": "low",
@@ -1001,7 +1001,7 @@
       "slug": "codex-auto-review",
       "display_name": "Codex Auto Review",
       "description": "Automatic approval review model for Codex.",
-      "default_reasoning_level": "medium",
+      "default_reasoning_level": "xhigh",
       "supported_reasoning_levels": [
         {
           "effort": "low",

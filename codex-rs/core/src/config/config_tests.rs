@@ -1149,7 +1149,7 @@ model_reasoning_effort = "low"
     .await?;
 
     assert_eq!(config.model_provider_id, AMBIENT_PROVIDER_ID);
-    assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::Medium));
+    assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::XHigh));
 
     Ok(())
 }

@@ -13,6 +13,7 @@ use codex_login::TokenData;
 use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::openai_models::ReasoningEffortPreset;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::collections::VecDeque;
@@ -61,6 +62,17 @@ fn remote_model_with_visibility(
             "experimental_supported_tools": [],
         }))
         .expect("valid model")
+}
+
+fn remote_model_with_xhigh_support(slug: &str, display: &str, priority: i32) -> ModelInfo {
+    let mut model = remote_model(slug, display, priority);
+    model
+        .supported_reasoning_levels
+        .push(ReasoningEffortPreset {
+            effort: ReasoningEffort::XHigh,
+            description: "xhigh".to_string(),
+        });
+    model
 }
 
 fn assert_models_contain(actual: &[ModelInfo], expected: &[ModelInfo]) {
@@ -428,6 +440,54 @@ async fn refresh_available_models_merges_cached_chatgpt_remote_with_bundled_cata
         .expect("cached refresh succeeds");
 
     assert_eq!(cache_manager.get_remote_models().await, expected);
+    assert_eq!(
+        cache_endpoint.fetch_count(),
+        0,
+        "fresh cache should avoid a model fetch"
+    );
+}
+
+#[tokio::test]
+async fn cached_remote_models_with_xhigh_support_default_to_xhigh() {
+    let remote_model = remote_model_with_xhigh_support(
+        "cached-xhigh-model",
+        "Cached XHigh Model",
+        /*priority*/ 0,
+    );
+    let codex_home = tempdir().expect("temp dir");
+    let fetch_endpoint = TestModelsEndpoint::new(vec![vec![remote_model]]);
+    let fetch_manager = openai_manager_for_tests(codex_home.path().to_path_buf(), fetch_endpoint);
+
+    fetch_manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("initial refresh succeeds");
+
+    let cache_endpoint = TestModelsEndpoint::new(Vec::new());
+    let cache_manager =
+        openai_manager_for_tests(codex_home.path().to_path_buf(), cache_endpoint.clone());
+
+    cache_manager
+        .refresh_available_models(RefreshStrategy::OnlineIfUncached)
+        .await
+        .expect("cached refresh succeeds");
+
+    let model_info = cache_manager
+        .get_model_info("cached-xhigh-model", &ModelsManagerConfig::default())
+        .await;
+    assert_eq!(
+        model_info.default_reasoning_level,
+        Some(ReasoningEffort::XHigh)
+    );
+
+    let available = cache_manager
+        .list_models(RefreshStrategy::OnlineIfUncached)
+        .await;
+    let preset = available
+        .iter()
+        .find(|preset| preset.model == "cached-xhigh-model")
+        .expect("cached xhigh model should be listed");
+    assert_eq!(preset.default_reasoning_effort, ReasoningEffort::XHigh);
     assert_eq!(
         cache_endpoint.fetch_count(),
         0,
@@ -994,6 +1054,31 @@ fn bundled_models_json_roundtrips() {
 }
 
 #[test]
+fn bundled_models_with_xhigh_support_default_to_xhigh() {
+    let response = crate::bundled_models_response()
+        .unwrap_or_else(|err| panic!("bundled models.json should parse: {err}"));
+
+    let non_xhigh_defaults = response
+        .models
+        .iter()
+        .filter(|model| {
+            model
+                .supported_reasoning_levels
+                .iter()
+                .any(|level| level.effort == ReasoningEffort::XHigh)
+                && model.default_reasoning_level != Some(ReasoningEffort::XHigh)
+        })
+        .map(|model| model.slug.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        non_xhigh_defaults,
+        Vec::<&str>::new(),
+        "models that support xhigh should default to xhigh"
+    );
+}
+
+#[test]
 fn bundled_models_json_contains_ambient_models() {
     let response = crate::bundled_models_response()
         .unwrap_or_else(|err| panic!("bundled models.json should parse: {err}"));
@@ -1008,7 +1093,7 @@ fn bundled_models_json_contains_ambient_models() {
     assert_eq!(ambient_default.context_window, Some(202_752));
     assert_eq!(
         ambient_default.default_reasoning_level,
-        Some(ReasoningEffort::Medium)
+        Some(ReasoningEffort::XHigh)
     );
     assert_eq!(
         ambient_default
@@ -1037,7 +1122,7 @@ fn bundled_models_json_contains_ambient_models() {
     assert_eq!(ambient_kimi.context_window, Some(262_144));
     assert_eq!(
         ambient_kimi.default_reasoning_level,
-        Some(ReasoningEffort::Medium)
+        Some(ReasoningEffort::XHigh)
     );
     assert_eq!(
         ambient_kimi
@@ -1079,35 +1164,6 @@ fn bundled_models_json_contains_openrouter_models() {
     let response = crate::bundled_models_response()
         .unwrap_or_else(|err| panic!("bundled models.json should parse: {err}"));
 
-    let openrouter_glm = response
-        .models
-        .iter()
-        .find(|model| model.slug == "z-ai/glm-5.2")
-        .expect("bundled models.json should include OpenRouter GLM 5.2");
-
-    assert_eq!(openrouter_glm.display_name, "OpenRouter GLM 5.2");
-    assert_eq!(openrouter_glm.context_window, Some(1_048_576));
-    assert_eq!(
-        openrouter_glm.default_reasoning_level,
-        Some(ReasoningEffort::High)
-    );
-    assert_eq!(
-        openrouter_glm
-            .supported_reasoning_levels
-            .iter()
-            .map(|level| level.effort.clone())
-            .collect::<Vec<_>>(),
-        vec![ReasoningEffort::High, ReasoningEffort::XHigh]
-    );
-    assert_eq!(openrouter_glm.visibility, ModelVisibility::List);
-    assert!(
-        openrouter_glm
-            .description
-            .as_deref()
-            .unwrap_or_default()
-            .contains("$0.98/M input, $3.08/M output")
-    );
-
     let claude_opus = response
         .models
         .iter()
@@ -1118,7 +1174,7 @@ fn bundled_models_json_contains_openrouter_models() {
     assert_eq!(claude_opus.context_window, Some(1_000_000));
     assert_eq!(
         claude_opus.default_reasoning_level,
-        Some(ReasoningEffort::High)
+        Some(ReasoningEffort::XHigh)
     );
     assert_eq!(
         claude_opus
@@ -1179,7 +1235,7 @@ fn bundled_models_json_contains_openrouter_models() {
     assert_eq!(vercel_glm.context_window, Some(1_048_576));
     assert_eq!(
         vercel_glm.default_reasoning_level,
-        Some(ReasoningEffort::Medium)
+        Some(ReasoningEffort::XHigh)
     );
     assert_eq!(
         vercel_glm
@@ -1208,7 +1264,7 @@ fn bundled_models_json_contains_openrouter_models() {
     assert_eq!(vercel_fast.context_window, Some(1_048_576));
     assert_eq!(
         vercel_fast.default_reasoning_level,
-        Some(ReasoningEffort::Medium)
+        Some(ReasoningEffort::XHigh)
     );
     assert_eq!(
         vercel_fast

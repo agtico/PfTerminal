@@ -8,6 +8,7 @@ use codex_protocol::error::Result as CoreResult;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::openai_models::ReasoningEffort;
 use std::fmt;
 use std::future::Future;
 use std::path::PathBuf;
@@ -113,6 +114,7 @@ pub trait ModelsManager: fmt::Debug + Send + Sync {
 
     /// Build picker-ready presets from the active catalog snapshot.
     fn build_available_models(&self, mut remote_models: Vec<ModelInfo>) -> Vec<ModelPreset> {
+        normalize_reasoning_defaults_for_models(&mut remote_models);
         remote_models.sort_by_key(|model| model.priority);
 
         let mut presets: Vec<ModelPreset> = remote_models.into_iter().map(Into::into).collect();
@@ -231,8 +233,10 @@ impl OpenAiModelsManager {
 impl StaticModelsManager {
     /// Construct a static model manager from an authoritative catalog.
     pub fn new(auth_manager: Option<Arc<AuthManager>>, model_catalog: ModelsResponse) -> Self {
+        let mut remote_models = model_catalog.models;
+        normalize_reasoning_defaults_for_models(&mut remote_models);
         Self {
-            remote_models: model_catalog.models,
+            remote_models,
             auth_manager,
         }
     }
@@ -349,7 +353,8 @@ impl OpenAiModelsManager {
     /// Replace the cached remote models and rebuild the derived presets list.
     async fn apply_remote_models(&self, models: Vec<ModelInfo>) {
         let mut existing_models = load_remote_models_from_file().unwrap_or_default();
-        for model in models {
+        for mut model in models {
+            normalize_reasoning_default(&mut model);
             if let Some(existing_index) = existing_models
                 .iter()
                 .position(|existing| existing.slug == model.slug)
@@ -423,7 +428,25 @@ impl ModelsManager for StaticModelsManager {
 }
 
 fn load_remote_models_from_file() -> Result<Vec<ModelInfo>, std::io::Error> {
-    Ok(crate::bundled_models_response()?.models)
+    let mut models = crate::bundled_models_response()?.models;
+    normalize_reasoning_defaults_for_models(&mut models);
+    Ok(models)
+}
+
+fn normalize_reasoning_defaults_for_models(models: &mut [ModelInfo]) {
+    for model in models {
+        normalize_reasoning_default(model);
+    }
+}
+
+fn normalize_reasoning_default(model: &mut ModelInfo) {
+    let supports_xhigh = model
+        .supported_reasoning_levels
+        .iter()
+        .any(|level| level.effort == ReasoningEffort::XHigh);
+    if supports_xhigh && model.default_reasoning_level != Some(ReasoningEffort::XHigh) {
+        model.default_reasoning_level = Some(ReasoningEffort::XHigh);
+    }
 }
 
 fn default_model_from_available(available: Vec<ModelPreset>) -> String {
@@ -490,7 +513,9 @@ pub(crate) fn construct_model_info_from_candidates(
     } else {
         model_info::model_info_from_slug(model)
     };
-    model_info::with_config_overrides(model_info, config)
+    let mut model_info = model_info::with_config_overrides(model_info, config);
+    normalize_reasoning_default(&mut model_info);
+    model_info
 }
 
 #[cfg(test)]
