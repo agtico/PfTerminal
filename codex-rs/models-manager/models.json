@@ -773,10 +773,126 @@
       "max_context_window": 1000000,
       "auto_compact_token_limit": null,
       "default_reasoning_summary": "none",
+      "slug": "claude-fable-5-plan",
+      "display_name": "Claude Fable 5 Plan",
+      "description": "Claude Fable 5 through Claude Code subscription auth in the Codex harness.",
+      "default_reasoning_level": "xhigh",
+      "supported_reasoning_levels": [
+        {
+          "effort": "low",
+          "description": "Lower latency and token use for narrow edits."
+        },
+        {
+          "effort": "medium",
+          "description": "Moderate reasoning for everyday coding."
+        },
+        {
+          "effort": "high",
+          "description": "Default Fable 5 reasoning for complex coding."
+        },
+        {
+          "effort": "xhigh",
+          "description": "Deeper reasoning for difficult implementation work."
+        },
+        {
+          "effort": "max",
+          "description": "Maximum adaptive reasoning; use when token spend is acceptable."
+        }
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "availability_nux": null,
+      "upgrade": null,
+      "priority": 0,
+      "base_instructions": "You are PFTerminal, a coding agent. Help the user complete software tasks in the current workspace. Be direct, inspect the code before changing it, keep edits scoped, and verify your work when practical. When searching, use rg or rg --files first. Never run recursive grep over a repo root; if rg is unavailable, restrict grep to source directories and exclude .git, target, node_modules, dist, build, .next, and vendor.",
+      "model_messages": null,
+      "experimental_supported_tools": [],
+      "service_tiers": [],
+      "additional_speed_tiers": [],
+      "supports_reasoning_summaries": false,
+      "supports_search_tool": false
+    },
+    {
+      "support_verbosity": false,
+      "default_verbosity": null,
+      "apply_patch_tool_type": "freeform",
+      "web_search_tool_type": "text",
+      "input_modalities": [
+        "text"
+      ],
+      "supports_image_detail_original": false,
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 10000
+      },
+      "supports_parallel_tool_calls": true,
+      "context_window": 1000000,
+      "max_context_window": 1000000,
+      "auto_compact_token_limit": null,
+      "default_reasoning_summary": "none",
       "slug": "claude-opus-4-8",
       "display_name": "Claude Opus 4.8",
       "description": "Claude Opus 4.8 through the Anthropic Messages API.",
       "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        {
+          "effort": "low",
+          "description": "Lower latency and token use for narrow edits."
+        },
+        {
+          "effort": "medium",
+          "description": "Moderate reasoning for everyday coding."
+        },
+        {
+          "effort": "high",
+          "description": "Default Opus 4.8 reasoning for complex coding."
+        },
+        {
+          "effort": "xhigh",
+          "description": "Deeper reasoning for difficult implementation work."
+        },
+        {
+          "effort": "max",
+          "description": "Maximum adaptive reasoning; use when token spend is acceptable."
+        }
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "availability_nux": null,
+      "upgrade": null,
+      "priority": 0,
+      "base_instructions": "You are PFTerminal, a coding agent. Help the user complete software tasks in the current workspace. Be direct, inspect the code before changing it, keep edits scoped, and verify your work when practical. When searching, use rg or rg --files first. Never run recursive grep over a repo root; if rg is unavailable, restrict grep to source directories and exclude .git, target, node_modules, dist, build, .next, and vendor.",
+      "model_messages": null,
+      "experimental_supported_tools": [],
+      "service_tiers": [],
+      "additional_speed_tiers": [],
+      "supports_reasoning_summaries": false,
+      "supports_search_tool": false
+    },
+    {
+      "support_verbosity": false,
+      "default_verbosity": null,
+      "apply_patch_tool_type": "freeform",
+      "web_search_tool_type": "text",
+      "input_modalities": [
+        "text"
+      ],
+      "supports_image_detail_original": false,
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 10000
+      },
+      "supports_parallel_tool_calls": true,
+      "context_window": 1000000,
+      "max_context_window": 1000000,
+      "auto_compact_token_limit": null,
+      "default_reasoning_summary": "none",
+      "slug": "claude-fable-5",
+      "display_name": "Claude Fable 5",
+      "description": "Anthropic's most capable model, through the Anthropic Messages API.",
+      "default_reasoning_level": "xhigh",
       "supported_reasoning_levels": [
         {
           "effort": "low",

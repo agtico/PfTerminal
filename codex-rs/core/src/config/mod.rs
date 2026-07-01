@@ -102,6 +102,7 @@ use codex_model_provider_info::ZAI_ANTHROPIC_PROVIDER_ID;
 use codex_model_provider_info::ZAI_DEFAULT_MODEL;
 use codex_model_provider_info::ZAI_PROVIDER_ID;
 use codex_model_provider_info::built_in_model_providers;
+use codex_model_provider_info::is_claude_plan_model;
 use codex_model_provider_info::merge_configured_model_providers;
 use codex_models_manager::ModelsManagerConfig;
 use codex_protocol::config_types::AltScreenMode;
@@ -2496,15 +2497,13 @@ fn resolve_model_for_provider(model: Option<String>, model_provider_id: &str) ->
             _ => Some(ZAI_DEFAULT_MODEL.to_string()),
         },
         ANTHROPIC_PROVIDER_ID => match model {
-            Some(model)
-                if model.trim().starts_with("claude-") && model.trim() != CLAUDE_PLAN_MODEL =>
-            {
+            Some(model) if model.trim().starts_with("claude-") && !is_claude_plan_model(&model) => {
                 Some(model)
             }
             _ => Some(ANTHROPIC_DEFAULT_MODEL.to_string()),
         },
         CLAUDE_PLAN_PROVIDER_ID => match model {
-            Some(model) if model.trim() == CLAUDE_PLAN_MODEL => Some(model),
+            Some(model) if is_claude_plan_model(&model) => Some(model),
             _ => Some(CLAUDE_PLAN_MODEL.to_string()),
         },
         OPENROUTER_PROVIDER_ID | OPENROUTER_ANTHROPIC_PROVIDER_ID => match model {

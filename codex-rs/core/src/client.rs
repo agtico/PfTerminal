@@ -141,12 +141,12 @@ use codex_model_provider::SharedModelProvider;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::AMBIENT_DEFAULT_MODEL;
 use codex_model_provider_info::AMBIENT_LEGACY_GLM_5_2_FP8_MODEL;
-use codex_model_provider_info::CLAUDE_PLAN_MODEL;
-use codex_model_provider_info::CLAUDE_PLAN_UPSTREAM_MODEL;
 #[cfg(test)]
 use codex_model_provider_info::DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
+use codex_model_provider_info::claude_plan_upstream_model;
+use codex_model_provider_info::is_claude_plan_model;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result;
 use codex_response_debug_context::extract_response_debug_context;
@@ -1241,7 +1241,7 @@ impl ModelClient {
     ) -> Result<AnthropicMessagesRequest> {
         let mut system = Vec::new();
         let instructions = prompt.base_instructions.text.trim();
-        let is_claude_plan = model_info.slug.trim() == CLAUDE_PLAN_MODEL;
+        let is_claude_plan = is_claude_plan_model(&model_info.slug);
         if is_claude_plan {
             system.push(json!({
                 "type": "text",
@@ -2973,11 +2973,7 @@ fn chat_completions_upstream_model<'a>(model: &'a str, provider: &ModelProviderI
 }
 
 fn anthropic_upstream_model(model: &str) -> &str {
-    if model.trim() == CLAUDE_PLAN_MODEL {
-        CLAUDE_PLAN_UPSTREAM_MODEL
-    } else {
-        model
-    }
+    claude_plan_upstream_model(model).unwrap_or(model)
 }
 
 fn anthropic_model_uses_adaptive_effort(model: &str) -> bool {

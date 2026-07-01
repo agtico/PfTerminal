@@ -1248,3 +1248,67 @@ fn bundled_models_json_contains_openrouter_models() {
         ]
     );
 }
+
+#[test]
+fn bundled_models_json_contains_claude_fable_5() {
+    let response = crate::bundled_models_response()
+        .unwrap_or_else(|err| panic!("bundled models.json should parse: {err}"));
+
+    let claude_fable_plan = response
+        .models
+        .iter()
+        .find(|model| model.slug == "claude-fable-5-plan")
+        .expect("bundled models.json should include Claude Fable 5 Plan");
+
+    assert_eq!(claude_fable_plan.display_name, "Claude Fable 5 Plan");
+    assert_eq!(claude_fable_plan.context_window, Some(1_000_000));
+    assert_eq!(claude_fable_plan.max_context_window, Some(1_000_000));
+    assert_eq!(
+        claude_fable_plan.default_reasoning_level,
+        Some(ReasoningEffort::XHigh)
+    );
+    assert_eq!(
+        claude_fable_plan
+            .supported_reasoning_levels
+            .iter()
+            .map(|level| level.effort.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+            ReasoningEffort::XHigh,
+            ReasoningEffort::Custom("max".to_string()),
+        ]
+    );
+    assert_eq!(claude_fable_plan.visibility, ModelVisibility::List);
+
+    let claude_fable = response
+        .models
+        .iter()
+        .find(|model| model.slug == "claude-fable-5")
+        .expect("bundled models.json should include Claude Fable 5");
+
+    assert_eq!(claude_fable.display_name, "Claude Fable 5");
+    assert_eq!(claude_fable.context_window, Some(1_000_000));
+    assert_eq!(claude_fable.max_context_window, Some(1_000_000));
+    assert_eq!(
+        claude_fable.default_reasoning_level,
+        Some(ReasoningEffort::XHigh)
+    );
+    assert_eq!(
+        claude_fable
+            .supported_reasoning_levels
+            .iter()
+            .map(|level| level.effort.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+            ReasoningEffort::XHigh,
+            ReasoningEffort::Custom("max".to_string()),
+        ]
+    );
+    assert_eq!(claude_fable.visibility, ModelVisibility::List);
+}

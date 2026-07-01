@@ -13,6 +13,7 @@ use codex_model_provider_info::AMBIENT_KIMI_K2_7_CODE_MODEL;
 use codex_model_provider_info::AMBIENT_PROVIDER_ID;
 use codex_model_provider_info::ANTHROPIC_DEFAULT_MODEL;
 use codex_model_provider_info::BASETEN_DEFAULT_MODEL;
+use codex_model_provider_info::CLAUDE_FABLE_PLAN_MODEL;
 use codex_model_provider_info::CLAUDE_PLAN_MODEL;
 use codex_model_provider_info::OPENROUTER_DEFAULT_MODEL;
 use codex_model_provider_info::VERCEL_DEFAULT_MODEL;
@@ -2577,6 +2578,16 @@ async fn model_selection_popup_snapshot() {
 }
 
 #[tokio::test]
+async fn model_selection_popup_api_key_models_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some(ANTHROPIC_DEFAULT_MODEL)).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.open_model_popup();
+
+    let popup = render_bottom_popup_with_height(&chat, /*width*/ 100, /*height*/ 22);
+    assert_chatwidget_snapshot!("model_selection_popup_api_key_models", popup);
+}
+
+#[tokio::test]
 async fn personality_selection_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.3-codex")).await;
     chat.thread_id = Some(ThreadId::new());
@@ -2684,6 +2695,14 @@ async fn model_picker_hides_fake_openai_models_and_shows_curated_provider_models
         "expected Claude Plan row to explain subscription auth:\n{popup}"
     );
     assert!(
+        popup.contains(CLAUDE_FABLE_PLAN_MODEL),
+        "expected Claude Fable Plan to appear as a Codex-native /model option:\n{popup}"
+    );
+    assert!(
+        popup.contains("Claude Fable 5 through Claude Code subscription auth"),
+        "expected Claude Fable Plan row to explain subscription auth:\n{popup}"
+    );
+    assert!(
         popup.contains("API Key Models"),
         "expected API Key Models tab in /model picker:\n{popup}"
     );
@@ -2705,6 +2724,14 @@ async fn model_picker_hides_fake_openai_models_and_shows_curated_provider_models
     assert!(
         anthropic_popup.contains(ANTHROPIC_DEFAULT_MODEL),
         "expected Anthropic API-key model in /model picker:\n{anthropic_popup}"
+    );
+    assert!(
+        anthropic_popup.contains("claude-fable-5"),
+        "expected Claude Fable 5 API-key model in /model picker:\n{anthropic_popup}"
+    );
+    assert!(
+        anthropic_popup.contains("Anthropic's most capable model"),
+        "expected Claude Fable 5 description in API Key Models tab:\n{anthropic_popup}"
     );
     assert!(
         anthropic_popup.contains(OPENROUTER_DEFAULT_MODEL),

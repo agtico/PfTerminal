@@ -192,7 +192,7 @@ fn provider_credential_item(option: &ProviderCredentialOption) -> SelectionItem 
             actions: vec![Box::new(|tx| {
                 tx.send(AppEvent::InsertHistoryCell(Box::new(
                     history_cell::new_info_event(
-                        "Claude Code plan auth is managed by Claude Code. Run `claude auth` or `claude /login`, then choose `claude-opus-4-8-plan` from /model to use Opus 4.8 through the Codex harness.".to_string(),
+                        "Claude Code plan auth is managed by Claude Code. Run `claude auth` or `claude /login`, then choose `claude-opus-4-8-plan` or `claude-fable-5-plan` from /model to use a Claude subscription model through the Codex harness.".to_string(),
                         /*hint*/ None,
                     ),
                 )));

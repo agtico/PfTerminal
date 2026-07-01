@@ -1,0 +1,24 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+assertion_line: 2586
+expression: popup
+---
+  Select Model and Effort
+  Anthropic, OpenRouter, Baseten, and Vercel API-key models
+
+  Coding Plans  [API Key Models]
+
+› 1. claude-opus-4-8 (current)  Claude Opus 4.8 through the Anthropic Messages API.
+  2. claude-fable-5             Anthropic's most capable model, through the Anthropic Messages
+                                API.
+  3. zai-org/GLM-5.2            Baseten: GLM 5.2 - $1.50/M input, $0.30/M cached input, $4.50/M
+                                output.
+  4. zai/glm-5.2                Vercel: GLM 5.2 - $1.40/M input, $0.26/M cached input, $4.40/M
+                                output.
+  5. minimax/minimax-m3         OpenRouter: MiniMax M3 - $0.30/M input, $1.20/M output.
+  6. zai/glm-5.2-fast           Vercel: GLM 5.2 Fast - $3.00/M input, $0.50/M cached input,
+                                $10.25/M output.
+  7. openrouter/owl-alpha       OpenRouter: Owl Alpha - $0/M input, $0/M output.
+  8. google/gemini-3.5-flash    OpenRouter: Gemini 3.5 Flash - $1.50/M input, $9.00/M output.
+
+  Use Left/Right to switch groups. Press Enter to confirm or Esc to go back
