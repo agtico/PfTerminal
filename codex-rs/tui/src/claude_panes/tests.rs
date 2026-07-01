@@ -494,6 +494,53 @@ fn pane_layout_persistence_is_thread_scoped() {
 }
 
 #[test]
+fn pane_layout_load_finds_related_root_layout_for_native_spawn_thread() {
+    let codex_home = tempfile::tempdir().expect("codex home");
+    let root_thread = "019f1e4e-c71e-7e23-893f-ffb64b8744bb";
+    let nazgul_thread = "019f1e4e-f4f6-7ff3-892a-b836a10f2957";
+    let troll_thread = "019f1e4f-329f-7c81-a706-7ab5a03b705f";
+    let mut parents = BTreeMap::new();
+    parents.insert(
+        format!("thread:{nazgul_thread}"),
+        "pane:codex-main".to_string(),
+    );
+    parents.insert(
+        format!("thread:{troll_thread}"),
+        format!("thread:{nazgul_thread}"),
+    );
+    let root_layout = PaneLayoutState {
+        version: 0,
+        codex_thread_id: Some(root_thread.to_string()),
+        active_user_pane_id: Some("codex-main".to_string()),
+        spawn_nazgul_pane_id: Some(format!("thread:{nazgul_thread}")),
+        claude_pane_ids: Vec::new(),
+        spawn_parent_by_node: parents.clone(),
+    };
+    let empty_child_layout = PaneLayoutState {
+        version: 0,
+        codex_thread_id: Some(nazgul_thread.to_string()),
+        active_user_pane_id: Some("codex-main".to_string()),
+        spawn_nazgul_pane_id: None,
+        claude_pane_ids: Vec::new(),
+        spawn_parent_by_node: BTreeMap::new(),
+    };
+
+    persist_pane_layout(codex_home.path(), &root_layout).expect("persist root layout");
+    persist_pane_layout(codex_home.path(), &empty_child_layout)
+        .expect("persist empty child layout");
+
+    let restored =
+        load_pane_layout(codex_home.path(), Some(nazgul_thread)).expect("related root layout");
+
+    assert_eq!(restored.codex_thread_id.as_deref(), Some(root_thread));
+    assert_eq!(
+        restored.spawn_nazgul_pane_id.as_deref(),
+        Some(format!("thread:{nazgul_thread}").as_str())
+    );
+    assert_eq!(restored.spawn_parent_by_node, parents);
+}
+
+#[test]
 fn settings_json_uses_helper_without_secret_material() {
     let profile = ClaudeProviderProfileKind::ZaiGlm52.profile();
     let settings = settings_json_with_base_url(profile, Some("pfterminal"), None);

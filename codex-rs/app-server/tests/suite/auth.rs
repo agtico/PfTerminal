@@ -212,6 +212,7 @@ async fn get_auth_status_with_personal_access_token_omits_token() -> Result<()> 
             auth_method: Some(AuthMode::PersonalAccessToken),
             auth_token: None,
             requires_openai_auth: Some(true),
+            has_codex_backend_auth: Some(true),
         }
     );
 
@@ -248,6 +249,11 @@ async fn get_auth_status_with_api_key_when_auth_not_required() -> Result<()> {
         status.requires_openai_auth,
         Some(false),
         "requires_openai_auth should be false",
+    );
+    assert_eq!(
+        status.has_codex_backend_auth,
+        Some(false),
+        "api key auth is not backend auth",
     );
     Ok(())
 }
@@ -309,8 +315,43 @@ async fn get_auth_status_with_api_key_refresh_requested() -> Result<()> {
             auth_method: Some(AuthMode::ApiKey),
             auth_token: Some("sk-test-key".to_string()),
             requires_openai_auth: Some(true),
+            has_codex_backend_auth: Some(false),
         }
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn get_auth_status_reports_backend_auth_when_api_key_is_also_present() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_config_toml_custom_provider(codex_home.path(), /*requires_openai_auth*/ true)?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("chatgpt-access-token"),
+        AuthCredentialsStoreMode::File,
+    )?;
+
+    let mut mcp =
+        TestAppServer::new_with_env(codex_home.path(), &[("OPENAI_API_KEY", Some("sk-env-key"))])
+            .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_get_auth_status_request(GetAuthStatusParams {
+            include_token: Some(false),
+            refresh_token: Some(false),
+        })
+        .await?;
+
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let status: GetAuthStatusResponse = to_response(resp)?;
+    assert_eq!(status.auth_method, Some(AuthMode::Chatgpt));
+    assert_eq!(status.has_codex_backend_auth, Some(true));
+    assert_eq!(status.requires_openai_auth, Some(true));
     Ok(())
 }
 
@@ -373,6 +414,7 @@ async fn get_auth_status_omits_token_after_permanent_refresh_failure() -> Result
             auth_method: Some(AuthMode::Chatgpt),
             auth_token: None,
             requires_openai_auth: Some(true),
+            has_codex_backend_auth: Some(true),
         }
     );
 
@@ -455,6 +497,7 @@ async fn get_auth_status_omits_token_after_proactive_refresh_failure() -> Result
             auth_method: Some(AuthMode::Chatgpt),
             auth_token: None,
             requires_openai_auth: Some(true),
+            has_codex_backend_auth: Some(true),
         }
     );
 
@@ -522,6 +565,7 @@ async fn get_auth_status_returns_token_after_proactive_refresh_recovery() -> Res
             auth_method: Some(AuthMode::Chatgpt),
             auth_token: None,
             requires_openai_auth: Some(true),
+            has_codex_backend_auth: Some(true),
         }
     );
 
@@ -569,6 +613,7 @@ async fn get_auth_status_returns_token_after_proactive_refresh_recovery() -> Res
             auth_method: Some(AuthMode::Chatgpt),
             auth_token: Some("recovered-access-token".to_string()),
             requires_openai_auth: Some(true),
+            has_codex_backend_auth: Some(true),
         }
     );
 

@@ -291,6 +291,10 @@ const LOCAL_DEV_BUILD_VERSION: &str = "0.0.0";
 pub const CONFIG_TOML_FILE: &str = "config.toml";
 const CONFIG_PROFILE_V2_SUFFIX: &str = ".config.toml";
 
+fn is_local_or_debug_build(package_version: &str) -> bool {
+    package_version == LOCAL_DEV_BUILD_VERSION || cfg!(debug_assertions)
+}
+
 fn resolve_sqlite_home_env(resolved_cwd: &Path) -> Option<PathBuf> {
     let raw = std::env::var(codex_state::SQLITE_HOME_ENV).ok()?;
     let trimmed = raw.trim();
@@ -309,8 +313,8 @@ fn resolve_cli_auth_credentials_store_mode(
     configured: AuthCredentialsStoreMode,
     package_version: &str,
 ) -> AuthCredentialsStoreMode {
-    match (package_version, configured) {
-        (LOCAL_DEV_BUILD_VERSION, AuthCredentialsStoreMode::Keyring) => {
+    match (is_local_or_debug_build(package_version), configured) {
+        (true, AuthCredentialsStoreMode::Keyring | AuthCredentialsStoreMode::Auto) => {
             AuthCredentialsStoreMode::File
         }
         (_, mode) => mode,
@@ -321,11 +325,10 @@ fn resolve_mcp_oauth_credentials_store_mode(
     configured: OAuthCredentialsStoreMode,
     package_version: &str,
 ) -> OAuthCredentialsStoreMode {
-    match (package_version, configured) {
-        (
-            LOCAL_DEV_BUILD_VERSION,
-            OAuthCredentialsStoreMode::Keyring | OAuthCredentialsStoreMode::Auto,
-        ) => OAuthCredentialsStoreMode::File,
+    match (is_local_or_debug_build(package_version), configured) {
+        (true, OAuthCredentialsStoreMode::Keyring | OAuthCredentialsStoreMode::Auto) => {
+            OAuthCredentialsStoreMode::File
+        }
         (_, mode) => mode,
     }
 }
@@ -958,7 +961,7 @@ pub struct Config {
     /// Optional Plan-mode-specific reasoning effort override used by the TUI.
     ///
     /// When unset, Plan mode uses the built-in Plan preset default (currently
-    /// `medium`). When explicitly set (including `none`), this overrides the
+    /// `xhigh`). When explicitly set (including `none`), this overrides the
     /// Plan preset. The `none` value means "no reasoning" (not "inherit the
     /// global default").
     pub plan_mode_reasoning_effort: Option<ReasoningEffort>,
@@ -2552,7 +2555,7 @@ fn normalize_ambient_reasoning_effort(effort: ReasoningEffort) -> ReasoningEffor
         {
             ReasoningEffort::Custom(value)
         }
-        _ => ReasoningEffort::Medium,
+        _ => ReasoningEffort::XHigh,
     }
 }
 

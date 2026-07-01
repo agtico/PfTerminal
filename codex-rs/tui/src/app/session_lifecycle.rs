@@ -112,7 +112,7 @@ impl App {
                     is_primary,
                 );
                 let uuid = thread_id.to_string();
-                SelectionItem {
+                let mut item = SelectionItem {
                     name: name.clone(),
                     name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
                     description: Some(uuid.clone()),
@@ -123,7 +123,14 @@ impl App {
                     dismiss_on_select: true,
                     search_value: Some(format!("{name} {uuid}")),
                     ..Default::default()
+                };
+                if let Some(reason) = self.unloaded_agent_thread_reason(thread_id) {
+                    item.actions.clear();
+                    item.is_disabled = true;
+                    item.disabled_reason = Some(reason);
+                    item.dismiss_on_select = false;
                 }
+                item
             })
             .collect();
 
@@ -274,7 +281,7 @@ impl App {
         }
 
         let (session, turns, live_attached) = match app_server
-            .resume_thread(self.config.clone(), thread_id)
+            .resume_thread(self.config.clone(), thread_id, /*model_override*/ None)
             .await
         {
             Ok(started) => (started.session, started.turns, true),
@@ -397,8 +404,10 @@ impl App {
                 }
             }
         } else if !self.thread_event_channels.contains_key(&thread_id) && is_replay_only {
-            self.chat_widget
-                .add_error_message(format!("Agent thread {thread_id} is no longer available."));
+            let message = self
+                .unloaded_agent_thread_reason(thread_id)
+                .unwrap_or_else(|| format!("Agent thread {thread_id} is no longer available."));
+            self.chat_widget.add_error_message(message);
             return Ok(());
         }
 
@@ -528,6 +537,8 @@ impl App {
             Ok(started) => {
                 self.enqueue_primary_thread_session(started.session, started.turns)
                     .await?;
+                self.restore_native_spawn_panes_from_saved_state(app_server)
+                    .await;
                 self.chat_widget.maybe_send_next_queued_input();
             }
             Err(err) => {
@@ -641,7 +652,7 @@ impl App {
     /// by `find_loaded_subagent_threads_for_primary`. Each discovered subagent is registered via
     /// `upsert_agent_picker_thread`, which writes to both `AgentNavigationState` and the
     /// `ChatWidget` metadata map.
-    pub(super) async fn backfill_loaded_subagent_threads(
+    pub(crate) async fn backfill_loaded_subagent_threads(
         &mut self,
         app_server: &mut AppServerSession,
     ) -> bool {
@@ -796,7 +807,11 @@ impl App {
             self.chat_widget.rollout_path().as_deref(),
         );
         match app_server
-            .resume_thread(resume_config.clone(), target_session.thread_id)
+            .resume_thread(
+                resume_config.clone(),
+                target_session.thread_id,
+                /*model_override*/ None,
+            )
             .await
         {
             Ok(resumed) => {
@@ -816,6 +831,8 @@ impl App {
                     .await
                 {
                     Ok(()) => {
+                        self.restore_pane_layout_for_thread(app_server, resumed_thread_id)
+                            .await;
                         if let Some(summary) = summary {
                             let mut lines: Vec<Line<'static>> = Vec::new();
                             if let Some(usage_line) = summary.usage_line {

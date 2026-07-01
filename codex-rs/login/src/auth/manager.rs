@@ -1454,12 +1454,16 @@ async fn load_auth(
         keyring_backend_kind,
     );
     let auth_dot_json = match storage.load()? {
-        Some(auth) => auth,
-        None => return Ok(None),
+        Some(auth) if auth.has_primary_auth_material() => auth,
+        Some(_) | None => match load_pfterminal_legacy_codex_auth(
+            codex_home,
+            auth_credentials_store_mode,
+            keyring_backend_kind,
+        )? {
+            Some(auth) => auth,
+            None => return Ok(None),
+        },
     };
-    if !auth_dot_json.has_primary_auth_material() {
-        return Ok(None);
-    }
 
     let auth = CodexAuth::from_auth_dot_json(
         codex_home,
@@ -1474,6 +1478,39 @@ async fn load_auth(
         ensure_personal_access_token_workspace_allowed(forced_chatgpt_workspace_id, auth)?;
     }
     Ok(Some(auth))
+}
+
+fn load_pfterminal_legacy_codex_auth(
+    codex_home: &Path,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+) -> std::io::Result<Option<AuthDotJson>> {
+    let Some(legacy_codex_home) = pfterminal_legacy_codex_home(codex_home) else {
+        return Ok(None);
+    };
+    let storage = create_auth_storage(
+        legacy_codex_home.clone(),
+        auth_credentials_store_mode,
+        keyring_backend_kind,
+    );
+    let auth = storage
+        .load()?
+        .filter(AuthDotJson::has_primary_auth_material);
+    if auth.is_some() {
+        tracing::info!(
+            pfterminal_home = %codex_home.display(),
+            legacy_codex_home = %legacy_codex_home.display(),
+            "loaded legacy Codex auth for PFTerminal"
+        );
+    }
+    Ok(auth)
+}
+
+fn pfterminal_legacy_codex_home(codex_home: &Path) -> Option<PathBuf> {
+    if codex_home.file_name()? != ".pfterminal" {
+        return None;
+    }
+    Some(codex_home.parent()?.join(".codex"))
 }
 
 // Persist refreshed tokens into auth storage and update last_refresh.

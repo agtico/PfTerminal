@@ -23,6 +23,7 @@ most recently updated thread whose agent_role is nazgul (or the primary user thr
 Exit code: 0 = green run (A1-A8 product pass AND Q1-Q3 pass), 1 = report-delivery
 regression or product incomplete, 2 = could not identify a run.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -41,8 +42,14 @@ DISPATCH_TOOL_NAMES = {"spawn_agent", "send_input", "followup_task", "send_messa
 # A parent turn that follows a report is considered "acted on" if it ends with at
 # least one of: a dispatch tool call, an exec/read tool call (audit), or an assistant
 # message longer than a no-op acknowledgement.
-ACT_TOOL_NAMES = DISPATCH_TOOL_NAMES | {"exec_command", "shell_command", "read_mcp_resource"}
-NOOP_ACK_MAX_LEN = 120  # an "acknowledged / will wait" style message shorter than this is a drop
+ACT_TOOL_NAMES = DISPATCH_TOOL_NAMES | {
+    "exec_command",
+    "shell_command",
+    "read_mcp_resource",
+}
+NOOP_ACK_MAX_LEN = (
+    120  # an "acknowledged / will wait" style message shorter than this is a drop
+)
 
 
 @dataclass
@@ -70,7 +77,9 @@ class Pane:
 
 
 def codex_home_default() -> Path:
-    return Path(os.environ.get("PFTERMINAL_HOME") or os.path.expanduser("~/.pfterminal"))
+    return Path(
+        os.environ.get("PFTERMINAL_HOME") or os.path.expanduser("~/.pfterminal")
+    )
 
 
 def open_state_db(codex_home: Path) -> sqlite3.Connection:
@@ -107,7 +116,9 @@ def load_panes(con: sqlite3.Connection) -> dict[str, Pane]:
             rollout_path=Path(row["rollout_path"]),
             parent_thread_id=None,
         )
-    for row in con.execute("SELECT parent_thread_id, child_thread_id FROM thread_spawn_edges"):
+    for row in con.execute(
+        "SELECT parent_thread_id, child_thread_id FROM thread_spawn_edges"
+    ):
         child = panes.get(row["child_thread_id"])
         if child is not None:
             child.parent_thread_id = row["parent_thread_id"]
@@ -174,7 +185,12 @@ def find_run_root(panes: dict[str, Pane], requested: Optional[str]) -> Optional[
     # Prefer a thread whose agent_role is nazgul; else the most recently updated user thread.
     nazguls = [p for p in panes.values() if (p.role or "").lower() == "nazgul"]
     if nazguls:
-        return max(nazguls, key=lambda p: p.rollout_path.stat().st_mtime if p.rollout_path.is_file() else 0)
+        return max(
+            nazguls,
+            key=lambda p: (
+                p.rollout_path.stat().st_mtime if p.rollout_path.is_file() else 0
+            ),
+        )
     return None
 
 
@@ -233,7 +249,9 @@ def analyze(panes: dict[str, Pane], root: Pane) -> dict:
             parent_turn = first_turn_after(parent, ct.completed_at)
             # Allow a small grace: the report turn may start a hair before the
             # child's recorded completion if timestamps are coarse. Match by prompt.
-            became_turn = parent_turn is not None and is_report_processing_turn(parent_turn)
+            became_turn = parent_turn is not None and is_report_processing_turn(
+                parent_turn
+            )
             # Was the parent busy when the child completed? (mid-turn race)
             parent_busy_at_delivery = any(
                 pt.started_at <= ct.completed_at
@@ -241,16 +259,20 @@ def analyze(panes: dict[str, Pane], root: Pane) -> dict:
                 for pt in parent.turns
             )
             acted = parent_turn is not None and turn_acted(parent_turn)
-            q1["cycles"].append({
-                "child": _label(child),
-                "parent": _label(parent),
-                "child_turn_id": ct.turn_id,
-                "child_completed_at": ct.completed_at,
-                "parent_report_turn_id": parent_turn.turn_id if parent_turn else None,
-                "report_became_turn": became_turn,
-                "parent_busy_at_delivery": parent_busy_at_delivery,
-                "parent_acted": acted,
-            })
+            q1["cycles"].append(
+                {
+                    "child": _label(child),
+                    "parent": _label(parent),
+                    "child_turn_id": ct.turn_id,
+                    "child_completed_at": ct.completed_at,
+                    "parent_report_turn_id": parent_turn.turn_id
+                    if parent_turn
+                    else None,
+                    "report_became_turn": became_turn,
+                    "parent_busy_at_delivery": parent_busy_at_delivery,
+                    "parent_acted": acted,
+                }
+            )
             if not became_turn:
                 q1["pass"] = False
 
@@ -263,7 +285,10 @@ def analyze(panes: dict[str, Pane], root: Pane) -> dict:
             ):
                 rework_loops += 1
     nazgul_audited = any(
-        any(tc in {"exec_command", "shell_command", "read_mcp_resource"} for tc in t.tool_calls)
+        any(
+            tc in {"exec_command", "shell_command", "read_mcp_resource"}
+            for tc in t.tool_calls
+        )
         for t in nazgul.turns
     )
     q2 = {
@@ -275,7 +300,9 @@ def analyze(panes: dict[str, Pane], root: Pane) -> dict:
     # ---- Q3: mid-turn race — reports to a busy parent still get a turn ----
     race_cycles = [c for c in q1["cycles"] if c["parent_busy_at_delivery"]]
     q3 = {
-        "pass": all(c["report_became_turn"] for c in race_cycles) if race_cycles else False,
+        "pass": all(c["report_became_turn"] for c in race_cycles)
+        if race_cycles
+        else False,
         "race_cycle_count": len(race_cycles),
         "all_flushed": all(c["report_became_turn"] for c in race_cycles),
     }
@@ -288,9 +315,7 @@ def analyze(panes: dict[str, Pane], root: Pane) -> dict:
     # run reached a Nazgul sign-off (ACCEPTANCE.md mentioned in a Nazgul turn) ----
     nazgul_signoff = any(
         "ACCEPTANCE" in (t.last_agent_message or "") for t in nazgul.turns
-    ) or any(
-        "ACCEPTANCE" in p for t in nazgul.turns for p in t.trigger_prompts
-    )
+    ) or any("ACCEPTANCE" in p for t in nazgul.turns for p in t.trigger_prompts)
     total_turns = sum(len(p.turns) for p in [nazgul, *trolls, *orcs])
     product = {
         "pass": nazgul_signoff and total_turns >= 6,
@@ -337,7 +362,9 @@ def render_md(report: dict) -> str:
     q1 = report["Q1_report_became_turn"]
     out.append("## Q1 — Did every child→parent report trigger a real turn?")
     out.append(f"**Pass: {q1['pass']}**\n")
-    out.append("| child | parent | child turn | parent report turn | became turn | parent busy | acted |")
+    out.append(
+        "| child | parent | child turn | parent report turn | became turn | parent busy | acted |"
+    )
     out.append("|---|---|---|---|---|---|---|")
     for c in q1["cycles"]:
         out.append(
@@ -353,13 +380,17 @@ def render_md(report: dict) -> str:
 
     q2 = report["Q2_manager_acted"]
     out.append("## Q2 — Did managers act on reports?")
-    out.append(f"**Pass: {q2['pass']}** (rework dispatches={q2['rework_dispatches']}, "
-               f"nazgul audited code={q2['nazgul_audited_code']})\n")
+    out.append(
+        f"**Pass: {q2['pass']}** (rework dispatches={q2['rework_dispatches']}, "
+        f"nazgul audited code={q2['nazgul_audited_code']})\n"
+    )
 
     q3 = report["Q3_mid_turn_race"]
     out.append("## Q3 — Mid-turn race held?")
-    out.append(f"**Pass: {q3['pass']}** (race cycles={q3['race_cycle_count']}, "
-               f"all flushed={q3['all_flushed']})")
+    out.append(
+        f"**Pass: {q3['pass']}** (race cycles={q3['race_cycle_count']}, "
+        f"all flushed={q3['all_flushed']})"
+    )
     if q3.get("note"):
         out.append(f"_Note: {q3['note']}_")
     return "\n".join(out) + "\n"
@@ -371,7 +402,9 @@ def _md_label(d: dict) -> str:
 
 
 def main(argv: list[str]) -> int:
-    ap = argparse.ArgumentParser(description="PFTerminal spawn report-delivery verifier")
+    ap = argparse.ArgumentParser(
+        description="PFTerminal spawn report-delivery verifier"
+    )
     ap.add_argument("--codex-home", default=str(codex_home_default()))
     ap.add_argument("--root", help="Nazgul/root thread id of the run to analyze")
     ap.add_argument("--out", help="Write machine-readable JSON report to this path")
@@ -392,7 +425,10 @@ def main(argv: list[str]) -> int:
         parse_rollout(p)
     root = find_run_root(panes, args.root)
     if root is None:
-        print("could not identify a run (no nazgul-role thread and no --root given)", file=sys.stderr)
+        print(
+            "could not identify a run (no nazgul-role thread and no --root given)",
+            file=sys.stderr,
+        )
         return 2
     report = analyze(panes, root)
     text = json.dumps(report, indent=2, default=str)

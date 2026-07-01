@@ -33,6 +33,8 @@ use codex_app_server_protocol::ExternalAgentConfigMigrationItem;
 use codex_app_server_protocol::GetAccountParams;
 use codex_app_server_protocol::GetAccountRateLimitsResponse;
 use codex_app_server_protocol::GetAccountResponse;
+use codex_app_server_protocol::GetAuthStatusParams;
+use codex_app_server_protocol::GetAuthStatusResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::LogoutAccountResponse;
 use codex_app_server_protocol::MemoryResetResponse;
@@ -109,6 +111,9 @@ use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnSteerParams;
 use codex_app_server_protocol::TurnSteerResponse;
 use codex_app_server_protocol::UserInput;
+use codex_login::AuthDotJson;
+use codex_login::AuthManagerConfig;
+use codex_login::load_auth_dot_json;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::ThreadId;
 use codex_protocol::approvals::GuardianAssessmentEvent;
@@ -151,6 +156,53 @@ fn is_thread_settings_update_unsupported(source: &JSONRPCErrorError) -> bool {
             && source.message.contains(THREAD_SETTINGS_UPDATE_METHOD))
 }
 
+fn stored_auth_has_codex_backend_auth(config: &Config) -> bool {
+    if stored_auth_at_path_has_codex_backend_auth(config, config.codex_home.as_path()) {
+        return true;
+    }
+    pfterminal_legacy_codex_home(config.codex_home.as_path())
+        .as_deref()
+        .is_some_and(|path| stored_auth_at_path_has_codex_backend_auth(config, path))
+}
+
+fn stored_auth_at_path_has_codex_backend_auth(
+    config: &Config,
+    codex_home: &std::path::Path,
+) -> bool {
+    match load_auth_dot_json(
+        codex_home,
+        config.cli_auth_credentials_store_mode,
+        AuthManagerConfig::auth_keyring_backend_kind(config),
+    ) {
+        Ok(Some(auth)) => auth_dot_json_has_codex_backend_auth(&auth),
+        Ok(None) => false,
+        Err(err) => {
+            tracing::warn!("failed to inspect stored auth during TUI bootstrap: {err}");
+            false
+        }
+    }
+}
+
+fn pfterminal_legacy_codex_home(codex_home: &std::path::Path) -> Option<PathBuf> {
+    if codex_home.file_name()? != ".pfterminal" {
+        return None;
+    }
+    Some(codex_home.parent()?.join(".codex"))
+}
+
+fn auth_dot_json_has_codex_backend_auth(auth: &AuthDotJson) -> bool {
+    if let Some(mode) = auth.auth_mode {
+        return mode.uses_codex_backend();
+    }
+    if auth.personal_access_token.is_some() || auth.agent_identity.is_some() {
+        return true;
+    }
+    if auth.openai_api_key.is_some() || auth.bedrock_api_key.is_some() {
+        return false;
+    }
+    auth.tokens.is_some()
+}
+
 /// Data collected during the TUI bootstrap phase that the main event loop
 /// needs to configure the UI, telemetry, and initial rate-limit prefetch.
 ///
@@ -167,6 +219,7 @@ pub(crate) struct AppServerBootstrap {
     /// with `has_chatgpt_account` to decide if a startup rate-limit prefetch
     /// should be fired.
     pub(crate) requires_openai_auth: bool,
+    pub(crate) has_codex_backend_auth: bool,
     pub(crate) default_model: String,
     pub(crate) feedback_audience: FeedbackAudience,
     pub(crate) has_chatgpt_account: bool,
@@ -197,6 +250,12 @@ impl ThreadParamsMode {
             Self::Remote => None,
         }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ResumeModelOverride {
+    pub(crate) model: Option<String>,
+    pub(crate) model_provider: Option<String>,
 }
 
 #[derive(Debug)]
@@ -263,6 +322,13 @@ impl AppServerSession {
     pub(crate) async fn bootstrap(&mut self, config: &Config) -> Result<AppServerBootstrap> {
         let started_at = Instant::now();
         let account = self.read_account().await?;
+        let auth_status = match self.read_auth_status().await {
+            Ok(status) => Some(status),
+            Err(err) => {
+                tracing::warn!("auth/status read failed during TUI bootstrap: {err}");
+                None
+            }
+        };
         let model_request_id = self.next_request_id();
         let models: ModelListResponse = self
             .client
@@ -303,7 +369,7 @@ impl AppServerSession {
             status_account_display,
             plan_type,
             feedback_audience,
-            has_chatgpt_account,
+            account_has_chatgpt_account,
         ) = match account.account {
             Some(Account::ApiKey {}) => (
                 None,
@@ -336,13 +402,31 @@ impl AppServerSession {
             }
             None => (None, None, None, None, FeedbackAudience::External, false),
         };
+        let auth_status_mode = auth_status.as_ref().and_then(|status| status.auth_method);
+        let account_has_codex_backend_auth = matches!(auth_mode, Some(TelemetryAuthMode::Chatgpt));
+        let server_has_codex_backend_auth = auth_status
+            .as_ref()
+            .and_then(|status| status.has_codex_backend_auth)
+            .or_else(|| auth_status_mode.map(AuthMode::uses_codex_backend))
+            .unwrap_or(account_has_codex_backend_auth);
+        let has_codex_backend_auth =
+            server_has_codex_backend_auth || stored_auth_has_codex_backend_auth(config);
+        let has_chatgpt_account = auth_status_mode
+            .map(AuthMode::has_chatgpt_account)
+            .unwrap_or(account_has_chatgpt_account);
+        let auth_mode = auth_status_mode.map(TelemetryAuthMode::from).or(auth_mode);
+        let requires_openai_auth = auth_status
+            .as_ref()
+            .and_then(|status| status.requires_openai_auth)
+            .unwrap_or(account.requires_openai_auth);
         Ok(AppServerBootstrap {
             duration: started_at.elapsed(),
             account_email,
             auth_mode,
             status_account_display,
             plan_type,
-            requires_openai_auth: account.requires_openai_auth,
+            requires_openai_auth,
+            has_codex_backend_auth,
             default_model,
             feedback_audience,
             has_chatgpt_account,
@@ -365,6 +449,22 @@ impl AppServerSession {
             })
             .await
             .map_err(|err| bootstrap_request_error("account/read failed during TUI bootstrap", err))
+    }
+
+    pub(crate) async fn read_auth_status(&mut self) -> Result<GetAuthStatusResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::GetAuthStatus {
+                request_id,
+                params: GetAuthStatusParams {
+                    include_token: Some(false),
+                    refresh_token: Some(false),
+                },
+            })
+            .await
+            .map_err(|err| {
+                bootstrap_request_error("account-auth/read failed during TUI bootstrap", err)
+            })
     }
 
     pub(crate) async fn external_agent_config_detect(
@@ -504,6 +604,7 @@ impl AppServerSession {
         &mut self,
         config: Config,
         thread_id: ThreadId,
+        model_override: Option<ResumeModelOverride>,
     ) -> Result<AppServerStartedThread> {
         let request_id = self.next_request_id();
         let session_config = self.session_config_with_effective_service_tier(&config);
@@ -516,6 +617,7 @@ impl AppServerSession {
                     thread_id,
                     self.thread_params_mode(),
                     self.remote_cwd_override.as_deref(),
+                    model_override,
                 ),
             })
             .await
@@ -1347,6 +1449,16 @@ fn config_request_overrides_from_config(
     Some(overrides)
 }
 
+fn remove_model_resume_overrides(
+    overrides: Option<HashMap<String, serde_json::Value>>,
+) -> Option<HashMap<String, serde_json::Value>> {
+    let mut overrides = overrides?;
+    overrides.remove("model_reasoning_effort");
+    overrides.remove("model_reasoning_summary");
+    overrides.remove("model_verbosity");
+    (!overrides.is_empty()).then_some(overrides)
+}
+
 fn service_tier_override_from_config(config: &Config) -> Option<Option<String>> {
     config.service_tier.clone().map(Some).or_else(|| {
         (config.notices.fast_default_opt_out == Some(true))
@@ -1468,6 +1580,7 @@ fn thread_resume_params_from_config(
     thread_id: ThreadId,
     thread_params_mode: ThreadParamsMode,
     remote_cwd_override: Option<&std::path::Path>,
+    model_override: Option<ResumeModelOverride>,
 ) -> ThreadResumeParams {
     let permissions = permissions_selection_from_config(&config, thread_params_mode);
     let sandbox = permissions
@@ -1479,10 +1592,18 @@ fn thread_resume_params_from_config(
             )
         })
         .flatten();
+    let config_overrides = match model_override.as_ref() {
+        Some(_) => config_request_overrides_from_config(&config),
+        None => remove_model_resume_overrides(config_request_overrides_from_config(&config)),
+    };
     ThreadResumeParams {
         thread_id: thread_id.to_string(),
-        model: config.model.clone(),
-        model_provider: thread_params_mode.model_provider_from_config(&config),
+        model: model_override
+            .as_ref()
+            .and_then(|value| value.model.clone()),
+        model_provider: model_override
+            .as_ref()
+            .and_then(|value| value.model_provider.clone()),
         service_tier: service_tier_override_from_config(&config),
         cwd: thread_cwd_from_config(&config, thread_params_mode, remote_cwd_override),
         runtime_workspace_roots: Some(config.workspace_roots.clone()),
@@ -1490,7 +1611,7 @@ fn thread_resume_params_from_config(
         approvals_reviewer: approvals_reviewer_override_from_config(&config),
         sandbox,
         permissions,
-        config: config_request_overrides_from_config(&config),
+        config: config_overrides,
         developer_instructions: with_terminal_visualization_instructions(
             &config, /*control_instructions*/ None,
         ),
@@ -1853,6 +1974,31 @@ mod tests {
             .expect("config should build")
     }
 
+    #[test]
+    fn auth_dot_json_backend_detection_honors_explicit_chatgpt_mode() {
+        let auth = AuthDotJson {
+            auth_mode: Some(AuthMode::Chatgpt),
+            openai_api_key: Some("sk-test-key".to_string()),
+            tokens: None,
+            last_refresh: None,
+            agent_identity: None,
+            personal_access_token: None,
+            bedrock_api_key: None,
+        };
+        assert!(auth_dot_json_has_codex_backend_auth(&auth));
+
+        let auth = AuthDotJson {
+            auth_mode: Some(AuthMode::ApiKey),
+            openai_api_key: Some("sk-test-key".to_string()),
+            tokens: None,
+            last_refresh: None,
+            agent_identity: None,
+            personal_access_token: None,
+            bedrock_api_key: None,
+        };
+        assert!(!auth_dot_json_has_codex_backend_auth(&auth));
+    }
+
     fn rate_limit_snapshot(limit_id: &str) -> RateLimitSnapshot {
         RateLimitSnapshot {
             limit_id: Some(limit_id.to_string()),
@@ -2077,6 +2223,7 @@ mod tests {
             thread_id,
             ThreadParamsMode::Remote,
             /*remote_cwd_override*/ None,
+            /*model_override*/ None,
         );
         let fork = thread_fork_params_from_config(
             config,
@@ -2194,6 +2341,7 @@ mod tests {
             thread_id,
             ThreadParamsMode::Remote,
             Some(remote_cwd.as_path()),
+            /*model_override*/ None,
         );
         let fork = thread_fork_params_from_config(
             config,
@@ -2222,6 +2370,7 @@ mod tests {
     async fn thread_lifecycle_params_forward_config_overrides_and_service_tier() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let mut config = build_config(&temp_dir).await;
+        config.model = Some("current-config-model".to_string());
         config.model_reasoning_effort = Some(ReasoningEffort::High);
         config.model_reasoning_summary = Some(ReasoningSummary::Detailed);
         config.model_verbosity = Some(Verbosity::Low);
@@ -2246,6 +2395,7 @@ mod tests {
             thread_id,
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
+            /*model_override*/ None,
         );
         let fork = thread_fork_params_from_config(
             config,
@@ -2268,9 +2418,48 @@ mod tests {
             ("bypass_hook_trust".to_string(), true.into()),
             ("agents.max_depth".to_string(), serde_json::json!(7)),
         ]);
+        let expected_resume_config = HashMap::from([
+            ("personality".to_string(), string("pragmatic")),
+            ("web_search".to_string(), string("disabled")),
+            ("bypass_hook_trust".to_string(), true.into()),
+            ("agents.max_depth".to_string(), serde_json::json!(7)),
+        ]);
         assert_eq!(start.config, Some(expected_config.clone()));
-        assert_eq!(resume.config, Some(expected_config.clone()));
+        assert_eq!(resume.model, None);
+        assert_eq!(resume.model_provider, None);
+        assert_eq!(resume.config, Some(expected_resume_config));
         assert_eq!(fork.config, Some(expected_config));
+    }
+
+    #[tokio::test]
+    async fn thread_resume_params_forward_explicit_model_override() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let mut config = build_config(&temp_dir).await;
+        config.model = Some("override-model".to_string());
+        config.model_reasoning_effort = Some(ReasoningEffort::High);
+        let thread_id = ThreadId::new();
+        let model_provider = config.model_provider_id.clone();
+
+        let params = thread_resume_params_from_config(
+            config,
+            thread_id,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+            Some(ResumeModelOverride {
+                model: Some("override-model".to_string()),
+                model_provider: Some(model_provider.clone()),
+            }),
+        );
+
+        assert_eq!(params.model.as_deref(), Some("override-model"));
+        assert_eq!(params.model_provider, Some(model_provider));
+        assert_eq!(
+            params
+                .config
+                .as_ref()
+                .and_then(|config| config.get("model_reasoning_effort")),
+            Some(&serde_json::Value::String("high".to_string()))
+        );
     }
 
     #[tokio::test]
@@ -2334,6 +2523,7 @@ mod tests {
             thread_id,
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
+            /*model_override*/ None,
         );
         let control_fork = thread_fork_params_from_config(
             config.clone(),
@@ -2363,6 +2553,7 @@ mod tests {
             thread_id,
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
+            /*model_override*/ None,
         );
         let treatment_fork = thread_fork_params_from_config(
             config,
