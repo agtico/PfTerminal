@@ -39,6 +39,7 @@ from typing import Optional
 REPORT_PROMPT_PREFIX = "A child pane has reported back"
 MULTI_REPORT_PROMPT_PREFIX = "Multiple child panes have reported back"
 DISPATCH_TOOL_NAMES = {"spawn_agent", "send_input", "followup_task", "send_message"}
+SEND_TASK_BLOCK_MARKER = "<pfterminal_send_task"
 # A parent turn that follows a report is considered "acted on" if it ends with at
 # least one of: a dispatch tool call, an exec/read tool call (audit), or an assistant
 # message longer than a no-op acknowledgement.
@@ -198,12 +199,22 @@ def children_of(panes: dict[str, Pane], parent_id: str) -> list[Pane]:
     return [p for p in panes.values() if p.parent_thread_id == parent_id]
 
 
-def first_turn_after(pane: Pane, when: float) -> Optional[Turn]:
-    """First turn that starts at or just before `when` with timestamp grace."""
+def first_report_turn_after(pane: Pane, when: float) -> Optional[Turn]:
+    """First report-processing turn after `when`, falling back to the first candidate turn.
+
+    A child can complete while its parent is already busy. In that race, the busy parent turn may
+    have started inside the timestamp grace window but it is not the queued report-processing turn.
+    Keep scanning for the report prompt so Q3 verifies the actual flush instead of the pre-existing
+    busy turn.
+    """
+    first_candidate: Optional[Turn] = None
     for t in pane.turns:
         if t.started_at >= when - 1.0:
-            return t
-    return None
+            if first_candidate is None:
+                first_candidate = t
+            if is_report_processing_turn(t):
+                return t
+    return first_candidate
 
 
 def is_report_processing_turn(turn: Turn) -> bool:
@@ -214,12 +225,18 @@ def is_report_processing_turn(turn: Turn) -> bool:
 
 
 def turn_acted(turn: Turn) -> bool:
-    if any(tc in ACT_TOOL_NAMES for tc in turn.tool_calls):
+    if any(tc in ACT_TOOL_NAMES for tc in turn.tool_calls) or turn_has_dispatch(turn):
         return True
     lam = (turn.last_agent_message or "").strip()
     if lam and len(lam) > NOOP_ACK_MAX_LEN:
         return True
     return False
+
+
+def turn_has_dispatch(turn: Turn) -> bool:
+    if any(tc in DISPATCH_TOOL_NAMES for tc in turn.tool_calls):
+        return True
+    return SEND_TASK_BLOCK_MARKER in (turn.last_agent_message or "")
 
 
 def analyze(panes: dict[str, Pane], root: Pane) -> dict:
@@ -246,7 +263,7 @@ def analyze(panes: dict[str, Pane], root: Pane) -> dict:
         for ct in child.turns:
             if ct.completed_at is None:
                 continue
-            parent_turn = first_turn_after(parent, ct.completed_at)
+            parent_turn = first_report_turn_after(parent, ct.completed_at)
             # Allow a small grace: the report turn may start a hair before the
             # child's recorded completion if timestamps are coarse. Match by prompt.
             became_turn = parent_turn is not None and is_report_processing_turn(
@@ -280,9 +297,7 @@ def analyze(panes: dict[str, Pane], root: Pane) -> dict:
     rework_loops = 0
     for parent in trolls + [nazgul]:
         for t in parent.turns:
-            if is_report_processing_turn(t) and any(
-                tc in DISPATCH_TOOL_NAMES for tc in t.tool_calls
-            ):
+            if is_report_processing_turn(t) and turn_has_dispatch(t):
                 rework_loops += 1
     nazgul_audited = any(
         any(

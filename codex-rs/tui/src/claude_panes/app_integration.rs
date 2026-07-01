@@ -281,7 +281,9 @@ impl App {
                 )));
             }
             if let Some(audit_path) = audit_path {
-                let status = status.map(|status| status.label()).unwrap_or("unknown");
+                let status = status
+                    .map(super::pane::ClaudePaneTurnStatus::label)
+                    .unwrap_or("unknown");
                 entry.push(Arc::new(crate::history_cell::new_info_event(
                     "Restored Claude pane state.".to_string(),
                     Some(format!(
@@ -382,7 +384,7 @@ impl App {
 
     pub(crate) async fn create_spawn_claude_pane(
         &mut self,
-        tui: &mut tui::Tui,
+        _tui: &mut tui::Tui,
         role: SpawnRole,
         parent_node_id: Option<String>,
         profile: ClaudeProviderProfileKind,
@@ -393,7 +395,6 @@ impl App {
             );
             return;
         }
-        self.save_active_claude_pane_transcript();
         let spawn_nickname = self.next_spawn_agent_nickname(role);
         match self.claude_panes.create_pane_with_role(
             profile,
@@ -403,28 +404,28 @@ impl App {
             spawn_nickname.clone(),
         ) {
             Ok(id) => {
-                self.detach_active_thread_for_external_pane().await;
+                // Spawned workers are background children: the operator's
+                // control surface stays where it is. Switching focus into the
+                // new pane caused follow-up control-plane input to be routed
+                // into the worker (round-3 B5 failure mode).
                 self.claude_pane_transcript_cells
                     .entry(id.clone())
                     .or_default();
-                if let Err(err) = self.restore_claude_pane_transcript(tui, &id) {
-                    self.chat_widget.add_error_message(format!(
-                        "Failed to initialize Claude spawn pane display: {err}"
-                    ));
-                }
                 let title = claude_pane_title(profile, Some(role), spawn_nickname.as_deref());
                 let logical_parent_node_id =
                     self.logical_parent_node_for_spawn(role, parent_node_id.as_deref());
                 self.spawn_parent_by_node.insert(
                     crate::spawn_orchestration::pane_node_id(&id),
-                    logical_parent_node_id,
+                    logical_parent_node_id.clone(),
                 );
                 self.sync_active_agent_label();
                 self.persist_pane_state();
+                self.persist_claude_spawn_pane_state(&id, &logical_parent_node_id)
+                    .await;
                 self.chat_widget.add_info_message(
-                    format!("Created and switched to {title}."),
+                    format!("Created {title} as a background worker."),
                     Some(format!(
-                        "Harness: Claude Code; role: {}; no task was started.",
+                        "Harness: Claude Code; role: {}; control stays on the current pane (use /panes to open it); no task was started.",
                         role.label()
                     )),
                 );
@@ -473,6 +474,13 @@ impl App {
                 return true;
             }
         };
+        // Control-plane guard: slash commands act on PFTerminal itself, never
+        // on the active worker pane. Without this, a recognized command that
+        // reaches the op path while a Claude pane is active is forwarded to
+        // the worker as task text (the round-3 B5 failure mode).
+        if self.chat_widget.try_dispatch_slash_input(&prompt) {
+            return true;
+        }
         let prompt_context = self.claude_pane_prompt_context(&pane_id);
         let prompt = compose_claude_pane_prompt(prompt, prompt_context.as_deref());
         let prepared =
@@ -516,7 +524,7 @@ impl App {
         self.claude_panes
             .set_latest_task_message(&pane_id, Some(task.clone()));
         let prompt_context = self.claude_pane_prompt_context(&pane_id);
-        let prompt = compose_claude_pane_prompt(task, prompt_context.as_deref());
+        let prompt = compose_claude_pane_prompt(task.clone(), prompt_context.as_deref());
         let prepared =
             match self
                 .claude_panes
@@ -528,6 +536,7 @@ impl App {
                     return;
                 }
             };
+        self.record_claude_spawn_rollout_task_started(&pane_id, &task, prepared.plan.turn_index);
 
         if self.claude_panes.active_user_pane_id() == pane_id {
             self.chat_widget.begin_external_pane_turn();
@@ -565,18 +574,18 @@ impl App {
                 self.dispatch_spawn_task_blocks(&progress.pane_id, dispatches);
             }
         }
-        if let Some(status) = self.claude_panes.update_live_progress(&progress) {
-            if is_active {
-                if progress.phase == "assistant-text"
-                    && let Some(delta) = self
-                        .claude_panes
-                        .take_visible_assistant_transcript_delta(&progress.pane_id)
-                {
-                    self.chat_widget.stream_external_pane_response_delta(delta);
-                }
-                self.chat_widget
-                    .update_external_pane_live_status(status.header, status.details);
+        if let Some(status) = self.claude_panes.update_live_progress(&progress)
+            && is_active
+        {
+            if progress.phase == "assistant-text"
+                && let Some(delta) = self
+                    .claude_panes
+                    .take_visible_assistant_transcript_delta(&progress.pane_id)
+            {
+                self.chat_widget.stream_external_pane_response_delta(delta);
             }
+            self.chat_widget
+                .update_external_pane_live_status(status.header, status.details);
         }
     }
 
@@ -612,6 +621,7 @@ impl App {
                 } else {
                     output.text.clone()
                 };
+                self.record_claude_spawn_rollout_task_completed(&pane_id, &output);
                 self.record_spawn_child_report_for_claude_pane(
                     &pane_id,
                     &report_status,

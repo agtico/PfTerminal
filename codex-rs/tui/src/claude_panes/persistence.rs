@@ -10,6 +10,7 @@ use std::time::UNIX_EPOCH;
 
 use anyhow::Context;
 use anyhow::Result;
+use codex_protocol::ThreadId;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
@@ -85,7 +86,7 @@ pub(crate) fn restore_claude_pane_from_dir(
     let profile = persisted
         .as_ref()
         .map(|metadata| metadata.profile)
-        .or_else(|| audit.and_then(|audit| profile_from_audit(audit)))
+        .or_else(|| audit.and_then(profile_from_audit))
         .or_else(|| profile_from_settings(&artifact_dir))?;
     let title = persisted
         .as_ref()
@@ -102,6 +103,10 @@ pub(crate) fn restore_claude_pane_from_dir(
         .as_ref()
         .and_then(|metadata| metadata.spawn_nickname.clone())
         .or(fallback_nickname);
+    let spawn_thread_id = persisted
+        .as_ref()
+        .and_then(|metadata| metadata.spawn_thread_id.as_deref())
+        .and_then(|thread_id| ThreadId::from_string(thread_id).ok());
     let cwd = persisted
         .as_ref()
         .map(|metadata| metadata.cwd.clone())
@@ -138,6 +143,7 @@ pub(crate) fn restore_claude_pane_from_dir(
         profile,
         spawn_role,
         spawn_nickname,
+        spawn_thread_id,
         cwd,
         claude_session_id: persisted
             .as_ref()
@@ -192,6 +198,7 @@ pub(crate) fn persist_claude_pane_metadata(pane: &ClaudePane) -> Result<()> {
         profile: pane.profile,
         spawn_role: pane.spawn_role.map(spawn_role_persisted_value),
         spawn_nickname: pane.spawn_nickname.clone(),
+        spawn_thread_id: pane.spawn_thread_id.map(|thread_id| thread_id.to_string()),
         cwd: pane.cwd.clone(),
         claude_session_id: pane.claude_session_id.clone(),
         latest_usage_summary: pane.latest_usage_summary.clone(),

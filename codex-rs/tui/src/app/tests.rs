@@ -2113,8 +2113,7 @@ async fn troll_spawn_task_submission_names_existing_orc_panes() {
     assert!(task.contains("Ghash [orc]"));
     assert!(task.contains(&ghash_thread_id.to_string()));
     assert!(task.contains("Do not call spawn_agent"));
-    assert!(task.contains("followup_task"));
-    assert!(task.contains("send_input"));
+    assert!(task.contains("pfterminal_send_task"));
     assert!(task.contains("Task from Sauron/Nazgul:"));
     assert!(task.ends_with("Build the site and review it."));
 }
@@ -3309,6 +3308,131 @@ async fn claude_orc_completion_is_reported_to_native_troll_context() {
     assert!(context.contains("Recent child reports delivered to this pane:"));
     assert!(context.contains("Claude Code Snaga [orc] - Opus 4.8 Claude Plan; status=success"));
     assert!(context.contains("result=Finished the latency benchmark table and saved the output."));
+}
+
+#[tokio::test]
+async fn bound_nazgul_root_persists_role_metadata_to_state_db() {
+    let mut app = make_test_app().await;
+    let codex_home = tempdir().expect("codex home");
+    app.config.codex_home = codex_home.path().to_path_buf().abs();
+    app.config.sqlite_home = codex_home.path().to_path_buf();
+    let state_db = codex_state::StateRuntime::init(
+        codex_home.path().to_path_buf(),
+        app.config.model_provider_id.clone(),
+    )
+    .await
+    .expect("state db");
+    app.state_db = Some(state_db.clone());
+
+    let root_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000236").expect("valid thread id");
+    app.primary_thread_id = Some(root_thread_id);
+    app.active_thread_id = Some(root_thread_id);
+    app.set_spawn_nazgul_pane_binding(crate::spawn_orchestration::thread_node_id(root_thread_id));
+
+    app.persist_bound_nazgul_root_thread_metadata().await;
+
+    let metadata = state_db
+        .get_thread(root_thread_id)
+        .await
+        .expect("read metadata")
+        .expect("root row should be persisted");
+    assert_eq!(metadata.agent_role.as_deref(), Some("nazgul"));
+    assert_eq!(metadata.agent_nickname.as_deref(), Some("Main"));
+}
+
+#[tokio::test]
+async fn claude_orc_has_routing_thread_row_and_dispatches_by_thread_id() {
+    let (mut app, mut rx, _op_rx) = make_test_app_with_channels().await;
+    let codex_home = tempdir().expect("codex home");
+    app.config.codex_home = codex_home.path().to_path_buf().abs();
+    app.config.sqlite_home = codex_home.path().to_path_buf();
+    let state_db = codex_state::StateRuntime::init(
+        codex_home.path().to_path_buf(),
+        app.config.model_provider_id.clone(),
+    )
+    .await
+    .expect("state db");
+    app.state_db = Some(state_db.clone());
+
+    let troll_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000237").expect("valid thread id");
+    app.upsert_agent_picker_thread(
+        troll_thread_id,
+        Some("Burzum".to_string()),
+        Some("troll".to_string()),
+        /*is_closed*/ false,
+    );
+    let orc_pane_id = app
+        .claude_panes
+        .create_pane_with_role(
+            crate::claude_panes::ClaudeProviderProfileKind::ClaudePlan,
+            app.config.cwd.to_path_buf(),
+            app.config.codex_home.as_ref(),
+            Some(crate::spawn_orchestration::SpawnRole::Orc),
+            Some("Ghash".to_string()),
+        )
+        .expect("create Claude Orc pane");
+    let orc_thread_id = app
+        .claude_panes
+        .claude_pane_spawn_thread_id(&orc_pane_id)
+        .expect("Claude Orc should have a routing thread id");
+    let troll_node_id = crate::spawn_orchestration::thread_node_id(troll_thread_id);
+    app.spawn_parent_by_node.insert(
+        crate::spawn_orchestration::pane_node_id(&orc_pane_id),
+        troll_node_id.clone(),
+    );
+
+    app.persist_claude_spawn_pane_state(&orc_pane_id, &troll_node_id)
+        .await;
+
+    let metadata = state_db
+        .get_thread(orc_thread_id)
+        .await
+        .expect("read metadata")
+        .expect("Claude Orc row should be persisted");
+    assert_eq!(metadata.agent_role.as_deref(), Some("orc"));
+    assert_eq!(metadata.agent_nickname.as_deref(), Some("Ghash"));
+    assert_eq!(metadata.model_provider, "claude-code");
+    let children = state_db
+        .list_thread_spawn_children(troll_thread_id)
+        .await
+        .expect("spawn children");
+    assert_eq!(children, vec![orc_thread_id]);
+
+    let context = app
+        .spawn_context_for_thread(troll_thread_id)
+        .expect("Troll should receive context");
+    assert!(
+        context.contains(&format!("thread={orc_thread_id}")),
+        "got: {context}"
+    );
+    assert!(
+        context.contains(&format!("pane={orc_pane_id}")),
+        "got: {context}"
+    );
+
+    app.dispatch_spawn_task_blocks(
+        &crate::spawn_orchestration::thread_node_id(troll_thread_id),
+        vec![crate::spawn_orchestration::SpawnTaskDispatch {
+            target: orc_thread_id.to_string(),
+            task: "write the proof file".to_string(),
+        }],
+    );
+
+    let mut routed_to_claude = false;
+    while let Ok(event) = rx.try_recv() {
+        if let AppEvent::SubmitSpawnClaudePaneTask { pane_id, task } = event
+            && pane_id == orc_pane_id
+        {
+            routed_to_claude = true;
+            assert!(task.contains("write the proof file"));
+        }
+    }
+    assert!(
+        routed_to_claude,
+        "thread-id target should route to Claude Orc pane"
+    );
 }
 
 #[test]
@@ -8645,4 +8769,133 @@ async fn side_backtrack_rejection_reports_unavailable_message_snapshot() {
 }
 async fn start_config_write_test_app_server(app: &App) -> Result<AppServerSession> {
     Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await
+}
+
+fn claude_pane_text_op(text: &str) -> Op {
+    Op::UserTurn {
+        items: vec![UserInput::Text {
+            text: text.to_string(),
+            text_elements: Vec::new(),
+        }],
+        cwd: std::path::PathBuf::from("/tmp"),
+        approval_policy: codex_app_server_protocol::AskForApproval::Never,
+        approvals_reviewer: None,
+        active_permission_profile: None,
+        model: "glm-5.2".to_string(),
+        effort: None,
+        summary: None,
+        service_tier: None,
+        final_output_json_schema: None,
+        collaboration_mode: None,
+        personality: None,
+    }
+}
+
+/// Round-3 B5 regression: a spawned Claude worker pane must not steal the
+/// operator's active control surface. Only user-created panes activate.
+#[tokio::test]
+async fn spawned_claude_worker_pane_does_not_become_active() {
+    let mut app = make_test_app().await;
+
+    let user_pane_id = app
+        .claude_panes
+        .create_pane_with_role(
+            crate::claude_panes::ClaudeProviderProfileKind::ClaudePlan,
+            app.config.cwd.to_path_buf(),
+            app.config.codex_home.as_ref(),
+            /*spawn_role*/ None,
+            /*spawn_nickname*/ None,
+        )
+        .expect("create user pane");
+    assert_eq!(
+        app.claude_panes.active_claude_pane_id(),
+        Some(user_pane_id.as_str()),
+        "a user-created Claude pane should become active"
+    );
+
+    let orc_pane_id = app
+        .claude_panes
+        .create_pane_with_role(
+            crate::claude_panes::ClaudeProviderProfileKind::ClaudePlan,
+            app.config.cwd.to_path_buf(),
+            app.config.codex_home.as_ref(),
+            Some(crate::spawn_orchestration::SpawnRole::Orc),
+            Some("Krimp".to_string()),
+        )
+        .expect("create Claude Orc pane");
+    assert_ne!(orc_pane_id, user_pane_id);
+    assert_eq!(
+        app.claude_panes.active_claude_pane_id(),
+        Some(user_pane_id.as_str()),
+        "a spawned Claude worker must not steal the active control surface"
+    );
+}
+
+/// Round-3 B5 regression: recognized slash commands stay global while a
+/// Claude pane is active — they must never be forwarded to the worker as a
+/// task, even when entered with unsupported inline args.
+#[tokio::test]
+async fn slash_commands_stay_global_while_claude_pane_is_active() {
+    let (mut app, mut rx, _op_rx) = make_test_app_with_channels().await;
+
+    let pane_id = app
+        .claude_panes
+        .create_pane_with_role(
+            crate::claude_panes::ClaudeProviderProfileKind::ClaudePlan,
+            app.config.cwd.to_path_buf(),
+            app.config.codex_home.as_ref(),
+            /*spawn_role*/ None,
+            /*spawn_nickname*/ None,
+        )
+        .expect("create user pane");
+    assert_eq!(
+        app.claude_panes.active_claude_pane_id(),
+        Some(pane_id.as_str())
+    );
+
+    // Bare recognized command: consumed by the control plane, opens the picker.
+    let consumed = app.try_submit_active_claude_pane_op(&claude_pane_text_op("/panes"));
+    assert!(consumed, "/panes op should be consumed");
+
+    // Recognized command with unsupported inline args: still a command, never
+    // worker-task text (this was the exact round-3 swallow path).
+    let consumed = app.try_submit_active_claude_pane_op(&claude_pane_text_op("/panes extra junk"));
+    assert!(consumed, "/panes with args should be consumed");
+
+    let mut picker_events = 0;
+    while let Ok(event) = rx.try_recv() {
+        if matches!(event, AppEvent::OpenPanePicker) {
+            picker_events += 1;
+        }
+    }
+    assert_eq!(
+        picker_events, 2,
+        "both slash inputs must dispatch the pane picker instead of becoming Claude turns"
+    );
+}
+
+/// The slash-input guard recognizes commands and rejects everything else.
+#[tokio::test]
+async fn try_dispatch_slash_input_only_claims_recognized_commands() {
+    let (mut app, mut rx, _op_rx) = make_test_app_with_channels().await;
+
+    assert!(app.chat_widget.try_dispatch_slash_input("/panes"));
+    assert!(app.chat_widget.try_dispatch_slash_input("  /panes  "));
+    assert!(
+        !app.chat_widget.try_dispatch_slash_input("hello world"),
+        "plain text must not be claimed by the slash guard"
+    );
+    assert!(
+        !app.chat_widget
+            .try_dispatch_slash_input("/no-such-command-xyz"),
+        "unrecognized commands must fall through to normal handling"
+    );
+
+    let mut picker_events = 0;
+    while let Ok(event) = rx.try_recv() {
+        if matches!(event, AppEvent::OpenPanePicker) {
+            picker_events += 1;
+        }
+    }
+    assert_eq!(picker_events, 2);
 }

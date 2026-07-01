@@ -11,9 +11,10 @@ use crate::claude_panes::ClaudeProviderProfileKind;
 use crate::multi_agents::agent_picker_status_dot_spans;
 use crate::multi_agents::format_agent_picker_item_name;
 use crate::session_state::ThreadSessionState;
+use chrono::Utc;
 use codex_app_server_protocol::AdditionalContextEntry;
 use codex_app_server_protocol::AdditionalContextKind;
-use codex_app_server_protocol::SessionSource;
+use codex_app_server_protocol::SessionSource as AppServerSessionSource;
 use codex_app_server_protocol::ThreadStatus;
 use codex_features::Feature;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
@@ -24,12 +25,17 @@ use codex_model_provider_info::ZAI_PROVIDER_ID;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::SessionSource as CoreSessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::ThreadSource as CoreThreadSource;
+use codex_state::DirectionalThreadSpawnEdgeStatus;
 use color_eyre::eyre::Result;
 use color_eyre::eyre::eyre;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Write as _;
+use std::fs::OpenOptions;
+use std::io::Write as _;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -60,6 +66,16 @@ enum SpawnTaskTarget {
 struct SavedSpawnThreadMetadata {
     nickname: Option<String>,
     role: Option<String>,
+}
+
+struct SpawnThreadStateMetadata<'a> {
+    thread_id: ThreadId,
+    parent_thread_id: Option<ThreadId>,
+    agent_role: &'a str,
+    agent_nickname: Option<String>,
+    model: String,
+    model_provider: String,
+    rollout_path: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1022,8 +1038,9 @@ impl App {
             context,
             "You are receiving this task through /spawn as {troll_name}."
         );
-        let orcs = self.spawn_orc_children(thread_id);
-        let has_orcs = !orcs.is_empty();
+        let troll_node_id = thread_node_id(thread_id);
+        let (orcs, claude_orcs) = self.spawn_orc_children_for_node(&troll_node_id);
+        let has_orcs = !orcs.is_empty() || !claude_orcs.is_empty();
         if !has_orcs {
             let _ = writeln!(context, "No existing Orc panes are assigned to you yet.");
             let _ = writeln!(
@@ -1045,7 +1062,10 @@ impl App {
                 let _ = writeln!(context, "  canonical_task_name={path}");
             }
         }
-        self.write_spawn_parent_reports(&mut context, &thread_node_id(thread_id));
+        for pane in claude_orcs {
+            self.write_spawn_context_claude_pane(&mut context, "- ", pane, SpawnRole::Orc);
+        }
+        self.write_spawn_parent_reports(&mut context, &troll_node_id);
         if has_orcs {
             let _ = writeln!(
                 context,
@@ -1053,11 +1073,11 @@ impl App {
             );
             let _ = writeln!(
                 context,
-                "Assign work with followup_task when available; otherwise use send_input. Target the exact listed name, thread id, or canonical_task_name."
+                "Assign work by emitting one pfterminal_send_task host dispatch block per target. Target the exact listed name, thread id, pane id, or canonical_task_name."
             );
             let _ = writeln!(
                 context,
-                "Use wait_agent and list_agents to observe each Orc's completion/result before reviewing or claiming completion."
+                "Observe completion from child report messages and /spawn status before reviewing or claiming completion."
             );
             let _ = writeln!(
                 context,
@@ -1395,9 +1415,9 @@ impl App {
         // Drain the queue into a single combined processing turn so the parent reviews every pending
         // report at once rather than starting one turn per report. This keeps the parent's attention
         // on the full set of outstanding child results and avoids interleaving many short turns.
-        let reports: Vec<String> = queue.drain(..).collect();
+        let mut reports: Vec<String> = queue.drain(..).collect();
         let body = if reports.len() == 1 {
-            reports.into_iter().next().expect("non-empty")
+            reports.remove(0)
         } else {
             let mut combined = String::from(
                 "Multiple child panes have reported back while you were busy. Review every report \
@@ -1627,6 +1647,7 @@ impl App {
         // Bind the freshly spawned Nazgul as the visible root so Troll spawns and "Nazgul"
         // dispatches route to it.
         self.set_spawn_nazgul_pane_binding(thread_node_id(nazgul_thread_id));
+        self.persist_bound_nazgul_root_thread_metadata().await;
 
         // Troll — zai/glm-5.2-fast (Vercel) under the Nazgul.
         let troll_nickname = self.next_spawn_agent_nickname(SpawnRole::Troll);
@@ -1784,6 +1805,268 @@ impl App {
         );
         let channel = self.ensure_thread_channel(thread_id);
         channel.set_session(started.session, started.turns).await;
+        self.persist_spawn_thread_state_metadata(SpawnThreadStateMetadata {
+            thread_id,
+            parent_thread_id: Some(parent_thread_id),
+            agent_role,
+            agent_nickname: self
+                .agent_navigation
+                .get(&thread_id)
+                .and_then(|entry| entry.agent_nickname.clone()),
+            model: self.native_spawn_fallback_model_for_thread(thread_id),
+            model_provider: self.config.model_provider_id.clone(),
+            rollout_path: None,
+        })
+        .await;
+    }
+
+    pub(crate) async fn persist_bound_nazgul_root_thread_metadata(&self) {
+        let root_thread_id = if let Some(bound_thread_id) = self.nazgul_bound_thread_id() {
+            Some(bound_thread_id)
+        } else if self.spawn_nazgul_bound_target() == CODEX_MAIN_PANE_ID {
+            self.primary_thread_id
+        } else {
+            None
+        };
+        let Some(root_thread_id) = root_thread_id else {
+            return;
+        };
+        let nickname = self
+            .agent_navigation
+            .get(&root_thread_id)
+            .and_then(|entry| entry.agent_nickname.clone())
+            .or_else(|| {
+                if self.primary_thread_id == Some(root_thread_id) {
+                    Some("Main".to_string())
+                } else {
+                    self.next_spawn_agent_nickname(SpawnRole::Nazgul)
+                }
+            });
+        let model = self.chat_widget.current_model().to_string();
+        self.persist_spawn_thread_state_metadata(SpawnThreadStateMetadata {
+            thread_id: root_thread_id,
+            parent_thread_id: None,
+            agent_role: NAZGUL_ROLE_NAME,
+            agent_nickname: nickname,
+            model,
+            model_provider: self.config.model_provider_id.clone(),
+            rollout_path: None,
+        })
+        .await;
+    }
+
+    async fn persist_spawn_thread_state_metadata(
+        &self,
+        metadata_update: SpawnThreadStateMetadata<'_>,
+    ) {
+        let Some(state_db) = self.state_db.as_ref() else {
+            return;
+        };
+        let SpawnThreadStateMetadata {
+            thread_id,
+            parent_thread_id,
+            agent_role,
+            agent_nickname,
+            model,
+            model_provider,
+            rollout_path,
+        } = metadata_update;
+        let now = Utc::now();
+        let source = parent_thread_id
+            .map(|parent_thread_id| {
+                CoreSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id,
+                    depth: 0,
+                    agent_path: None,
+                    agent_nickname: agent_nickname.clone(),
+                    agent_role: Some(agent_role.to_string()),
+                })
+            })
+            .unwrap_or(CoreSessionSource::Cli);
+        let mut metadata = match state_db.get_thread(thread_id).await {
+            Ok(Some(mut metadata)) => {
+                metadata.updated_at = now;
+                metadata.recency_at = now;
+                metadata
+            }
+            Ok(None) | Err(_) => {
+                let rollout_path = rollout_path.clone().unwrap_or_else(|| {
+                    self.config
+                        .codex_home
+                        .join("sessions")
+                        .join("spawn-placeholders")
+                        .join(format!("rollout-{thread_id}.jsonl"))
+                        .to_path_buf()
+                });
+                let mut builder =
+                    codex_state::ThreadMetadataBuilder::new(thread_id, rollout_path, now, source);
+                if parent_thread_id.is_some() {
+                    builder.thread_source = Some(CoreThreadSource::Subagent);
+                }
+                builder.agent_nickname = agent_nickname.clone();
+                builder.agent_role = Some(agent_role.to_string());
+                builder.model_provider = Some(model_provider.clone());
+                builder.cwd = self.config.cwd.to_path_buf();
+                builder.cli_version = Some(env!("CARGO_PKG_VERSION").to_string());
+                builder.build(&self.config.model_provider_id)
+            }
+        };
+        metadata.agent_nickname = agent_nickname;
+        metadata.agent_role = Some(agent_role.to_string());
+        metadata.model = Some(model);
+        metadata.model_provider = model_provider;
+        metadata.cwd = self.config.cwd.to_path_buf();
+        if parent_thread_id.is_some() {
+            metadata.thread_source = Some(CoreThreadSource::Subagent);
+        }
+        if let Some(rollout_path) = rollout_path {
+            metadata.rollout_path = rollout_path;
+        }
+        if let Err(err) = state_db.upsert_thread(&metadata).await {
+            tracing::warn!(
+                thread_id = %thread_id,
+                error = %err,
+                "failed to persist spawn thread metadata"
+            );
+            return;
+        }
+        if let Some(parent_thread_id) = parent_thread_id
+            && let Err(err) = state_db
+                .upsert_thread_spawn_edge(
+                    parent_thread_id,
+                    thread_id,
+                    DirectionalThreadSpawnEdgeStatus::Open,
+                )
+                .await
+        {
+            tracing::warn!(
+                parent_thread_id = %parent_thread_id,
+                child_thread_id = %thread_id,
+                error = %err,
+                "failed to persist spawn thread edge"
+            );
+        }
+    }
+
+    pub(crate) async fn persist_claude_spawn_pane_state(
+        &self,
+        pane_id: &str,
+        parent_node_id: &str,
+    ) {
+        let Some(pane) = self
+            .claude_panes
+            .panes()
+            .iter()
+            .find(|pane| pane.id == pane_id)
+        else {
+            return;
+        };
+        let Some(role) = pane.spawn_role else {
+            return;
+        };
+        let Some(agent_role) = role.agent_type() else {
+            return;
+        };
+        let Some(thread_id) = pane.spawn_thread_id else {
+            return;
+        };
+        let Some(parent_thread_id) = self.spawn_node_backing_thread_id(parent_node_id) else {
+            tracing::warn!(
+                pane_id = pane_id,
+                parent_node_id = parent_node_id,
+                "cannot persist Claude spawn pane without a backing parent thread"
+            );
+            return;
+        };
+        let profile = pane.profile.profile();
+        let rollout_path = claude_spawn_rollout_path(pane);
+        if let Err(err) =
+            ensure_claude_spawn_rollout_session_meta(pane, parent_thread_id, agent_role)
+        {
+            tracing::warn!(
+                pane_id = pane_id,
+                thread_id = %thread_id,
+                error = %err,
+                "failed to initialize Claude spawn rollout"
+            );
+        }
+        self.persist_spawn_thread_state_metadata(SpawnThreadStateMetadata {
+            thread_id,
+            parent_thread_id: Some(parent_thread_id),
+            agent_role,
+            agent_nickname: pane.spawn_nickname.clone(),
+            model: profile.provider_model.to_string(),
+            model_provider: "claude-code".to_string(),
+            rollout_path: Some(rollout_path),
+        })
+        .await;
+    }
+
+    pub(crate) fn record_claude_spawn_rollout_task_started(
+        &self,
+        pane_id: &str,
+        task: &str,
+        turn_index: u64,
+    ) {
+        let Some(pane) = self
+            .claude_panes
+            .panes()
+            .iter()
+            .find(|pane| pane.id == pane_id)
+        else {
+            return;
+        };
+        if pane.spawn_thread_id.is_none() {
+            return;
+        }
+        if let Some(parent_node_id) = self.logical_parent_node_for_pane(pane_id)
+            && let Some(parent_thread_id) = self.spawn_node_backing_thread_id(&parent_node_id)
+            && let Some(role) = pane.spawn_role.and_then(SpawnRole::agent_type)
+        {
+            let _ = ensure_claude_spawn_rollout_session_meta(pane, parent_thread_id, role);
+        }
+        if let Err(err) = append_claude_spawn_rollout_task_started(pane, turn_index, task) {
+            tracing::warn!(
+                pane_id = pane_id,
+                turn_index,
+                error = %err,
+                "failed to append Claude spawn task-start rollout event"
+            );
+        }
+    }
+
+    pub(crate) fn record_claude_spawn_rollout_task_completed(
+        &self,
+        pane_id: &str,
+        output: &crate::claude_panes::ClaudePaneTurnOutput,
+    ) {
+        let Some(turn_index) = claude_turn_index_from_artifact_path(&output.artifact_path) else {
+            return;
+        };
+        let Some(pane) = self
+            .claude_panes
+            .panes()
+            .iter()
+            .find(|pane| pane.id == pane_id)
+        else {
+            return;
+        };
+        if pane.spawn_thread_id.is_none() {
+            return;
+        }
+        let result = if output.text.trim().is_empty() {
+            output.failure_message()
+        } else {
+            output.text.clone()
+        };
+        if let Err(err) = append_claude_spawn_rollout_task_completed(pane, turn_index, &result) {
+            tracing::warn!(
+                pane_id = pane_id,
+                turn_index,
+                error = %err,
+                "failed to append Claude spawn task-complete rollout event"
+            );
+        }
     }
 
     pub(crate) async fn restore_native_spawn_panes_from_saved_state(
@@ -2513,14 +2796,6 @@ impl App {
             .collect()
     }
 
-    fn spawn_orc_children(
-        &self,
-        parent_thread_id: ThreadId,
-    ) -> Vec<(ThreadId, &crate::multi_agents::AgentPickerThreadEntry)> {
-        let parent_node_id = thread_node_id(parent_thread_id);
-        self.spawn_orc_children_for_node(&parent_node_id).0
-    }
-
     fn spawn_orc_children_for_node(
         &self,
         parent_node_id: &str,
@@ -2615,6 +2890,17 @@ impl App {
         false
     }
 
+    fn spawn_node_backing_thread_id(&self, node_id: &str) -> Option<ThreadId> {
+        if node_id == pane_node_id(CODEX_MAIN_PANE_ID) || node_id == CODEX_MAIN_PANE_ID {
+            return self.primary_thread_id;
+        }
+        if let Some(thread_id) = node_id_thread(node_id) {
+            return Some(thread_id);
+        }
+        let pane_id = node_id_pane(node_id).unwrap_or(node_id);
+        self.claude_panes.claude_pane_spawn_thread_id(pane_id)
+    }
+
     fn spawn_node_title(&self, node_id: &str) -> Option<String> {
         if let Some(thread_id) = node_id_thread(node_id) {
             let entry = self.agent_navigation.get(&thread_id)?;
@@ -2700,6 +2986,15 @@ impl App {
             }
             return Ok(SpawnTaskTarget::Native(thread_id));
         }
+        if let Ok(thread_id) = ThreadId::from_string(target)
+            && let Some(pane) = self
+                .claude_panes
+                .panes()
+                .iter()
+                .find(|pane| pane.spawn_thread_id == Some(thread_id))
+        {
+            return Ok(SpawnTaskTarget::ClaudePane(pane.id.clone()));
+        }
         if self
             .claude_panes
             .panes()
@@ -2756,6 +3051,9 @@ impl App {
             if nickname_matches
                 || pane.title.eq_ignore_ascii_case(target)
                 || pane.title.to_ascii_lowercase().contains(&target_folded)
+                || pane
+                    .spawn_thread_id
+                    .is_some_and(|thread_id| thread_id.to_string().eq_ignore_ascii_case(target))
             {
                 matches.push((
                     format!("{} ({})", pane.title, pane.id),
@@ -3279,14 +3577,26 @@ impl App {
             crate::claude_panes::ClaudePaneStatus::Idle => "idle",
             crate::claude_panes::ClaudePaneStatus::Running => "running",
         };
-        let _ = writeln!(
-            context,
-            "{prefix}{}; role={}; harness=Claude Code; status={}; pane={}",
-            pane.title,
-            role.label(),
-            status,
-            pane.id
-        );
+        if let Some(thread_id) = pane.spawn_thread_id {
+            let _ = writeln!(
+                context,
+                "{prefix}{}; role={}; harness=Claude Code; status={}; thread={}; pane={}",
+                pane.title,
+                role.label(),
+                status,
+                thread_id,
+                pane.id
+            );
+        } else {
+            let _ = writeln!(
+                context,
+                "{prefix}{}; role={}; harness=Claude Code; status={}; pane={}",
+                pane.title,
+                role.label(),
+                status,
+                pane.id
+            );
+        }
         if let Some(task) = pane.latest_task_message.as_deref() {
             let _ = writeln!(
                 context,
@@ -3417,7 +3727,7 @@ fn native_spawn_thread_ids_from_saved_state(
         push_native_spawn_thread_id(child_node_id, &mut thread_ids, &mut seen);
         push_native_spawn_thread_id(parent_node_id, &mut thread_ids, &mut seen);
     }
-    thread_ids.sort_by_key(|thread_id| thread_id.to_string());
+    thread_ids.sort_by_key(std::string::ToString::to_string);
     thread_ids
 }
 
@@ -3466,9 +3776,9 @@ fn push_native_spawn_thread_id(
     }
 }
 
-fn thread_spawn_agent_path(source: &SessionSource) -> Option<String> {
+fn thread_spawn_agent_path(source: &AppServerSessionSource) -> Option<String> {
     match source {
-        SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_path, .. }) => {
+        AppServerSessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_path, .. }) => {
             agent_path.clone().map(String::from)
         }
         _ => None,
@@ -3751,6 +4061,129 @@ fn task_with_dispatch_provenance(task: &str, source_title: &str, target_title: &
     format!(
         "Assigned by {source_title} to {target_title} through PFTerminal /spawn dispatch.\n\n{task}"
     )
+}
+
+fn claude_spawn_rollout_path(pane: &crate::claude_panes::ClaudePane) -> std::path::PathBuf {
+    pane.artifact_dir.join("spawn-thread-rollout.jsonl")
+}
+
+fn claude_spawn_rollout_turn_id(turn_index: u64) -> String {
+    format!("claude-pane-turn-{turn_index:04}")
+}
+
+fn claude_spawn_event_timestamp() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+fn ensure_claude_spawn_rollout_session_meta(
+    pane: &crate::claude_panes::ClaudePane,
+    parent_thread_id: ThreadId,
+    agent_role: &str,
+) -> std::io::Result<()> {
+    let Some(thread_id) = pane.spawn_thread_id else {
+        return Ok(());
+    };
+    let path = claude_spawn_rollout_path(pane);
+    if path.is_file() {
+        return Ok(());
+    }
+    let source = CoreSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id,
+        depth: 0,
+        agent_path: None,
+        agent_nickname: pane.spawn_nickname.clone(),
+        agent_role: Some(agent_role.to_string()),
+    });
+    append_jsonl_value(
+        &path,
+        &serde_json::json!({
+            "type": "session_meta",
+            "payload": {
+                "id": thread_id,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "cwd": pane.cwd.display().to_string(),
+                "originator": "pfterminal-claude-pane",
+                "cli_version": env!("CARGO_PKG_VERSION"),
+                "source": source,
+                "thread_source": "subagent",
+                "agent_nickname": pane.spawn_nickname.clone(),
+                "agent_role": agent_role,
+                "model_provider": "claude-code",
+                "model": pane.profile.profile().provider_model,
+                "base_instructions": null,
+            },
+        }),
+    )
+}
+
+fn append_claude_spawn_rollout_task_started(
+    pane: &crate::claude_panes::ClaudePane,
+    turn_index: u64,
+    task: &str,
+) -> std::io::Result<()> {
+    let path = claude_spawn_rollout_path(pane);
+    let turn_id = claude_spawn_rollout_turn_id(turn_index);
+    append_jsonl_value(
+        &path,
+        &serde_json::json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "task_started",
+                "turn_id": turn_id,
+                "started_at": claude_spawn_event_timestamp(),
+            },
+        }),
+    )?;
+    append_jsonl_value(
+        &path,
+        &serde_json::json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "user_message",
+                "message": task,
+                "kind": "plain",
+            },
+        }),
+    )
+}
+
+fn append_claude_spawn_rollout_task_completed(
+    pane: &crate::claude_panes::ClaudePane,
+    turn_index: u64,
+    last_agent_message: &str,
+) -> std::io::Result<()> {
+    append_jsonl_value(
+        &claude_spawn_rollout_path(pane),
+        &serde_json::json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "task_complete",
+                "turn_id": claude_spawn_rollout_turn_id(turn_index),
+                "completed_at": claude_spawn_event_timestamp(),
+                "last_agent_message": last_agent_message,
+            },
+        }),
+    )
+}
+
+fn append_jsonl_value(path: &Path, value: &serde_json::Value) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    let mut line = serde_json::to_string(value).map_err(std::io::Error::other)?;
+    line.push('\n');
+    file.write_all(line.as_bytes())
+}
+
+fn claude_turn_index_from_artifact_path(path: &Path) -> Option<u64> {
+    let name = path.file_name()?.to_str()?;
+    name.strip_prefix("turn-")?
+        .strip_suffix(".jsonl")
+        .and_then(|value| value.parse::<u64>().ok())
 }
 
 pub(crate) fn extract_spawn_task_dispatches(text: &str) -> (String, Vec<SpawnTaskDispatch>) {

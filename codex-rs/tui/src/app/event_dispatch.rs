@@ -2234,6 +2234,9 @@ impl App {
                     );
                     return Ok(AppRunControl::Continue);
                 };
+                if role == crate::spawn_orchestration::SpawnRole::Troll {
+                    self.persist_bound_nazgul_root_thread_metadata().await;
+                }
                 let logical_parent_node_id =
                     self.logical_parent_node_for_spawn(role, parent_node_id.as_deref());
                 let agent_nickname =
@@ -2280,6 +2283,7 @@ impl App {
                             self.set_spawn_nazgul_pane_binding(
                                 crate::spawn_orchestration::thread_node_id(thread_id),
                             );
+                            self.persist_bound_nazgul_root_thread_metadata().await;
                         }
                         self.select_agent_thread_and_discard_side(tui, app_server, thread_id)
                             .await?;

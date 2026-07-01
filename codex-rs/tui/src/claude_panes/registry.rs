@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::spawn_orchestration::SpawnRole;
+use codex_protocol::ThreadId;
 
 use super::command_plan::build_claude_command_plan;
 use super::command_plan::claude_pane_title;
@@ -192,6 +193,7 @@ impl ClaudePaneRegistry {
             profile,
             spawn_role,
             spawn_nickname,
+            spawn_thread_id: spawn_role.map(|_| ThreadId::new()),
             cwd,
             claude_session_id: None,
             status: ClaudePaneStatus::Idle,
@@ -209,8 +211,19 @@ impl ClaudePaneRegistry {
         };
         persist_claude_pane_metadata(&pane)?;
         self.panes.push(pane);
-        self.active_user_pane_id = id.clone();
+        // Spawned workers (panes created with a spawn role) must not steal the
+        // operator's control surface: only user-created panes become active.
+        if spawn_role.is_none() {
+            self.active_user_pane_id = id.clone();
+        }
         Ok(id)
+    }
+
+    pub(crate) fn claude_pane_spawn_thread_id(&self, pane_id: &str) -> Option<ThreadId> {
+        self.panes
+            .iter()
+            .find(|pane| pane.id == pane_id)
+            .and_then(|pane| pane.spawn_thread_id)
     }
 
     pub(crate) fn prepare_turn(

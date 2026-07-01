@@ -25,6 +25,7 @@ def make_turn(
     started_at: float,
     completed_at: float | None = None,
     trigger_prompts: list[str] | None = None,
+    last_agent_message: str | None = None,
 ) -> verify.Turn:
     return verify.Turn(
         index=index,
@@ -32,6 +33,7 @@ def make_turn(
         started_at=started_at,
         completed_at=completed_at,
         trigger_prompts=trigger_prompts or [],
+        last_agent_message=last_agent_message,
     )
 
 
@@ -112,6 +114,58 @@ class SpawnReportVerifyTests(unittest.TestCase):
         )
         self.assertFalse(cycle["report_became_turn"])
         self.assertEqual("turn-1", cycle["parent_report_turn_id"])
+
+    def test_busy_parent_turn_does_not_mask_later_report_turn(self) -> None:
+        cycle = self.analyze_one_child_cycle(
+            [
+                make_turn(
+                    1,
+                    started_at=9.5,
+                    completed_at=20.0,
+                    trigger_prompts=["Continue the prior implementation task."],
+                ),
+                make_turn(
+                    2,
+                    started_at=20.1,
+                    completed_at=21.0,
+                    trigger_prompts=[
+                        "A child pane has reported back. Review the child report below."
+                    ],
+                ),
+            ]
+        )
+        self.assertTrue(cycle["parent_busy_at_delivery"])
+        self.assertTrue(cycle["report_became_turn"])
+        self.assertEqual("turn-2", cycle["parent_report_turn_id"])
+
+    def test_host_dispatch_block_counts_as_rework_dispatch(self) -> None:
+        root = make_pane(
+            "nazgul-thread",
+            "nazgul",
+            turns=[
+                make_turn(
+                    0,
+                    started_at=1.0,
+                    completed_at=2.0,
+                    trigger_prompts=[
+                        "A child pane has reported back. Review the child report below."
+                    ],
+                    last_agent_message=(
+                        '<pfterminal_send_task target="Burzum">\n'
+                        "Rework the artifact.\n"
+                        "</pfterminal_send_task>"
+                    ),
+                )
+            ],
+        )
+        troll = make_pane(
+            "troll-thread",
+            "troll",
+            parent_thread_id=root.thread_id,
+            turns=[make_turn(1, started_at=0.0, completed_at=0.5)],
+        )
+        report = verify.analyze({root.thread_id: root, troll.thread_id: troll}, root)
+        self.assertEqual(1, report["Q2_manager_acted"]["rework_dispatches"])
 
 
 if __name__ == "__main__":

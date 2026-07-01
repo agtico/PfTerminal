@@ -88,6 +88,7 @@ fn pane(profile: ClaudeProviderProfileKind) -> (tempfile::TempDir, ClaudePane) {
             profile,
             spawn_role: None,
             spawn_nickname: None,
+            spawn_thread_id: None,
             cwd: std::env::current_dir().expect("cwd"),
             claude_session_id: None,
             status: ClaudePaneStatus::Idle,

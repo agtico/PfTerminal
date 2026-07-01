@@ -1090,24 +1090,30 @@ impl ChatWidget {
         }
 
         if !command.supports_inline_args() {
-            self.submit_user_message(UserMessage {
-                text,
-                local_images,
-                remote_image_urls,
-                text_elements,
-                mention_bindings,
-            });
-            return QueueDrain::Stop;
+            // A recognized command must never degrade into user text: with an
+            // external worker pane active, that text would be forwarded to the
+            // worker as a task, silently swallowing control-plane commands.
+            self.add_info_message(
+                format!("'/{name}' does not take inline arguments; running the bare command."),
+                /*hint*/ None,
+            );
+            return match command {
+                SlashCommandItem::Builtin(cmd) => {
+                    self.dispatch_command(cmd);
+                    self.queued_command_drain_result(cmd)
+                }
+                SlashCommandItem::ServiceTier(command) => {
+                    self.handle_service_tier_command_dispatch(command);
+                    QueueDrain::Continue
+                }
+            };
         }
-        let SlashCommandItem::Builtin(cmd) = command else {
-            self.submit_user_message(UserMessage {
-                text,
-                local_images,
-                remote_image_urls,
-                text_elements,
-                mention_bindings,
-            });
-            return QueueDrain::Stop;
+        let cmd = match command {
+            SlashCommandItem::Builtin(cmd) => cmd,
+            SlashCommandItem::ServiceTier(command) => {
+                self.handle_service_tier_command_dispatch(command);
+                return QueueDrain::Continue;
+            }
         };
 
         let trimmed_start = rest.trim_start();
@@ -1131,6 +1137,35 @@ impl ChatWidget {
             },
         );
         self.queued_command_drain_result(cmd)
+    }
+
+    /// If `text` is a recognized slash command, dispatch it through the normal
+    /// slash-command path and return true. External-pane input forwarding uses
+    /// this to keep control-plane commands global: a slash command entered
+    /// while a Claude worker pane is active must act on PFTerminal itself,
+    /// never become a task forwarded to the worker.
+    pub(crate) fn try_dispatch_slash_input(&mut self, text: &str) -> bool {
+        let trimmed = text.trim();
+        let Some((name, _rest, _rest_offset)) = parse_slash_name(trimmed) else {
+            return false;
+        };
+        if name.contains('/') {
+            return false;
+        }
+        let service_tier_commands = self.current_model_service_tier_commands();
+        if find_slash_command(name, self.builtin_command_flags(), &service_tier_commands).is_none()
+        {
+            return false;
+        }
+        let user_message = UserMessage {
+            text: trimmed.to_string(),
+            local_images: Vec::new(),
+            remote_image_urls: Vec::new(),
+            text_elements: Vec::new(),
+            mention_bindings: Vec::new(),
+        };
+        self.submit_queued_slash_prompt(QueuedUserMessage::from(user_message));
+        true
     }
 
     fn builtin_command_flags(&self) -> BuiltinCommandFlags {
