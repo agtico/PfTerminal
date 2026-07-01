@@ -22,6 +22,7 @@ use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider::create_model_provider;
+use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_model_provider_info::ZAI_PROVIDER_ID;
 use codex_model_provider_info::built_in_model_providers;
 use codex_protocol::AgentPath;
@@ -143,6 +144,18 @@ fn thread_manager() -> ThreadManager {
         CodexAuth::from_api_key("dummy"),
         built_in_model_providers(/* openai_base_url */ /*openai_base_url*/ None)["openai"].clone(),
     )
+}
+
+fn set_turn_to_openai_provider(turn: &mut TurnContext) {
+    let provider_info =
+        built_in_model_providers(/* openai_base_url */ /*openai_base_url*/ None)
+            [OPENAI_PROVIDER_ID]
+            .clone();
+    let mut config = (*turn.config).clone();
+    config.model_provider_id = OPENAI_PROVIDER_ID.to_string();
+    config.model_provider = provider_info.clone();
+    turn.provider = create_model_provider(provider_info, turn.auth_manager.clone());
+    turn.config = Arc::new(config);
 }
 
 async fn install_role_with_model_override(turn: &mut TurnContext) -> String {
@@ -565,7 +578,8 @@ async fn spawn_agent_service_tier_override_validates_the_effective_child_model()
     }
 
     {
-        let (mut session, turn) = make_session_and_context().await;
+        let (mut session, mut turn) = make_session_and_context().await;
+        set_turn_to_openai_provider(&mut turn);
         let manager = thread_manager();
         let root = manager
             .start_thread((*turn.config).clone())
@@ -604,7 +618,8 @@ async fn spawn_agent_service_tier_override_validates_the_effective_child_model()
     }
 
     {
-        let (session, turn) = make_session_and_context().await;
+        let (session, mut turn) = make_session_and_context().await;
+        set_turn_to_openai_provider(&mut turn);
         let err = SpawnAgentHandler::default()
             .handle(invocation(
                 Arc::new(session),
@@ -630,7 +645,8 @@ async fn spawn_agent_service_tier_override_validates_the_effective_child_model()
     }
 
     {
-        let (session, turn) = make_session_and_context().await;
+        let (session, mut turn) = make_session_and_context().await;
+        set_turn_to_openai_provider(&mut turn);
         let err = SpawnAgentHandler::default()
             .handle(invocation(
                 Arc::new(session),
@@ -668,6 +684,7 @@ async fn spawn_agent_service_tier_inheritance_preserves_supported_or_configured_
         let mut turn = turn
             .with_model("gpt-5.4".to_string(), &session.services.models_manager)
             .await;
+        set_turn_to_openai_provider(&mut turn);
         let mut config = (*turn.config).clone();
         config.service_tier = Some(ServiceTier::Fast.request_value().to_string());
         turn.config = Arc::new(config);
@@ -709,6 +726,7 @@ async fn spawn_agent_service_tier_inheritance_preserves_supported_or_configured_
         let mut turn = turn
             .with_model("gpt-5.4".to_string(), &session.services.models_manager)
             .await;
+        set_turn_to_openai_provider(&mut turn);
         let mut config = (*turn.config).clone();
         config.service_tier = Some(ServiceTier::Fast.request_value().to_string());
         turn.config = Arc::new(config);
@@ -747,6 +765,7 @@ async fn spawn_agent_service_tier_inheritance_preserves_supported_or_configured_
 
     {
         let (mut session, mut turn) = make_session_and_context().await;
+        set_turn_to_openai_provider(&mut turn);
         tokio::fs::create_dir_all(&turn.config.codex_home)
             .await
             .expect("codex home should be created");
@@ -823,6 +842,7 @@ async fn spawn_agent_role_service_tier_falls_back_to_supported_parent_tier() {
     let mut turn = turn
         .with_model("gpt-5.4".to_string(), &session.services.models_manager)
         .await;
+    set_turn_to_openai_provider(&mut turn);
     tokio::fs::create_dir_all(&turn.config.codex_home)
         .await
         .expect("codex home should be created");
@@ -887,6 +907,7 @@ service_tier = "turbo"
 #[tokio::test]
 async fn spawn_agent_role_service_tier_does_not_hide_invalid_spawn_request() {
     let (session, mut turn) = make_session_and_context().await;
+    set_turn_to_openai_provider(&mut turn);
     tokio::fs::create_dir_all(&turn.config.codex_home)
         .await
         .expect("codex home should be created");
@@ -942,9 +963,10 @@ async fn spawn_agent_full_history_fork_accepts_explicit_service_tier() {
     }
 
     let (mut session, turn) = make_session_and_context().await;
-    let turn = turn
+    let mut turn = turn
         .with_model("gpt-5.4".to_string(), &session.services.models_manager)
         .await;
+    set_turn_to_openai_provider(&mut turn);
     let manager = thread_manager();
     let root = manager
         .start_thread((*turn.config).clone())
@@ -993,6 +1015,7 @@ async fn multi_agent_v2_full_history_fork_accepts_explicit_service_tier() {
     let mut turn = turn
         .with_model("gpt-5.4".to_string(), &session.services.models_manager)
         .await;
+    set_turn_to_openai_provider(&mut turn);
     let mut config = (*turn.config).clone();
     config
         .features
@@ -2989,6 +3012,8 @@ async fn spawn_agent_allows_root_to_spawn_troll() {
 
     let (mut session, turn) = make_session_and_context().await;
     let config = (*turn.config).clone();
+    let expected_model = turn.model_info.slug.clone();
+    let expected_provider = turn.config.model_provider_id.clone();
     let manager = thread_manager();
     session.services.agent_control = manager.agent_control();
 
@@ -3020,6 +3045,8 @@ async fn spawn_agent_allows_root_to_spawn_troll() {
         snapshot.session_source.get_agent_role().as_deref(),
         Some("troll")
     );
+    assert_eq!(snapshot.model, expected_model);
+    assert_eq!(snapshot.model_provider_id, expected_provider);
     assert_eq!(snapshot.session_source.get_nickname(), result.nickname);
     assert_eq!(success, Some(true));
 }
@@ -3043,6 +3070,8 @@ fn spawn_agent_allows_troll_to_spawn_orc() {
 
                 let (mut session, turn) = make_session_and_context().await;
                 let config = (*turn.config).clone();
+                let expected_model = turn.model_info.slug.clone();
+                let expected_provider = turn.config.model_provider_id.clone();
                 let manager = thread_manager();
                 session.services.agent_control = manager.agent_control();
 
@@ -3074,6 +3103,8 @@ fn spawn_agent_allows_troll_to_spawn_orc() {
                     troll_snapshot.session_source.get_agent_role().as_deref(),
                     Some("troll")
                 );
+                assert_eq!(troll_snapshot.model, expected_model);
+                assert_eq!(troll_snapshot.model_provider_id, expected_provider);
                 assert_eq!(
                     troll_snapshot.session_source.get_nickname(),
                     troll_result.nickname
@@ -3117,6 +3148,8 @@ fn spawn_agent_allows_troll_to_spawn_orc() {
                         .as_deref(),
                     Some("orc")
                 );
+                assert_eq!(first_orc_snapshot.model, expected_model);
+                assert_eq!(first_orc_snapshot.model_provider_id, expected_provider);
                 assert_eq!(success, Some(true));
 
                 let troll_turn = troll_thread.codex.session.new_default_turn().await;
@@ -3155,6 +3188,8 @@ fn spawn_agent_allows_troll_to_spawn_orc() {
                         .as_deref(),
                     Some("orc")
                 );
+                assert_eq!(second_orc_snapshot.model, expected_model);
+                assert_eq!(second_orc_snapshot.model_provider_id, expected_provider);
                 assert_eq!(success, Some(true));
             });
         })

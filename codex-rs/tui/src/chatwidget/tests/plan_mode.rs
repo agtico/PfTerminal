@@ -664,7 +664,7 @@ async fn plan_reasoning_scope_popup_mentions_built_in_plan_default_when_no_overr
     );
 
     let popup = render_bottom_popup(&chat, /*width*/ 100);
-    assert!(popup.contains("built-in Plan default (medium)"));
+    assert!(popup.contains("built-in Plan default (extra high)"));
 }
 
 #[tokio::test]

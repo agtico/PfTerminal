@@ -8,12 +8,14 @@ use anyhow::anyhow;
 use crate::app::App;
 use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
+use crate::app_server_session::AppServerSession;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
 use crate::bottom_pane::popup_consts::standard_popup_hint_line;
 use crate::chatwidget::ChatWidget;
 use crate::spawn_orchestration::SpawnRole;
 use crate::tui;
+use codex_protocol::ThreadId;
 
 use super::command_plan::claude_pane_title;
 use super::command_plan::compose_claude_pane_prompt;
@@ -25,19 +27,25 @@ use super::pane::PaneLayoutState;
 use super::progress::truncate_for_display;
 use super::provider::ClaudeProviderProfileKind;
 use super::registry::CODEX_MAIN_PANE_ID;
+use super::registry::ClaudePaneRegistry;
 use super::registry::PANE_LAYOUT_VERSION;
+use super::registry::load_pane_layout;
 use super::registry::persist_pane_layout;
 use super::turn_types::ClaudePaneTurnOutput;
 use super::turn_types::ClaudePaneTurnProgress;
 impl App {
-    pub(crate) fn open_pane_picker(&mut self) {
+    pub(crate) async fn open_pane_picker(&mut self, app_server: &mut AppServerSession) {
+        self.backfill_loaded_subagent_threads(app_server).await;
+        self.restore_native_spawn_panes_from_saved_state(app_server)
+            .await;
+
         let mut items = Vec::new();
         items.push(section_item("User Panes"));
         items.extend(self.user_pane_items());
-        items.push(section_item("New Pane"));
-        items.extend(new_pane_items());
         items.push(section_item("Agent Panes"));
         items.extend(self.spawn_tree_items(/*show_task_actions*/ false));
+        items.push(section_item("New Pane"));
+        items.extend(new_pane_items());
 
         self.chat_widget.show_selection_view(SelectionViewParams {
             title: Some("Panes".to_string()),
@@ -48,6 +56,51 @@ impl App {
             search_placeholder: Some("Search panes".to_string()),
             ..Default::default()
         });
+    }
+
+    pub(crate) async fn restore_pane_layout_for_thread(
+        &mut self,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+    ) {
+        let thread_id_string = thread_id.to_string();
+        let restored_pane_layout =
+            load_pane_layout(self.config.codex_home.as_ref(), Some(&thread_id_string));
+
+        self.spawn_parent_by_node = restored_pane_layout
+            .as_ref()
+            .map(|layout| {
+                layout
+                    .spawn_parent_by_node
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.spawn_parent_by_thread.clear();
+        self.claude_panes = ClaudePaneRegistry::restore_from_disk(
+            self.config.codex_home.as_ref(),
+            restored_pane_layout.as_ref(),
+        );
+        self.spawn_nazgul_pane_id = restored_pane_layout
+            .as_ref()
+            .and_then(|layout| layout.spawn_nazgul_pane_id.clone())
+            .filter(|pane_id| self.valid_restored_nazgul_binding(pane_id));
+        self.claude_pane_transcript_cells.clear();
+        self.seed_restored_claude_pane_transcripts();
+        self.restore_native_spawn_panes_from_saved_state(app_server)
+            .await;
+        self.show_restored_active_claude_pane();
+    }
+
+    fn valid_restored_nazgul_binding(&self, pane_id: &str) -> bool {
+        pane_id == CODEX_MAIN_PANE_ID
+            || crate::spawn_orchestration::node_id_thread(pane_id).is_some()
+            || self
+                .claude_panes
+                .panes()
+                .iter()
+                .any(|pane| pane.id == pane_id)
     }
 
     pub(crate) fn open_claude_pane_profile_picker(&mut self) {

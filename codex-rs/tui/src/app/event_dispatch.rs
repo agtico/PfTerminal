@@ -2171,7 +2171,7 @@ impl App {
                     .await?;
             }
             AppEvent::OpenPanePicker => {
-                self.open_pane_picker();
+                self.open_pane_picker(app_server).await;
             }
             AppEvent::OpenCodexPaneModelPicker => {
                 self.open_codex_pane_model_picker();
@@ -2339,9 +2339,9 @@ impl App {
                     return Ok(AppRunControl::Continue);
                 }
                 let task_preview = task.chars().take(240).collect::<String>();
-                let task_for_submission = self.spawn_agent_task_for_submission(thread_id, &task);
-                let label = self.thread_label(thread_id);
-                let session = if self.primary_thread_id == Some(thread_id) {
+                let mut thread_id = thread_id;
+                let mut label = self.thread_label(thread_id);
+                let mut session = if self.primary_thread_id == Some(thread_id) {
                     self.primary_session_configured.clone()
                 } else if let Some(channel) = self.thread_event_channels.get(&thread_id) {
                     let store = channel.store.lock().await;
@@ -2349,10 +2349,82 @@ impl App {
                 } else {
                     None
                 };
+                if session.is_none() && self.should_attach_live_thread_for_selection(thread_id) {
+                    match self
+                        .attach_live_thread_for_selection(app_server, thread_id)
+                        .await
+                    {
+                        Ok(_) => {
+                            if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+                                let store = channel.store.lock().await;
+                                session = store.session.clone();
+                            }
+                        }
+                        Err(err) => {
+                            self.chat_widget.add_error_message(format!(
+                                "Cannot send task to {label}; failed to attach pane session: {err}"
+                            ));
+                            return Ok(AppRunControl::Continue);
+                        }
+                    }
+                }
+                if session.is_none() {
+                    match app_server
+                        .thread_read(thread_id, /*include_turns*/ false)
+                        .await
+                    {
+                        Ok(thread) => {
+                            let mut restored_session =
+                                self.session_state_for_thread_read(thread_id, &thread).await;
+                            self.apply_native_spawn_task_session_fallbacks(
+                                thread_id,
+                                &mut restored_session,
+                            );
+                            let channel = self.ensure_thread_channel(thread_id);
+                            channel
+                                .set_session(restored_session.clone(), Vec::new())
+                                .await;
+                            session = Some(restored_session);
+                        }
+                        Err(err) => {
+                            match self
+                                .materialize_saved_native_spawn_thread_for_task(
+                                    app_server, thread_id,
+                                )
+                                .await
+                            {
+                                Ok(materialized_thread_id) => {
+                                    tracing::warn!(
+                                        old_thread_id = %thread_id,
+                                        new_thread_id = %materialized_thread_id,
+                                        error = %err,
+                                        "materialized saved native spawn thread after thread/read failed"
+                                    );
+                                    thread_id = materialized_thread_id;
+                                    label = self.thread_label(thread_id);
+                                    if let Some(channel) =
+                                        self.thread_event_channels.get(&thread_id)
+                                    {
+                                        let store = channel.store.lock().await;
+                                        session = store.session.clone();
+                                    }
+                                }
+                                Err(materialize_err) => {
+                                    self.chat_widget.add_error_message(format!(
+                                        "Cannot send task to {label}; failed to read pane metadata: {err}; failed to materialize saved pane: {materialize_err}"
+                                    ));
+                                    return Ok(AppRunControl::Continue);
+                                }
+                            }
+                        }
+                    }
+                }
                 let Some(session) = session else {
-                    self.chat_widget.add_error_message(format!(
-                        "Cannot send task to {label}; pane session is not loaded."
-                    ));
+                    let detail = self
+                        .unloaded_agent_thread_reason(thread_id)
+                        .unwrap_or_else(|| "Pane session is not loaded.".to_string());
+                    self.chat_widget
+                        .add_error_message(format!("Cannot send task to {label}; {detail}"));
                     return Ok(AppRunControl::Continue);
                 };
                 if let Some(message) =
@@ -2366,6 +2438,7 @@ impl App {
                 // (Nazgul/Troll/Orc) see the CURRENT tree on every turn, not only the spawn-time
                 // role config. Without this a Nazgul created before its Troll/Orcs would forever
                 // answer "none spawned yet" even after the TUI shows them in the status tree.
+                let task_for_submission = self.spawn_agent_task_for_submission(thread_id, &task);
                 let additional_context = self.spawn_additional_context_for_thread(thread_id);
                 match app_server
                     .turn_start(

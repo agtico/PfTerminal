@@ -1313,6 +1313,17 @@ impl ThreadRequestProcessor {
         )
         .await?;
 
+        if is_spawn_agent_thread {
+            thread.ensure_rollout_materialized().await;
+            if let Err(err) = thread.flush_rollout().await {
+                tracing::warn!(
+                    thread_id = %thread_id,
+                    error = %err,
+                    "failed to flush newly spawned agent rollout"
+                );
+            }
+        }
+
         let instruction_sources = thread.legacy_instruction_sources().await;
         let config_snapshot = thread
             .config_snapshot()

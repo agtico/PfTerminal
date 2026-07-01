@@ -4,8 +4,11 @@ use crate::config::ConfigBuilder;
 use crate::skills_load_input_from_config;
 use codex_config::ConfigLayerStackOrdering;
 use codex_core_plugins::PluginsManager;
+use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_protocol::config_types::ServiceTier;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::AskForApproval;
 use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use std::fs;
@@ -100,6 +103,65 @@ async fn apply_empty_explorer_role_preserves_current_model_and_reasoning_effort(
     assert_eq!(config.model.as_deref(), Some("gpt-5.4-mini"));
     assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
     assert_eq!(session_flags_layer_count(&config), before_layers);
+}
+
+#[tokio::test]
+async fn built_in_hierarchy_roles_preserve_selected_runtime() {
+    for role_name in ["nazgul", "troll", "orc"] {
+        let (_home, mut config) = test_config_with_cli_overrides(vec![
+            (
+                "model".to_string(),
+                TomlValue::String("gpt-5.5".to_string()),
+            ),
+            (
+                "model_provider".to_string(),
+                TomlValue::String(OPENAI_PROVIDER_ID.to_string()),
+            ),
+            (
+                "model_reasoning_effort".to_string(),
+                TomlValue::String("xhigh".to_string()),
+            ),
+        ])
+        .await;
+
+        apply_role_to_config(&mut config, Some(role_name))
+            .await
+            .expect("built-in hierarchy role should apply");
+
+        assert_eq!(config.model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(config.model_provider_id, OPENAI_PROVIDER_ID);
+        assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::XHigh));
+    }
+}
+
+#[tokio::test]
+async fn built_in_hierarchy_roles_preserve_selected_permissions() {
+    for role_name in ["nazgul", "troll", "orc"] {
+        let (_home, mut config) = test_config_with_cli_overrides(vec![
+            (
+                "approval_policy".to_string(),
+                TomlValue::String("never".to_string()),
+            ),
+            (
+                "sandbox_mode".to_string(),
+                TomlValue::String("danger-full-access".to_string()),
+            ),
+        ])
+        .await;
+
+        apply_role_to_config(&mut config, Some(role_name))
+            .await
+            .expect("built-in hierarchy role should apply");
+
+        assert_eq!(
+            config.permissions.approval_policy.value(),
+            AskForApproval::Never
+        );
+        assert_eq!(
+            config.permissions.effective_permission_profile(),
+            PermissionProfile::Disabled
+        );
+    }
 }
 
 #[tokio::test]

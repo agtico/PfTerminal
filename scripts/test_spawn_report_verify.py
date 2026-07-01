@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Self-checks for spawn-report-verify.py cycle classification."""
+
 from __future__ import annotations
 
 import importlib.util

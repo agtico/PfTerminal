@@ -839,6 +839,51 @@ async fn pro_account_with_no_api_key_uses_chatgpt_auth() {
 }
 
 #[tokio::test]
+async fn load_auth_for_pfterminal_falls_back_to_legacy_codex_home() {
+    let root = tempdir().unwrap();
+    let pfterminal_home = root.path().join(".pfterminal");
+    let legacy_codex_home = root.path().join(".codex");
+    std::fs::create_dir_all(&pfterminal_home).expect("create pfterminal home");
+    std::fs::create_dir_all(&legacy_codex_home).expect("create legacy codex home");
+    let _access_token_guard = remove_access_token_env_var();
+    write_auth_file(
+        AuthFileParams {
+            openai_api_key: Some("sk-legacy-key".to_string()),
+            chatgpt_plan_type: Some("pro".to_string()),
+            chatgpt_account_id: None,
+        },
+        &legacy_codex_home,
+    )
+    .expect("failed to write legacy auth file");
+    let legacy_auth_file = get_auth_file(&legacy_codex_home);
+    let mut legacy_auth_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&legacy_auth_file).expect("read auth"))
+            .expect("parse auth");
+    legacy_auth_json["auth_mode"] = serde_json::Value::String("chatgpt".to_string());
+    std::fs::write(
+        &legacy_auth_file,
+        serde_json::to_string_pretty(&legacy_auth_json).expect("serialize auth"),
+    )
+    .expect("write auth");
+
+    let auth = super::load_auth(
+        &pfterminal_home,
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*forced_chatgpt_workspace_id*/ None,
+        /*chatgpt_base_url*/ None,
+        AuthKeyringBackendKind::Direct,
+        /*agent_identity_authapi_base_url*/ None,
+    )
+    .await
+    .expect("load auth")
+    .expect("auth should fall back to legacy codex home");
+
+    assert_eq!(AuthMode::Chatgpt, auth.auth_mode());
+    assert_eq!(auth.get_chatgpt_user_id().as_deref(), Some("user-12345"));
+}
+
+#[tokio::test]
 #[serial(codex_auth_env)]
 async fn loads_api_key_from_auth_json() {
     let dir = tempdir().unwrap();

@@ -14,10 +14,10 @@ fn model_preset(id: &str, show_in_picker: bool) -> ModelPreset {
         model: format!("{id}-model"),
         display_name: format!("{id} display"),
         description: format!("{id} description"),
-        default_reasoning_effort: ReasoningEffort::Medium,
+        default_reasoning_effort: ReasoningEffort::XHigh,
         supported_reasoning_efforts: vec![ReasoningEffortPreset {
-            effort: ReasoningEffort::Medium,
-            description: "Balanced".to_string(),
+            effort: ReasoningEffort::XHigh,
+            description: "Extra high".to_string(),
         }],
         supports_personality: false,
         additional_speed_tiers: Vec::new(),
@@ -75,7 +75,7 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
             .contains("Available model overrides (optional; inherited parent model is preferred):")
     );
     assert!(description.contains(
-        "- `visible-model`: visible description Reasoning efforts: medium (default). Service tiers: priority."
+        "- `visible-model`: visible description Reasoning efforts: xhigh (default). Service tiers: priority."
     ));
     assert!(!description.contains("hidden-model"));
     assert!(properties.contains_key("task_name"));
