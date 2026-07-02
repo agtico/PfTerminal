@@ -335,7 +335,6 @@ fn chat_completions_wraps_freeform_tools_as_functions() {
         })],
         false,
         false,
-        false,
     )
     .expect("chat tools");
 
@@ -394,7 +393,6 @@ fn ambient_chat_completions_strips_strict_from_tools() {
         &[freeform, function],
         /*strip_strict*/ true,
         /*zai_native_web_search*/ false,
-        /*openrouter_server_web_search*/ false,
     )
     .expect("chat tools");
 
@@ -432,7 +430,6 @@ fn zai_chat_completions_serializes_native_web_search_tool() {
         }],
         /*strip_strict*/ true,
         /*zai_native_web_search*/ true,
-        /*openrouter_server_web_search*/ false,
     )
     .expect("chat tools");
 
@@ -462,7 +459,11 @@ fn zai_chat_completions_serializes_native_web_search_tool() {
 }
 
 #[test]
-fn openrouter_chat_completions_serializes_server_web_search_tool() {
+fn chat_completions_never_serializes_web_search_into_tools_without_zai() {
+    // A non-function `tools` entry makes every regular host ineligible on
+    // OpenRouter and diverts the request to a tool-middleware tier with a
+    // fixed ~10s header hold, so web search must never be expressed as a
+    // chat-completions tools entry (OpenRouter rides `plugins` instead).
     let tools = super::create_tools_json_for_chat_completions(
         &[ToolSpec::WebSearch {
             external_web_access: Some(true),
@@ -474,21 +475,25 @@ fn openrouter_chat_completions_serializes_server_web_search_tool() {
         }],
         /*strip_strict*/ false,
         /*zai_native_web_search*/ false,
-        /*openrouter_server_web_search*/ true,
     )
     .expect("chat tools");
 
+    assert_eq!(tools, Vec::<serde_json::Value>::new());
+}
+
+#[test]
+fn openrouter_web_plugin_maps_context_size_to_max_results() {
     assert_eq!(
-        tools,
-        vec![json!({
-            "type": "openrouter:web_search",
-            "parameters": {
-                "engine": "auto",
-                "max_results": 5,
-                "max_total_results": 10,
-                "search_context_size": "high",
-            },
-        })]
+        super::openrouter_web_plugin(Some(WebSearchContextSize::Low)),
+        json!({"id": "web", "max_results": 3})
+    );
+    assert_eq!(
+        super::openrouter_web_plugin(None),
+        json!({"id": "web", "max_results": 5})
+    );
+    assert_eq!(
+        super::openrouter_web_plugin(Some(WebSearchContextSize::High)),
+        json!({"id": "web", "max_results": 10})
     );
 }
 
@@ -1252,15 +1257,15 @@ fn openrouter_chat_completions_request_preserves_function_tools_with_web_search(
                     tool.get("type").and_then(serde_json::Value::as_str),
                     tool.pointer("/function/name")
                         .and_then(serde_json::Value::as_str),
-                    tool.pointer("/parameters/search_context_size")
-                        .and_then(serde_json::Value::as_str),
                 )
             })
             .collect::<Vec<_>>(),
-        vec![
-            (Some("function"), Some("exec_command"), None),
-            (Some("openrouter:web_search"), None, Some("low")),
-        ]
+        vec![(Some("function"), Some("exec_command"))],
+        "web search must not appear in tools; it rides `plugins`"
+    );
+    assert_eq!(
+        request.plugins,
+        Some(vec![json!({"id": "web", "max_results": 3})])
     );
     assert_eq!(request.tool_choice.as_deref(), Some("auto"));
 }

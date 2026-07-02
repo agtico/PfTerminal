@@ -414,6 +414,8 @@ pub struct ChatCompletionsRequest {
     pub reasoning: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugins: Option<Vec<Value>>,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -677,6 +679,7 @@ mod tests {
             reasoning_effort: None,
             reasoning: Some(json!({ "effort": "medium" })),
             provider: None,
+            plugins: None,
         };
 
         let serialized = serde_json::to_string(&request).expect("serialize request");
@@ -706,6 +709,7 @@ mod tests {
                 "sort": "throughput",
                 "require_parameters": true,
             })),
+            plugins: None,
         };
 
         let body = serde_json::to_value(&request).expect("serialize request");

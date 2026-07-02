@@ -1158,8 +1158,27 @@ impl ModelClient {
             &prompt.tools,
             strip_strict_from_tools,
             self.state.provider.info().is_zai(),
-            self.state.provider.info().is_openrouter(),
         )?;
+        // OpenRouter web search must ride the request-level `plugins` field. A
+        // non-function entry in `tools` makes every GLM host ineligible and
+        // diverts the request to a tool-middleware tier with a fixed ~10s
+        // header hold (openrouter-parity IC probes, 2026-07-02).
+        let openrouter_web_plugins = self
+            .state
+            .provider
+            .info()
+            .is_openrouter()
+            .then(|| {
+                prompt.tools.iter().find_map(|tool| match tool {
+                    ToolSpec::WebSearch {
+                        search_context_size,
+                        ..
+                    } => Some(openrouter_web_plugin(*search_context_size)),
+                    _ => None,
+                })
+            })
+            .flatten()
+            .map(|plugin| vec![plugin]);
         if self.state.provider.info().is_zai() {
             let has_native_web_search = tools
                 .iter()
@@ -1231,6 +1250,7 @@ impl ModelClient {
             reasoning_effort: ambient_reasoning_effort,
             reasoning: openrouter_reasoning,
             provider: self.state.provider.info().chat_completions_provider.clone(),
+            plugins: openrouter_web_plugins,
         })
     }
 
@@ -3138,18 +3158,10 @@ fn create_tools_json_for_chat_completions(
     tools: &[ToolSpec],
     strip_strict: bool,
     zai_native_web_search: bool,
-    openrouter_server_web_search: bool,
 ) -> Result<Vec<Value>> {
     tools
         .iter()
-        .filter_map(|tool| {
-            tool_spec_to_chat_tool(
-                tool,
-                strip_strict,
-                zai_native_web_search,
-                openrouter_server_web_search,
-            )
-        })
+        .filter_map(|tool| tool_spec_to_chat_tool(tool, strip_strict, zai_native_web_search))
         .collect::<Result<Vec<_>>>()
 }
 
@@ -3157,7 +3169,6 @@ fn tool_spec_to_chat_tool(
     tool: &ToolSpec,
     strip_strict: bool,
     zai_native_web_search: bool,
-    openrouter_server_web_search: bool,
 ) -> Option<Result<Value>> {
     match tool {
         ToolSpec::Function(_) => Some(serde_json::to_value(tool).map_err(Into::into).and_then(
@@ -3169,12 +3180,6 @@ fn tool_spec_to_chat_tool(
         )),
         ToolSpec::Freeform(tool) => Some(Ok(freeform_tool_to_chat_tool(tool, strip_strict))),
         ToolSpec::WebSearch { .. } if zai_native_web_search => Some(Ok(zai_web_search_tool())),
-        ToolSpec::WebSearch {
-            search_context_size,
-            ..
-        } if openrouter_server_web_search => {
-            Some(Ok(openrouter_web_search_tool(*search_context_size)))
-        }
         ToolSpec::Namespace(_)
         | ToolSpec::ToolSearch { .. }
         | ToolSpec::ImageGeneration { .. }
@@ -3197,17 +3202,15 @@ fn zai_web_search_tool() -> Value {
     })
 }
 
-fn openrouter_web_search_tool(search_context_size: Option<WebSearchContextSize>) -> Value {
+fn openrouter_web_plugin(search_context_size: Option<WebSearchContextSize>) -> Value {
+    let max_results = match search_context_size.unwrap_or(WebSearchContextSize::Medium) {
+        WebSearchContextSize::Low => 3,
+        WebSearchContextSize::Medium => 5,
+        WebSearchContextSize::High => 10,
+    };
     json!({
-        "type": "openrouter:web_search",
-        "parameters": {
-            "engine": "auto",
-            "max_results": 5,
-            "max_total_results": 10,
-            "search_context_size": search_context_size
-                .unwrap_or(WebSearchContextSize::Medium)
-                .to_string(),
-        },
+        "id": "web",
+        "max_results": max_results,
     })
 }
 
