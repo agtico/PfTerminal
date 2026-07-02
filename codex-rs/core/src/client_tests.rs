@@ -482,6 +482,35 @@ fn chat_completions_never_serializes_web_search_into_tools_without_zai() {
 }
 
 #[test]
+fn baseten_reasoning_effort_maps_to_glm52_supported_set() {
+    let effort = |s: &str| ReasoningEffortConfig::Custom(s.to_string());
+    let map = |model: &str, e: &str| {
+        super::ModelClient::baseten_reasoning_effort(model, Some(&effort(e)))
+    };
+
+    // GLM-5.2 accepts exactly {none, high, max}; everything else must clamp.
+    assert_eq!(map("zai-org/GLM-5.2", "medium").as_deref(), Some("high"));
+    assert_eq!(map("zai-org/GLM-5.2", "low").as_deref(), Some("high"));
+    assert_eq!(map("zai-org/GLM-5.2", "xhigh").as_deref(), Some("max"));
+    assert_eq!(map("zai-org/GLM-5.2", "none").as_deref(), Some("none"));
+    // Other Baseten models pass the configured effort through unchanged.
+    assert_eq!(
+        map("deepseek-ai/DeepSeek-V4-Pro", "medium").as_deref(),
+        Some("medium")
+    );
+    // No configured effort: GLM-5.2 standardizes to "high" (its server
+    // default under-thinks); other models keep their server default.
+    assert_eq!(
+        super::ModelClient::baseten_reasoning_effort("zai-org/GLM-5.2", None).as_deref(),
+        Some("high")
+    );
+    assert_eq!(
+        super::ModelClient::baseten_reasoning_effort("deepseek-ai/DeepSeek-V4-Pro", None),
+        None
+    );
+}
+
+#[test]
 fn openrouter_web_plugin_maps_context_size_to_max_results() {
     assert_eq!(
         super::openrouter_web_plugin(Some(WebSearchContextSize::Low)),
@@ -1319,7 +1348,9 @@ fn baseten_chat_completions_strips_strict_without_zai_reasoning_fields() {
 
     assert_eq!(request.enable_thinking, None);
     assert_eq!(request.emit_usage, None);
-    assert_eq!(request.reasoning_effort, None);
+    // Baseten DOES receive reasoning_effort (passed through for non-GLM-5.2
+    // models); only the Z.AI-specific fields must stay absent.
+    assert_eq!(request.reasoning_effort.as_deref(), Some("medium"));
     assert_eq!(request.reasoning, None);
     assert_eq!(request.prompt_cache_key, None);
     assert!(

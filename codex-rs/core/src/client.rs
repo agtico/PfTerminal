@@ -1016,6 +1016,33 @@ impl ModelClient {
         }
     }
 
+    fn baseten_reasoning_effort(
+        upstream_model: &str,
+        effort: Option<&ReasoningEffortConfig>,
+    ) -> Option<String> {
+        // Baseten's GLM-5.2 accepts exactly {none, high, max} for
+        // `reasoning_effort` and returns 400 for anything else; other Baseten
+        // models take the wider range or ignore the field
+        // (docs.baseten.co/inference/model-apis/reasoning, retrieved 2026-07-02).
+        let is_glm52 = upstream_model.to_ascii_lowercase().contains("glm-5.2");
+        let Some(effort) = effort.map(ReasoningEffortConfig::as_str) else {
+            // Nothing configured anywhere (new slugs have no catalog default):
+            // GLM-5.2's shallow server default abandons hard tasks early, so
+            // standardize it to "high"; other models keep their server default.
+            return is_glm52.then(|| "high".to_string());
+        };
+        if is_glm52 {
+            let mapped = match effort {
+                "none" => "none",
+                "xhigh" | "max" | "deep" | "extra_high" | "extra-high" => "max",
+                _ => "high",
+            };
+            Some(mapped.to_string())
+        } else {
+            Some(effort.to_string())
+        }
+    }
+
     fn openrouter_reasoning(
         model_info: &ModelInfo,
         effort: Option<&ReasoningEffortConfig>,
@@ -1230,6 +1257,20 @@ impl ModelClient {
 
         let upstream_model =
             chat_completions_upstream_model(&model_info.slug, self.state.provider.info());
+        let baseten_reasoning_effort = self
+            .state
+            .provider
+            .info()
+            .is_baseten()
+            .then(|| {
+                Self::baseten_reasoning_effort(
+                    upstream_model,
+                    effort
+                        .as_ref()
+                        .or(model_info.default_reasoning_level.as_ref()),
+                )
+            })
+            .flatten();
 
         Ok(ChatCompletionsRequest {
             model: upstream_model.to_string(),
@@ -1247,7 +1288,7 @@ impl ModelClient {
             response_format,
             emit_usage: uses_zai_reasoning.then_some(true),
             enable_thinking: ambient_enable_thinking,
-            reasoning_effort: ambient_reasoning_effort,
+            reasoning_effort: ambient_reasoning_effort.or(baseten_reasoning_effort),
             reasoning: openrouter_reasoning,
             provider: self.state.provider.info().chat_completions_provider.clone(),
             plugins: openrouter_web_plugins,

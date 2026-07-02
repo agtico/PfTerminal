@@ -101,9 +101,8 @@ pub(crate) fn parse_arguments_for_tool<T>(
 where
     T: for<'de> Deserialize<'de>,
 {
-    serde_json::from_str(arguments).map_err(|err| {
-        malformed_tool_call_error(tool_name, arguments, err.classify(), None, &err)
-    })
+    serde_json::from_str(arguments)
+        .map_err(|err| malformed_tool_call_error(tool_name, arguments, err.classify(), None, &err))
 }
 
 const MALFORMED_TOOL_ARGUMENT_EXCERPT_CHARS: usize = 240;
