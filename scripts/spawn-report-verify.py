@@ -218,9 +218,19 @@ def first_report_turn_after(pane: Pane, when: float) -> Optional[Turn]:
 
 
 def is_report_processing_turn(turn: Turn) -> bool:
+    return any(is_report_prompt(p) for p in turn.trigger_prompts)
+
+
+def is_report_prompt(prompt: str) -> bool:
+    """Return true when a trigger prompt contains the host child-report command.
+
+    Native spawn panes receive role/status context before the actual host task. In
+    those turns the report command is still present as its own line, but it does
+    not start at byte zero.
+    """
     return any(
-        p.startswith(REPORT_PROMPT_PREFIX) or p.startswith(MULTI_REPORT_PROMPT_PREFIX)
-        for p in turn.trigger_prompts
+        prompt.startswith(prefix) or f"\n{prefix}" in prompt
+        for prefix in (REPORT_PROMPT_PREFIX, MULTI_REPORT_PROMPT_PREFIX)
     )
 
 
@@ -292,6 +302,12 @@ def analyze(panes: dict[str, Pane], root: Pane) -> dict:
             )
             if not became_turn:
                 q1["pass"] = False
+
+    if not q1["cycles"]:
+        q1["pass"] = False
+        q1["note"] = (
+            "no child completion/report cycles observed; run was not multi-turn enough"
+        )
 
     # ---- Q2: managers act on reports (>=1 forced rework loop, Nazgul audits code) ----
     rework_loops = 0
@@ -377,6 +393,8 @@ def render_md(report: dict) -> str:
     q1 = report["Q1_report_became_turn"]
     out.append("## Q1 — Did every child→parent report trigger a real turn?")
     out.append(f"**Pass: {q1['pass']}**\n")
+    if q1.get("note"):
+        out.append(f"_Note: {q1['note']}_\n")
     out.append(
         "| child | parent | child turn | parent report turn | became turn | parent busy | acted |"
     )

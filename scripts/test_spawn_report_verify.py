@@ -101,6 +101,30 @@ class SpawnReportVerifyTests(unittest.TestCase):
         self.assertTrue(cycle["report_became_turn"])
         self.assertEqual("turn-1", cycle["parent_report_turn_id"])
 
+    def test_wrapped_spawn_context_report_prompt_becomes_report_turn(self) -> None:
+        report_prompt = (
+            "<pfterminal_spawn_troll_task_context>\n"
+            "Recent child reports delivered to this pane:\n"
+            "- Snaga [orc]; status=done; result=Wrote artifact.\n"
+            "</pfterminal_spawn_troll_task_context>\n\n"
+            "Task from Sauron/Nazgul:\n"
+            "A child pane has reported back. Review the child report below and act "
+            "on it immediately.\n\n"
+            "Snaga [orc]; status=done; result=Wrote artifact."
+        )
+        cycle = self.analyze_one_child_cycle(
+            [
+                make_turn(
+                    1,
+                    started_at=10.1,
+                    completed_at=20.0,
+                    trigger_prompts=[report_prompt],
+                )
+            ]
+        )
+        self.assertTrue(cycle["report_became_turn"])
+        self.assertEqual("turn-1", cycle["parent_report_turn_id"])
+
     def test_following_non_report_prompt_does_not_become_report_turn(self) -> None:
         cycle = self.analyze_one_child_cycle(
             [
@@ -138,6 +162,43 @@ class SpawnReportVerifyTests(unittest.TestCase):
         self.assertTrue(cycle["report_became_turn"])
         self.assertEqual("turn-2", cycle["parent_report_turn_id"])
 
+    def test_wrapped_report_prompt_counts_for_busy_parent_race(self) -> None:
+        wrapped_report_prompt = (
+            "<pfterminal_spawn_troll_task_context>\n"
+            "Recent child reports delivered to this pane:\n"
+            "- Snaga [orc]; status=done; result=Updated artifact.\n"
+            "</pfterminal_spawn_troll_task_context>\n\n"
+            "Task from Sauron/Nazgul:\n"
+            "A child pane has reported back. Review the child report below and act "
+            "on it immediately.\n\n"
+            "Snaga [orc]; status=done; result=Updated artifact."
+        )
+        root = make_pane(
+            "nazgul-thread",
+            "nazgul",
+            turns=[
+                make_turn(
+                    1,
+                    started_at=9.5,
+                    completed_at=20.0,
+                    trigger_prompts=[wrapped_report_prompt],
+                )
+            ],
+        )
+        child = make_pane(
+            "troll-thread",
+            "troll",
+            parent_thread_id=root.thread_id,
+            turns=[make_turn(0, started_at=1.0, completed_at=10.0)],
+        )
+
+        report = verify.analyze({root.thread_id: root, child.thread_id: child}, root)
+
+        cycle = report["Q1_report_became_turn"]["cycles"][0]
+        self.assertTrue(cycle["parent_busy_at_delivery"])
+        self.assertTrue(cycle["report_became_turn"])
+        self.assertTrue(report["Q3_mid_turn_race"]["pass"])
+
     def test_host_dispatch_block_counts_as_rework_dispatch(self) -> None:
         root = make_pane(
             "nazgul-thread",
@@ -166,6 +227,36 @@ class SpawnReportVerifyTests(unittest.TestCase):
         )
         report = verify.analyze({root.thread_id: root, troll.thread_id: troll}, root)
         self.assertEqual(1, report["Q2_manager_acted"]["rework_dispatches"])
+
+    def test_q1_fails_with_note_for_zero_turn_spawn_tree(self) -> None:
+        root = make_pane("nazgul-thread", "nazgul")
+        troll = make_pane("troll-thread", "troll", parent_thread_id=root.thread_id)
+        native_orc = make_pane(
+            "native-orc-thread",
+            "orc",
+            parent_thread_id=troll.thread_id,
+        )
+        claude_orc = make_pane(
+            "claude-orc-thread",
+            "orc",
+            parent_thread_id=troll.thread_id,
+        )
+
+        report = verify.analyze(
+            {
+                root.thread_id: root,
+                troll.thread_id: troll,
+                native_orc.thread_id: native_orc,
+                claude_orc.thread_id: claude_orc,
+            },
+            root,
+        )
+
+        q1 = report["Q1_report_became_turn"]
+        self.assertFalse(q1["pass"])
+        self.assertEqual([], q1["cycles"])
+        self.assertIn("no child completion/report cycles observed", q1["note"])
+        self.assertFalse(report["green"])
 
 
 if __name__ == "__main__":
