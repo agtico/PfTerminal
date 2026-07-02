@@ -1230,6 +1230,7 @@ impl ModelClient {
             enable_thinking: ambient_enable_thinking,
             reasoning_effort: ambient_reasoning_effort,
             reasoning: openrouter_reasoning,
+            provider: self.state.provider.info().chat_completions_provider.clone(),
         })
     }
 

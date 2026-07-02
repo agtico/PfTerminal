@@ -310,6 +310,7 @@ mod tests {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,

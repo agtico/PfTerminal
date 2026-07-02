@@ -834,6 +834,71 @@ model = "z-ai/glm-5.2"
 }
 
 #[tokio::test]
+async fn load_config_applies_openrouter_provider_object_to_builtin_provider() -> std::io::Result<()>
+{
+    let cfg = toml::from_str::<ConfigToml>(
+        r#"
+model_provider = "openrouter"
+model = "z-ai/glm-5.2"
+openrouter_provider = { sort = "throughput", require_parameters = true, allow_fallbacks = true }
+"#,
+    )
+    .expect("config should deserialize");
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        tempdir()?.abs(),
+    )
+    .await?;
+
+    let expected = serde_json::json!({
+        "sort": "throughput",
+        "require_parameters": true,
+        "allow_fallbacks": true,
+    });
+    assert_eq!(config.model_provider_id, OPENROUTER_PROVIDER_ID);
+    assert_eq!(
+        config.model_provider.chat_completions_provider,
+        Some(expected.clone())
+    );
+    assert_eq!(
+        config
+            .model_providers
+            .get(OPENROUTER_PROVIDER_ID)
+            .and_then(|provider| provider.chat_completions_provider.clone()),
+        Some(expected)
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_rejects_non_object_openrouter_provider() {
+    let cfg = toml::from_str::<ConfigToml>(
+        r#"
+model_provider = "openrouter"
+openrouter_provider = "Novita"
+"#,
+    )
+    .expect("config should deserialize");
+
+    let err = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    assert!(
+        err.to_string()
+            .contains("openrouter_provider must be a TOML inline table/object")
+    );
+}
+
+#[tokio::test]
 async fn load_config_openrouter_anthropic_provider_uses_api_login() -> std::io::Result<()> {
     let cfg = toml::from_str::<ConfigToml>(
         r#"

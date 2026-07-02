@@ -20,6 +20,7 @@ use http::header::HeaderValue;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
@@ -215,6 +216,11 @@ pub struct ModelProviderInfo {
     /// value should be used. If the environment variable is not set, or the
     /// value is empty, the header will not be included in the request.
     pub env_http_headers: Option<HashMap<String, String>>,
+    /// Optional `provider` object to include in Chat Completions request bodies.
+    /// This is used by OpenRouter-compatible routes for provider routing
+    /// preferences such as `order`, `sort`, `allow_fallbacks`, and
+    /// `require_parameters`.
+    pub chat_completions_provider: Option<Value>,
     /// Maximum number of times to retry a failed HTTP request to this provider.
     pub request_max_retries: Option<u64>,
     /// Number of times to retry reconnecting a dropped streaming response before failing.
@@ -248,6 +254,12 @@ pub struct ModelProviderAwsAuthInfo {
 
 impl ModelProviderInfo {
     pub fn validate(&self) -> std::result::Result<(), String> {
+        if let Some(chat_completions_provider) = &self.chat_completions_provider
+            && !chat_completions_provider.is_object()
+        {
+            return Err("chat_completions_provider must be a JSON object".to_string());
+        }
+
         if self.aws.is_some() {
             if self.supports_websockets {
                 // TODO(celia-oai): Support AWS SigV4 signing for WebSocket
@@ -452,6 +464,7 @@ impl ModelProviderInfo {
                 .collect(),
             ),
             // Use global defaults for retry/timeout unless overridden in config.toml.
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
@@ -474,6 +487,7 @@ impl ModelProviderInfo {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
@@ -507,6 +521,7 @@ impl ModelProviderInfo {
                 "claude-code-20250219,oauth-2025-04-20".to_string(),
             )])),
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
@@ -529,6 +544,7 @@ impl ModelProviderInfo {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
@@ -551,6 +567,7 @@ impl ModelProviderInfo {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
@@ -573,6 +590,7 @@ impl ModelProviderInfo {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
@@ -595,6 +613,7 @@ impl ModelProviderInfo {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
@@ -617,6 +636,7 @@ impl ModelProviderInfo {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
@@ -639,6 +659,7 @@ impl ModelProviderInfo {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
@@ -661,6 +682,7 @@ impl ModelProviderInfo {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
@@ -683,6 +705,7 @@ impl ModelProviderInfo {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
@@ -705,6 +728,7 @@ impl ModelProviderInfo {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
@@ -727,6 +751,7 @@ impl ModelProviderInfo {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
@@ -757,6 +782,7 @@ impl ModelProviderInfo {
                 AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_VALUE.to_string(),
             )])),
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
@@ -984,6 +1010,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         query_params: None,
         http_headers: None,
         env_http_headers: None,
+        chat_completions_provider: None,
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,

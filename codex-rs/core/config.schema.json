@@ -1580,6 +1580,9 @@
           "description": "Base URL for the provider's OpenAI-compatible API.",
           "type": "string"
         },
+        "chat_completions_provider": {
+          "description": "Optional `provider` object to include in Chat Completions request bodies. This is used by OpenRouter-compatible routes for provider routing preferences such as `order`, `sort`, `allow_fallbacks`, and `require_parameters`."
+        },
         "env_http_headers": {
           "additionalProperties": {
             "type": "string"
@@ -5228,6 +5231,9 @@
     "openai_base_url": {
       "description": "Base URL override for the built-in `openai` model provider.",
       "type": "string"
+    },
+    "openrouter_provider": {
+      "description": "Optional OpenRouter `provider` object injected into Chat Completions requests made through the built-in `openrouter` provider."
     },
     "orchestrator": {
       "allOf": [

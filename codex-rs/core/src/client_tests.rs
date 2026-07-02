@@ -837,6 +837,52 @@ fn openrouter_chat_completions_request_uses_reasoning_object() {
 }
 
 #[test]
+fn openrouter_chat_completions_request_uses_configured_provider_object() {
+    let mut provider_info = ModelProviderInfo::create_openrouter_provider();
+    provider_info.chat_completions_provider = Some(json!({
+        "sort": "throughput",
+        "require_parameters": true,
+    }));
+    let client = ModelClient::new(
+        /*auth_manager*/ None,
+        ThreadId::new(),
+        provider_info,
+        SessionSource::Cli,
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*item_ids_enabled*/ false,
+        /*attestation_provider*/ None,
+    );
+    let prompt = super::Prompt {
+        input: vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "hello".to_string(),
+            }],
+            phase: None,
+            metadata: None,
+        }],
+        ..Default::default()
+    };
+    let model_info = test_openrouter_gemini_model_info();
+
+    let request = client
+        .build_chat_completions_request(&prompt, &model_info, None)
+        .expect("OpenRouter chat request");
+
+    assert_eq!(
+        request.provider,
+        Some(json!({
+            "sort": "throughput",
+            "require_parameters": true,
+        }))
+    );
+}
+
+#[test]
 fn openrouter_anthropic_chat_request_adds_cache_control_markers() {
     let provider_info = ModelProviderInfo::create_openrouter_provider();
     let client = ModelClient::new(

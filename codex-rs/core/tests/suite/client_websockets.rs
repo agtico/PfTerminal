@@ -2107,6 +2107,7 @@ fn websocket_provider_with_connect_timeout(
         query_params: None,
         http_headers: None,
         env_http_headers: None,
+        chat_completions_provider: None,
         request_max_retries: Some(0),
         stream_max_retries: Some(0),
         stream_idle_timeout_ms: Some(5_000),
