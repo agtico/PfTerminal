@@ -205,6 +205,7 @@ fn spawn_chat_completions_stream(
 struct ChatCompletionChunk {
     id: Option<String>,
     model: Option<String>,
+    provider: Option<String>,
     #[serde(default)]
     choices: Vec<ChatChoice>,
     #[serde(default)]
@@ -222,7 +223,16 @@ struct ChatChoice {
 #[derive(Debug, Default, Deserialize)]
 struct ChatDelta {
     content: Option<String>,
+    /// Z.AI/DeepSeek-dialect raw reasoning delta field.
     reasoning_content: Option<String>,
+    /// OpenRouter-normalized reasoning delta field (fast-pool hosts stream
+    /// thinking here; treating it as non-actionable trips the
+    /// actionable-silence timeout on any >180s think).
+    reasoning: Option<String>,
+    /// OpenRouter typed reasoning blocks; may arrive without a plain-text
+    /// `reasoning` twin (e.g. encrypted/redacted thinking).
+    #[serde(default)]
+    reasoning_details: Vec<serde_json::Value>,
     #[serde(default)]
     tool_calls: Vec<ChatToolCallDelta>,
 }
@@ -413,6 +423,7 @@ struct ChatCallMetricsInner {
     parsed_event_count: u64,
     x_request_id: Option<String>,
     generation_id: Option<String>,
+    provider: Option<String>,
     emitted: bool,
 }
 
@@ -436,6 +447,7 @@ struct ChatCallMetricsRecord {
     parsed_event_count: u64,
     x_request_id: Option<String>,
     generation_id: Option<String>,
+    provider: Option<String>,
     finish_reason: String,
     retry_linkage: ChatCallRetryLinkage,
 }
@@ -496,6 +508,16 @@ impl ChatCallMetrics {
         }
     }
 
+    fn record_provider(&self, provider: Option<&str>) {
+        let Some(provider) = provider.filter(|value| !value.is_empty()) else {
+            return;
+        };
+        let mut inner = self.inner.lock().expect("metrics mutex poisoned");
+        if inner.provider.is_none() {
+            inner.provider = Some(provider.to_string());
+        }
+    }
+
     fn record_actionable_event(&self) {
         let elapsed_ms = self.elapsed_ms();
         let mut inner = self.inner.lock().expect("metrics mutex poisoned");
@@ -527,6 +549,7 @@ impl ChatCallMetrics {
                 parsed_event_count: inner.parsed_event_count,
                 x_request_id: inner.x_request_id.clone(),
                 generation_id: inner.generation_id.clone(),
+                provider: inner.provider.clone(),
                 finish_reason,
                 retry_linkage: ChatCallRetryLinkage {
                     same_turn_attempt_index: self.attempt_number,
@@ -604,12 +627,17 @@ impl ChatStreamState {
         }
 
         for choice in chunk.choices {
-            if let Some(delta) = choice.delta.reasoning_content
-                && !delta.is_empty()
-            {
+            // Hosts speak one of two reasoning dialects: Z.AI-style
+            // `reasoning_content` or OpenRouter-normalized `reasoning`.
+            let reasoning_delta = match (choice.delta.reasoning_content, choice.delta.reasoning) {
+                (Some(reasoning), _) if !reasoning.is_empty() => Some(reasoning),
+                (_, Some(reasoning)) if !reasoning.is_empty() => Some(reasoning),
+                _ => None,
+            };
+            if let Some(delta) = reasoning_delta {
                 if self.reasoning_done || self.message_added {
                     trace!(
-                        "dropping late chat completions reasoning_content after visible output started"
+                        "dropping late chat completions reasoning delta after visible output started"
                     );
                 } else {
                     if !self.ensure_reasoning_item_added(tx_event).await {
@@ -1106,6 +1134,7 @@ async fn process_chat_sse(
 
         if let Some(metrics) = metrics.as_ref() {
             metrics.record_generation_id(chunk.id.as_deref());
+            metrics.record_provider(chunk.provider.as_deref());
             if chunk_has_actionable_event(&chunk) {
                 metrics.record_actionable_event();
             }
@@ -1213,6 +1242,12 @@ fn chunk_has_actionable_event(chunk: &ChatCompletionChunk) -> bool {
                 .reasoning_content
                 .as_deref()
                 .is_some_and(|reasoning| !reasoning.is_empty())
+            || choice
+                .delta
+                .reasoning
+                .as_deref()
+                .is_some_and(|reasoning| !reasoning.is_empty())
+            || !choice.delta.reasoning_details.is_empty()
             || choice.delta.tool_calls.iter().any(|tool_call| {
                 tool_call.id.as_deref().is_some_and(|id| !id.is_empty())
                     || tool_call.function.as_ref().is_some_and(|function| {
@@ -1622,6 +1657,73 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reasoning_dialects_count_as_actionable() {
+        let normalized: ChatCompletionChunk =
+            serde_json::from_str(r#"{"choices":[{"delta":{"reasoning":"thinking"}}]}"#)
+                .expect("chunk");
+        assert!(chunk_has_actionable_event(&normalized));
+
+        let details_only: ChatCompletionChunk = serde_json::from_str(
+            r#"{"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.encrypted"}]}}]}"#,
+        )
+        .expect("chunk");
+        assert!(chunk_has_actionable_event(&details_only));
+
+        let role_only: ChatCompletionChunk =
+            serde_json::from_str(r#"{"choices":[{"delta":{"role":"assistant"}}]}"#).expect("chunk");
+        assert!(!chunk_has_actionable_event(&role_only));
+    }
+
+    #[tokio::test]
+    async fn normalized_reasoning_deltas_keep_actionable_silence_alive() {
+        // Fast-pool OpenRouter hosts (StreamLake/AkashML/Together, probed
+        // 2026-07-02) stream thinking as `delta.reasoning`, not
+        // `reasoning_content`. Six reasoning frames spanning 120ms with a
+        // 60ms actionable timeout must survive because each delta refreshes
+        // the deadline; pre-fix this stream was killed at 60ms.
+        let reasoning_frame = |i: u64| {
+            format!(
+                "data: {{\"id\":\"chatcmpl-r\",\"provider\":\"StreamLake\",\"choices\":[{{\"delta\":{{\"reasoning\":\"t{i}\"}}}}]}}\n\n"
+            )
+            .into_bytes()
+        };
+        let mut frames: Vec<(Duration, Vec<u8>)> = (0..6)
+            .map(|i| (Duration::from_millis(20), reasoning_frame(i)))
+            .collect();
+        frames.push((
+            Duration::from_millis(20),
+            br#"data: {"id":"chatcmpl-r","choices":[{"delta":{"content":"done"}}]}"#.to_vec(),
+        ));
+        frames.push((Duration::ZERO, b"\n\n".to_vec()));
+        frames.push((Duration::ZERO, b"data: [DONE]\n\n".to_vec()));
+        let (tx_event, mut rx_event) = mpsc::channel(1600);
+
+        process_chat_sse(
+            delayed_body(frames),
+            tx_event,
+            Duration::from_millis(500),
+            Duration::from_millis(60),
+            /*telemetry*/ None,
+            None,
+            /*metrics*/ None,
+        )
+        .await;
+
+        let mut saw_reasoning_delta = false;
+        while let Some(event) = rx_event.recv().await {
+            match event {
+                Ok(ResponseEvent::ReasoningContentDelta { .. }) => saw_reasoning_delta = true,
+                Err(err) => panic!("normalized reasoning stream must survive, got {err:?}"),
+                Ok(_) => {}
+            }
+        }
+        assert!(
+            saw_reasoning_delta,
+            "normalized `reasoning` deltas must surface as reasoning events"
+        );
+    }
+
     #[tokio::test]
     async fn truly_silent_stream_hits_idle_timeout() {
         let body: ByteStream =
@@ -1687,6 +1789,7 @@ mod tests {
             parsed_event_count: 4,
             x_request_id: Some("req_123".to_string()),
             generation_id: Some("gen_456".to_string()),
+            provider: Some("StreamLake".to_string()),
             finish_reason: "ok".to_string(),
             retry_linkage: ChatCallRetryLinkage {
                 same_turn_attempt_index: 2,
