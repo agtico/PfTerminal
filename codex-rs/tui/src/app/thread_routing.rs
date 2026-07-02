@@ -1589,6 +1589,18 @@ impl App {
                     spawn_turn_result_message(&notification.turn),
                 )
             }
+            ServerNotification::AgentMessageDelta(notification) => {
+                let Ok(thread_id) = ThreadId::from_string(&notification.thread_id) else {
+                    return;
+                };
+                self.dispatch_native_spawn_task_blocks_from_agent_message_delta(
+                    thread_id,
+                    &notification.turn_id,
+                    &notification.item_id,
+                    &notification.delta,
+                );
+                return;
+            }
             _ => return,
         };
 

@@ -636,10 +636,8 @@ pub(crate) struct App {
     /// into a parent processing turn) when the parent goes idle. Keyed by parent thread id so a
     /// flush only fires for the pane that actually became idle.
     pub(crate) spawn_pending_reports_by_thread: HashMap<ThreadId, VecDeque<String>>,
-    /// Native Codex turn ids whose pfterminal_send_task blocks have already been routed. The same
-    /// app-server notification can be observed during enqueue and active replay, so dispatch blocks
-    /// must be consumed exactly once.
-    pub(crate) spawn_processed_dispatch_turns: HashSet<(ThreadId, String)>,
+    pub(crate) spawn_processed_dispatches: HashSet<(ThreadId, String, String, String)>,
+    pub(crate) spawn_streaming_agent_messages: HashMap<(ThreadId, String, String), String>,
     pub(crate) spawn_nazgul_pane_id: Option<String>,
     side_threads: HashMap<ThreadId, SideThreadState>,
     pub(crate) claude_panes: crate::claude_panes::ClaudePaneRegistry,
@@ -1200,7 +1198,8 @@ See the PFTerminal keymap documentation for supported actions and examples."
             spawn_status_by_thread: HashMap::new(),
             spawn_parent_reports_by_node: HashMap::new(),
             spawn_pending_reports_by_thread: HashMap::new(),
-            spawn_processed_dispatch_turns: HashSet::new(),
+            spawn_processed_dispatches: HashSet::new(),
+            spawn_streaming_agent_messages: HashMap::new(),
             spawn_nazgul_pane_id: restored_spawn_nazgul_pane_id,
             side_threads: HashMap::new(),
             claude_panes: restored_claude_panes,
