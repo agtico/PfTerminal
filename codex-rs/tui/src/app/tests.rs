@@ -1883,6 +1883,110 @@ async fn child_report_to_idle_parent_triggers_a_processing_turn() {
 }
 
 #[tokio::test]
+async fn child_report_processing_turn_preserves_actionable_tail_content() {
+    let (mut app, mut rx, _op_rx) = make_test_app_with_channels().await;
+    let troll_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000405").expect("valid thread id");
+    let orc_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000406").expect("valid thread id");
+
+    app.upsert_agent_picker_thread(
+        troll_thread_id,
+        Some("Burzum".to_string()),
+        Some("troll".to_string()),
+        /*is_closed*/ false,
+    );
+    app.upsert_agent_picker_thread(
+        orc_thread_id,
+        Some("Snaga".to_string()),
+        Some("orc".to_string()),
+        /*is_closed*/ false,
+    );
+    app.spawn_parent_by_thread
+        .insert(orc_thread_id, troll_thread_id);
+
+    let actionable_tail = "ANGMAR ACTION REQUIRED: audit the evidence and write ACCEPTANCE.md";
+    let report = format!(
+        "{}\n\n{}",
+        "Independent re-verification confirms both artifacts are intact. ".repeat(12),
+        actionable_tail
+    );
+
+    app.record_spawn_child_report_for_thread(
+        orc_thread_id,
+        codex_app_server_protocol::CollabAgentStatus::Completed,
+        Some(report.clone()),
+    );
+
+    let task = drain_spawn_agent_task_for(&mut rx, troll_thread_id)
+        .expect("idle parent should immediately receive the child report task");
+    assert!(
+        task.contains(actionable_tail),
+        "parent turn input must preserve actionable tail content, got:\n{task}"
+    );
+
+    app.agent_navigation.set_running(troll_thread_id, true);
+    let queued_report = format!("{report}\nQueued follow-up report.");
+    app.record_spawn_child_report_for_thread(
+        orc_thread_id,
+        codex_app_server_protocol::CollabAgentStatus::Completed,
+        Some(queued_report),
+    );
+
+    rx.try_recv()
+        .expect_err("busy parent should not get an immediate report turn");
+    assert!(app.flush_pending_reports_for_thread(troll_thread_id));
+    let task = drain_spawn_agent_task_for(&mut rx, troll_thread_id)
+        .expect("idle transition should flush queued report as a task");
+    assert!(
+        task.contains(actionable_tail),
+        "flushed parent turn input must preserve actionable tail content, got:\n{task}"
+    );
+}
+
+#[tokio::test]
+async fn native_turn_completion_report_preserves_actionable_tail_content() {
+    let (mut app, mut rx, _op_rx) = make_test_app_with_channels().await;
+    let troll_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000407").expect("valid thread id");
+    let orc_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000408").expect("valid thread id");
+
+    app.upsert_agent_picker_thread(
+        troll_thread_id,
+        Some("Burzum".to_string()),
+        Some("troll".to_string()),
+        /*is_closed*/ false,
+    );
+    app.upsert_agent_picker_thread(
+        orc_thread_id,
+        Some("Snaga".to_string()),
+        Some("orc".to_string()),
+        /*is_closed*/ false,
+    );
+    app.spawn_parent_by_thread
+        .insert(orc_thread_id, troll_thread_id);
+
+    let actionable_tail = "ANGMAR ACTION REQUIRED: audit the evidence and write ACCEPTANCE.md";
+    let report = format!(
+        "{}\n\n{}",
+        "Independent re-verification confirms both artifacts are intact. ".repeat(12),
+        actionable_tail
+    );
+
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        turn_completed_with_agent_message(orc_thread_id, "turn-1", TurnStatus::Completed, &report),
+    ));
+
+    let task = drain_spawn_agent_task_for(&mut rx, troll_thread_id)
+        .expect("native completion should submit a parent report-processing turn");
+    assert!(
+        task.contains(actionable_tail),
+        "native completion report must preserve actionable tail content, got:\n{task}"
+    );
+}
+
+#[tokio::test]
 async fn child_report_to_busy_parent_is_queued_not_dropped_then_flushed_on_idle() {
     let (mut app, mut rx, _op_rx) = make_test_app_with_channels().await;
     let troll_thread_id =

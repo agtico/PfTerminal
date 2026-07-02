@@ -49,6 +49,7 @@ const SEND_TASK_CLOSE: &str = "</pfterminal_send_task>";
 const SPAWN_PARENT_REPORT_LIMIT: usize = 12;
 const SPAWN_PROCESSED_DISPATCH_TURN_LIMIT: usize = 1024;
 const SPAWN_PROCESSED_DISPATCH_TURN_RETAIN: usize = SPAWN_PROCESSED_DISPATCH_TURN_LIMIT / 2;
+const SPAWN_REPORT_RESULT_MAX_CHARS: usize = 12_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SpawnTaskDispatch {
@@ -3178,10 +3179,16 @@ impl App {
             description.push_str(&format!("; audit: {}", path.display()));
         }
         if let Some(task) = pane.latest_task_message.as_deref() {
-            description.push_str(&format!("; current task: {task}"));
+            description.push_str(&format!(
+                "; current task: {}",
+                compact_spawn_context_value(task)
+            ));
         }
         if let Some(result) = pane.latest_result_message.as_deref() {
-            description.push_str(&format!("; latest result: {result}"));
+            description.push_str(&format!(
+                "; latest result: {}",
+                compact_spawn_context_value(result)
+            ));
         }
         let pane_id = pane.id.clone();
         SelectionItem {
@@ -4420,6 +4427,37 @@ fn compact_spawn_context_value(value: &str) -> String {
     truncated
 }
 
+pub(crate) fn bounded_spawn_report_value(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.chars().count() <= SPAWN_REPORT_RESULT_MAX_CHARS {
+        return trimmed.to_string();
+    }
+
+    let marker = format!(
+        "\n[spawn report truncated: middle omitted to keep parent prompt under {SPAWN_REPORT_RESULT_MAX_CHARS} chars]\n"
+    );
+    let available = SPAWN_REPORT_RESULT_MAX_CHARS.saturating_sub(marker.chars().count());
+    if available == 0 {
+        return trimmed
+            .chars()
+            .take(SPAWN_REPORT_RESULT_MAX_CHARS)
+            .collect();
+    }
+
+    let head_chars = available / 2;
+    let tail_chars = available.saturating_sub(head_chars);
+    let head = trimmed.chars().take(head_chars).collect::<String>();
+    let tail = trimmed
+        .chars()
+        .rev()
+        .take(tail_chars)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    format!("{head}{marker}{tail}")
+}
+
 fn spawn_agent_description(
     status: &str,
     thread_id: ThreadId,
@@ -4428,10 +4466,16 @@ fn spawn_agent_description(
 ) -> String {
     let mut parts = vec![status.to_string()];
     if let Some(task) = task.filter(|task| !task.trim().is_empty()) {
-        parts.push(format!("current task: {task}"));
+        parts.push(format!(
+            "current task: {}",
+            compact_spawn_context_value(task)
+        ));
     }
     if let Some(result) = result.filter(|result| !result.trim().is_empty()) {
-        parts.push(format!("latest result: {result}"));
+        parts.push(format!(
+            "latest result: {}",
+            compact_spawn_context_value(result)
+        ));
     }
     if parts.len() == 1 {
         parts.push(thread_id.to_string());
@@ -4458,7 +4502,7 @@ fn collab_status_label(status: &codex_app_server_protocol::CollabAgentStatus) ->
 fn spawn_child_report(child_title: &str, status: &str, result: Option<&str>) -> String {
     let mut report = format!("{child_title}; status={status}");
     if let Some(result) = result.filter(|result| !result.trim().is_empty()) {
-        let _ = write!(report, "; result={}", compact_spawn_context_value(result));
+        let _ = write!(report, "; result={}", bounded_spawn_report_value(result));
     }
     report
 }

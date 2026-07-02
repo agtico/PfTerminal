@@ -1586,7 +1586,7 @@ impl App {
                 (
                     thread_id,
                     status,
-                    spawn_turn_result_preview(&notification.turn),
+                    spawn_turn_result_message(&notification.turn),
                 )
             }
             _ => return,
@@ -1708,26 +1708,16 @@ impl App {
     }
 }
 
-fn spawn_turn_result_preview(turn: &codex_app_server_protocol::Turn) -> Option<String> {
-    const MAX_CHARS: usize = 240;
+fn spawn_turn_result_message(turn: &codex_app_server_protocol::Turn) -> Option<String> {
     let text = turn.items.iter().rev().find_map(|item| match item {
         codex_app_server_protocol::ThreadItem::AgentMessage { text, .. } => {
-            let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
-            (!compact.is_empty()).then_some(compact)
+            let trimmed = text.trim();
+            (!trimmed.is_empty()).then_some(trimmed)
         }
         _ => None,
     })?;
 
-    if text.chars().count() <= MAX_CHARS {
-        return Some(text);
-    }
-
-    let mut truncated = text
-        .chars()
-        .take(MAX_CHARS.saturating_sub(3))
-        .collect::<String>();
-    truncated.push_str("...");
-    Some(truncated)
+    Some(crate::spawn_orchestration::bounded_spawn_report_value(text))
 }
 
 #[cfg(test)]
