@@ -289,6 +289,9 @@ impl App {
     /// on every turn so the pane sees the CURRENT Troll/Orc hierarchy — e.g. a Nazgul learns that a
     /// Troll and two Orcs now exist even though none were present when it was spawned.
     pub(crate) fn spawn_context_for_thread(&self, thread_id: ThreadId) -> Option<String> {
+        if self.is_codex_main_bound_spawn_root_thread(thread_id) {
+            return Some(self.render_nazgul_spawn_context(CODEX_MAIN_PANE_ID));
+        }
         let role = self
             .agent_navigation
             .get(&thread_id)
@@ -1218,7 +1221,12 @@ impl App {
         if dispatches.is_empty() {
             return;
         }
-        self.dispatch_spawn_task_blocks(&thread_node_id(source_thread_id), dispatches);
+        let source_node_id = if self.is_codex_main_bound_spawn_root_thread(source_thread_id) {
+            self.spawn_root_node_id()
+        } else {
+            thread_node_id(source_thread_id)
+        };
+        self.dispatch_spawn_task_blocks(&source_node_id, dispatches);
     }
 
     fn evict_spawn_processed_dispatch_turns_if_needed(
@@ -2628,6 +2636,9 @@ impl App {
     }
 
     pub(crate) fn is_spawn_orchestration_thread(&self, thread_id: ThreadId) -> bool {
+        if self.is_codex_main_bound_spawn_root_thread(thread_id) {
+            return true;
+        }
         self.spawn_status_by_thread.contains_key(&thread_id)
             || self.spawn_parent_by_thread.contains_key(&thread_id)
             || self
@@ -2642,6 +2653,24 @@ impl App {
                 .is_some_and(|role| {
                     role == NAZGUL_ROLE_NAME || role == TROLL_ROLE || role == ORC_ROLE
                 })
+    }
+
+    fn is_codex_main_bound_spawn_root_thread(&self, thread_id: ThreadId) -> bool {
+        self.primary_thread_id == Some(thread_id)
+            && self.spawn_nazgul_bound_target() == CODEX_MAIN_PANE_ID
+            && self.has_spawn_orchestration_state()
+    }
+
+    fn has_spawn_orchestration_state(&self) -> bool {
+        self.spawn_nazgul_pane_id.is_some()
+            || !self.spawn_status_by_thread.is_empty()
+            || !self.spawn_parent_by_thread.is_empty()
+            || !self.spawn_parent_by_node.is_empty()
+            || self
+                .claude_panes
+                .panes()
+                .iter()
+                .any(|pane| pane.spawn_role.is_some())
     }
 
     fn nazgul_pane_item(

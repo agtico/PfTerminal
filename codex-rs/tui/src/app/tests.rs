@@ -3220,6 +3220,82 @@ Done."#;
 }
 
 #[tokio::test]
+async fn codex_main_bound_nazgul_receives_spawn_context_and_routes_dispatch_blocks() {
+    // D5 repro: when the spawn root is the default Codex Main pane, the hierarchy is pane-bound
+    // (`pane:codex-main`) rather than stored as a native Nazgul role thread. Normal Main turns
+    // must still receive the live spawn contract and host dispatch blocks must route to existing
+    // Troll/Orc panes instead of encouraging generic `spawn_agent` fallback.
+    let (mut app, mut rx, _op_rx) = make_test_app_with_channels().await;
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000625").expect("valid thread id");
+    let troll_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000626").expect("valid thread id");
+
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(main_thread_id);
+    // Leave spawn_nazgul_pane_id unset: the default bound root is Codex Main.
+    app.upsert_agent_picker_thread(
+        troll_thread_id,
+        Some("Burzum".to_string()),
+        Some("troll".to_string()),
+        /*is_closed*/ false,
+    );
+    app.spawn_parent_by_node.insert(
+        crate::spawn_orchestration::thread_node_id(troll_thread_id),
+        crate::spawn_orchestration::pane_node_id(crate::claude_panes::CODEX_MAIN_PANE_ID),
+    );
+
+    let context_map = app
+        .spawn_additional_context_for_thread(main_thread_id)
+        .expect("Codex Main root should receive live spawn context");
+    let context = &context_map
+        .get("pfterminal_spawn_context")
+        .expect("spawn context entry")
+        .value;
+    assert!(context.contains("Codex - Main"), "got: {context}");
+    assert!(context.contains("Burzum [troll]"), "got: {context}");
+    assert!(context.contains("pfterminal_send_task"), "got: {context}");
+    assert!(
+        context.contains("Do not spawn fresh panes"),
+        "got: {context}"
+    );
+
+    let message = r#"Dispatching to the existing Troll.
+<pfterminal_send_task target="Burzum">
+Run the D5 discriminating task through the existing crew.
+</pfterminal_send_task>
+Done."#;
+    let notification = turn_completed_with_agent_message(
+        main_thread_id,
+        "turn-codex-main-dispatch",
+        TurnStatus::Completed,
+        message,
+    );
+
+    app.update_spawn_status_for_thread_notification(&notification);
+
+    let mut routed_tasks = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if let AppEvent::SubmitSpawnAgentTask { thread_id, task } = event {
+            routed_tasks.push((thread_id, task));
+        }
+    }
+
+    assert_eq!(routed_tasks.len(), 1);
+    assert_eq!(routed_tasks[0].0, troll_thread_id);
+    assert!(
+        routed_tasks[0]
+            .1
+            .contains("Assigned by Codex - Main to Burzum [troll]")
+    );
+    assert!(
+        routed_tasks[0]
+            .1
+            .contains("Run the D5 discriminating task through the existing crew")
+    );
+}
+
+#[tokio::test]
 async fn native_troll_dispatch_blocks_route_distinct_tasks_to_orcs() {
     let (mut app, mut rx, _op_rx) = make_test_app_with_channels().await;
     let nazgul_thread_id =
