@@ -1596,6 +1596,7 @@ impl ModelClientSession {
                 }
                 headers
             },
+            same_turn_attempt_index: None,
         }
     }
 
@@ -2007,6 +2008,7 @@ impl ModelClientSession {
         effort: Option<ReasoningEffortConfig>,
         responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
+        same_turn_attempt_index: u64,
     ) -> Result<ResponseStream> {
         let auth_manager = self.client.state.provider.auth_manager();
         let mut auth_recovery = auth_manager
@@ -2033,6 +2035,7 @@ impl ModelClientSession {
             let mut options = self
                 .build_chat_completions_options(responses_metadata)
                 .await;
+            options.same_turn_attempt_index = Some(same_turn_attempt_index);
             trace_stream_timing(
                 "chat_http_before_build_request",
                 provider_request_started_at,
@@ -2543,6 +2546,33 @@ impl ModelClientSession {
         responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
     ) -> Result<ResponseStream> {
+        self.stream_with_same_turn_attempt(
+            prompt,
+            model_info,
+            session_telemetry,
+            effort,
+            summary,
+            service_tier,
+            responses_metadata,
+            inference_trace,
+            1,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn stream_with_same_turn_attempt(
+        &mut self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        session_telemetry: &SessionTelemetry,
+        effort: Option<ReasoningEffortConfig>,
+        summary: ReasoningSummaryConfig,
+        service_tier: Option<String>,
+        responses_metadata: &CodexResponsesMetadata,
+        inference_trace: &InferenceTraceContext,
+        same_turn_attempt_index: u64,
+    ) -> Result<ResponseStream> {
         let wire_api = self.client.state.provider.info().wire_api;
         match wire_api {
             WireApi::Responses => {
@@ -2589,6 +2619,7 @@ impl ModelClientSession {
                     effort,
                     responses_metadata,
                     inference_trace,
+                    same_turn_attempt_index,
                 ))
                 .await
             }

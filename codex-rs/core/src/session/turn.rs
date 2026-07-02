@@ -1230,6 +1230,7 @@ async fn run_sampling_request(
             base_instructions.clone(),
         );
         trace_turn_timing("after_build_prompt", sampling_started_at);
+        let same_turn_attempt_index = retries + 1;
         let err = match try_run_sampling_request(
             tool_runtime.clone(),
             Arc::clone(&sess),
@@ -1239,6 +1240,7 @@ async fn run_sampling_request(
             responses_metadata,
             Arc::clone(&turn_diff_tracker),
             &prompt,
+            same_turn_attempt_index,
             cancellation_token.child_token(),
         )
         .await
@@ -2495,6 +2497,7 @@ async fn try_run_sampling_request(
     responses_metadata: &CodexResponsesMetadata,
     turn_diff_tracker: SharedTurnDiffTracker,
     prompt: &Prompt,
+    same_turn_attempt_index: u64,
     cancellation_token: CancellationToken,
 ) -> CodexResult<SamplingRequestResult> {
     let try_started_at = Instant::now();
@@ -2526,7 +2529,7 @@ async fn try_run_sampling_request(
     let sampling_timing_guard = turn_context.turn_timing_state.begin_sampling();
     trace_turn_timing("before_client_stream", try_started_at);
     let stream_result = client_session
-        .stream(
+        .stream_with_same_turn_attempt(
             prompt,
             &turn_context.model_info,
             &turn_context.session_telemetry,
@@ -2535,6 +2538,7 @@ async fn try_run_sampling_request(
             turn_context.config.service_tier.clone(),
             responses_metadata,
             &inference_trace,
+            same_turn_attempt_index,
         )
         .instrument(trace_span!("stream_request"))
         .or_cancel(&cancellation_token)

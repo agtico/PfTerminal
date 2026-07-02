@@ -349,7 +349,7 @@ async fn run_remote_compaction_request_v2(
     let mut retries = 0;
     loop {
         let result = match client_session
-            .stream(
+            .stream_with_same_turn_attempt(
                 prompt,
                 &turn_context.model_info,
                 &turn_context.session_telemetry,
@@ -358,6 +358,7 @@ async fn run_remote_compaction_request_v2(
                 turn_context.config.service_tier.clone(),
                 responses_metadata,
                 &InferenceTraceContext::disabled(),
+                retries + 1,
             )
             .await
         {
