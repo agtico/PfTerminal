@@ -3379,6 +3379,101 @@ Both sent."#;
 }
 
 #[tokio::test]
+async fn native_troll_streaming_dispatch_routes_valid_blocks_before_final_summary() {
+    let (mut app, mut rx, _op_rx) = make_test_app_with_channels().await;
+    let nazgul_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000641").expect("valid thread id");
+    let troll_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000642").expect("valid thread id");
+    let snaga_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000643").expect("valid thread id");
+    let ghash_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000644").expect("valid thread id");
+
+    app.upsert_agent_picker_thread(
+        nazgul_thread_id,
+        Some("Angmar".to_string()),
+        Some("nazgul".to_string()),
+        /*is_closed*/ false,
+    );
+    app.upsert_agent_picker_thread(
+        troll_thread_id,
+        Some("Burzum".to_string()),
+        Some("troll".to_string()),
+        /*is_closed*/ false,
+    );
+    app.upsert_agent_picker_thread(
+        snaga_thread_id,
+        Some("Snaga".to_string()),
+        Some("orc".to_string()),
+        /*is_closed*/ false,
+    );
+    app.upsert_agent_picker_thread(
+        ghash_thread_id,
+        Some("Ghash".to_string()),
+        Some("orc".to_string()),
+        /*is_closed*/ false,
+    );
+    app.spawn_parent_by_thread
+        .insert(troll_thread_id, nazgul_thread_id);
+    app.spawn_parent_by_thread
+        .insert(snaga_thread_id, troll_thread_id);
+    app.spawn_parent_by_thread
+        .insert(ghash_thread_id, troll_thread_id);
+
+    let streaming_message = r#"Plan set. Dispatching to both Orcs now in parallel.
+
+<pfterminal_send_task target="Snaga">
+D11 native dispatch reached Snaga. Write the artifact.
+</pfterminal_send_task>
+
+<pfterminal_send_task target="Ghash">
+D11 native dispatch reached Ghash. Write the artifact.
+</pfterminal_send_task</think>Both dispatches sent."#;
+    app.update_spawn_status_for_thread_notification(&agent_message_delta_notification(
+        troll_thread_id,
+        "turn-d11-streaming-dispatch",
+        "agent-message-d11",
+        streaming_message,
+    ));
+
+    let mut routed_tasks = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if let AppEvent::SubmitSpawnAgentTask { thread_id, task } = event {
+            routed_tasks.push((thread_id, task));
+        }
+    }
+
+    assert_eq!(routed_tasks.len(), 1);
+    assert_eq!(routed_tasks[0].0, snaga_thread_id);
+    assert!(
+        routed_tasks[0]
+            .1
+            .contains("Assigned by Burzum [troll] to Snaga [orc]")
+    );
+    assert!(
+        routed_tasks[0]
+            .1
+            .contains("D11 native dispatch reached Snaga")
+    );
+
+    app.update_spawn_status_for_thread_notification(&turn_completed_with_agent_message(
+        troll_thread_id,
+        "turn-d11-streaming-dispatch",
+        TurnStatus::Completed,
+        "D5 acceptance choreograph complete. Report dispatched to Angmar.",
+    ));
+
+    while let Ok(event) = rx.try_recv() {
+        if let AppEvent::SubmitSpawnAgentTask { thread_id, .. } = event
+            && (thread_id == snaga_thread_id || thread_id == ghash_thread_id)
+        {
+            panic!("final summary without dispatch blocks must not enqueue duplicate child tasks");
+        }
+    }
+}
+
+#[tokio::test]
 async fn active_native_nazgul_turn_receives_live_spawn_context_with_orcs() {
     // Direct user input in the active Nazgul pane uses the normal active-thread submit path, not
     // SubmitSpawnAgentTask. It still must receive live hierarchy context; otherwise the Nazgul sees
@@ -6719,7 +6814,8 @@ async fn make_test_app() -> App {
         spawn_status_by_thread: HashMap::new(),
         spawn_parent_reports_by_node: HashMap::new(),
         spawn_pending_reports_by_thread: HashMap::new(),
-        spawn_processed_dispatch_turns: HashSet::new(),
+        spawn_processed_dispatches: HashSet::new(),
+        spawn_streaming_agent_messages: HashMap::new(),
         spawn_nazgul_pane_id: None,
         side_threads: HashMap::new(),
         claude_panes: crate::claude_panes::ClaudePaneRegistry::new(),
@@ -6793,7 +6889,8 @@ async fn make_test_app_with_channels() -> (
             spawn_status_by_thread: HashMap::new(),
             spawn_parent_reports_by_node: HashMap::new(),
             spawn_pending_reports_by_thread: HashMap::new(),
-            spawn_processed_dispatch_turns: HashSet::new(),
+            spawn_processed_dispatches: HashSet::new(),
+            spawn_streaming_agent_messages: HashMap::new(),
             spawn_nazgul_pane_id: None,
             side_threads: HashMap::new(),
             claude_panes: crate::claude_panes::ClaudePaneRegistry::new(),

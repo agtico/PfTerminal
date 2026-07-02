@@ -1191,20 +1191,9 @@ impl App {
         source_thread_id: ThreadId,
         turn: &codex_app_server_protocol::Turn,
     ) {
-        if !self.is_spawn_orchestration_thread(source_thread_id) {
-            return;
-        }
         if turn.status == codex_app_server_protocol::TurnStatus::InProgress {
             return;
         }
-        let dispatch_turn = (source_thread_id, turn.id.clone());
-        if !self
-            .spawn_processed_dispatch_turns
-            .insert(dispatch_turn.clone())
-        {
-            return;
-        }
-        self.evict_spawn_processed_dispatch_turns_if_needed(&dispatch_turn);
         let mut assistant_text = String::new();
         for item in &turn.items {
             if let codex_app_server_protocol::ThreadItem::AgentMessage { text, .. } = item {
@@ -1214,6 +1203,49 @@ impl App {
                 assistant_text.push_str(text);
             }
         }
+        self.dispatch_native_spawn_task_blocks_from_text(
+            source_thread_id,
+            &turn.id,
+            &assistant_text,
+        );
+        self.clear_spawn_streaming_agent_message_buffers(source_thread_id, &turn.id);
+    }
+
+    pub(crate) fn dispatch_native_spawn_task_blocks_from_agent_message_delta(
+        &mut self,
+        source_thread_id: ThreadId,
+        turn_id: &str,
+        item_id: &str,
+        delta: &str,
+    ) {
+        if !self.is_spawn_orchestration_thread(source_thread_id) || delta.is_empty() {
+            return;
+        }
+        let buffer_key = (source_thread_id, turn_id.to_string(), item_id.to_string());
+        let assistant_text = {
+            let buffer = self
+                .spawn_streaming_agent_messages
+                .entry(buffer_key)
+                .or_default();
+            buffer.push_str(delta);
+            buffer.clone()
+        };
+        self.dispatch_native_spawn_task_blocks_from_text(
+            source_thread_id,
+            turn_id,
+            &assistant_text,
+        );
+    }
+
+    fn dispatch_native_spawn_task_blocks_from_text(
+        &mut self,
+        source_thread_id: ThreadId,
+        turn_id: &str,
+        assistant_text: &str,
+    ) {
+        if !self.is_spawn_orchestration_thread(source_thread_id) {
+            return;
+        }
         if assistant_text.trim().is_empty() {
             return;
         }
@@ -1221,40 +1253,83 @@ impl App {
         if dispatches.is_empty() {
             return;
         }
+        let mut pending_dispatches = Vec::new();
+        for dispatch in dispatches {
+            if self.mark_spawn_task_dispatch_processed(source_thread_id, turn_id, &dispatch) {
+                pending_dispatches.push(dispatch);
+            }
+        }
+        if pending_dispatches.is_empty() {
+            return;
+        }
         let source_node_id = if self.is_codex_main_bound_spawn_root_thread(source_thread_id) {
             self.spawn_root_node_id()
         } else {
             thread_node_id(source_thread_id)
         };
-        self.dispatch_spawn_task_blocks(&source_node_id, dispatches);
+        self.dispatch_spawn_task_blocks(&source_node_id, pending_dispatches);
     }
 
-    fn evict_spawn_processed_dispatch_turns_if_needed(
+    fn mark_spawn_task_dispatch_processed(
         &mut self,
-        protected_turn: &(ThreadId, String),
+        source_thread_id: ThreadId,
+        turn_id: &str,
+        dispatch: &SpawnTaskDispatch,
+    ) -> bool {
+        let dispatch_key = (
+            source_thread_id,
+            turn_id.to_string(),
+            dispatch.target.trim().to_string(),
+            dispatch.task.clone(),
+        );
+        let inserted = self.spawn_processed_dispatches.insert(dispatch_key.clone());
+        if inserted {
+            self.evict_spawn_processed_dispatches_if_needed(&dispatch_key);
+        }
+        inserted
+    }
+
+    fn clear_spawn_streaming_agent_message_buffers(
+        &mut self,
+        source_thread_id: ThreadId,
+        turn_id: &str,
     ) {
+        self.spawn_streaming_agent_messages
+            .retain(|(thread_id, buffered_turn_id, _), _| {
+                *thread_id != source_thread_id || buffered_turn_id != turn_id
+            });
+    }
+
+    fn evict_spawn_processed_dispatches_if_needed(
+        &mut self,
+        protected_dispatch: &(ThreadId, String, String, String),
+    ) {
+        if self.spawn_processed_dispatches.len() <= SPAWN_PROCESSED_DISPATCH_TURN_LIMIT {
+            return;
+        }
         let live_threads: HashSet<ThreadId> = self
             .agent_navigation
             .ordered_threads()
             .into_iter()
             .map(|(thread_id, _)| thread_id)
             .collect();
-        let live_thread_count = live_threads.len();
-        if let Some((before_len, after_len)) = evict_spawn_processed_dispatch_turns(
-            &mut self.spawn_processed_dispatch_turns,
-            &live_threads,
-            protected_turn,
-        ) {
-            tracing::debug!(
-                before_len,
-                after_len,
-                limit = SPAWN_PROCESSED_DISPATCH_TURN_LIMIT,
-                live_thread_count,
-                protected_thread_id = %protected_turn.0,
-                protected_turn_id = protected_turn.1.as_str(),
-                "evicted processed native spawn dispatch turns"
-            );
-        }
+        let protected_budget =
+            usize::from(self.spawn_processed_dispatches.contains(protected_dispatch));
+        let retain_budget = SPAWN_PROCESSED_DISPATCH_TURN_RETAIN.saturating_sub(protected_budget);
+        let mut retained = 0usize;
+        self.spawn_processed_dispatches.retain(|dispatch| {
+            if dispatch == protected_dispatch {
+                return true;
+            }
+            if retained >= retain_budget {
+                return false;
+            }
+            if live_threads.contains(&dispatch.0) {
+                retained += 1;
+                return true;
+            }
+            false
+        });
     }
 
     pub(crate) fn record_spawn_child_report_for_thread(
@@ -4545,6 +4620,7 @@ fn child_report_processing_prompt(report: &str) -> String {
     )
 }
 
+#[cfg(test)]
 fn evict_spawn_processed_dispatch_turns(
     processed_turns: &mut HashSet<(ThreadId, String)>,
     live_threads: &HashSet<ThreadId>,
