@@ -485,8 +485,15 @@ pub(crate) async fn handle_output_item_done(
         }
         // The tool request should be answered directly (or was denied); push that response into the transcript.
         Err(FunctionCallError::RespondToModel(message)) => {
+            // Pair the error output with the originating call id so chat-completions
+            // providers accept the follow-up request's tool message.
+            let call_id = match &item {
+                ResponseItem::FunctionCall { call_id, .. }
+                | ResponseItem::CustomToolCall { call_id, .. } => call_id.clone(),
+                _ => String::new(),
+            };
             let response = ResponseInputItem::FunctionCallOutput {
-                call_id: String::new(),
+                call_id,
                 output: FunctionCallOutputPayload {
                     body: FunctionCallOutputBody::Text(message),
                     ..Default::default()
@@ -504,9 +511,6 @@ pub(crate) async fn handle_output_item_done(
             }
 
             output.needs_follow_up = true;
-        }
-        Err(FunctionCallError::MalformedToolCallTruncated(diagnostic)) => {
-            return Err(CodexErr::Fatal(diagnostic.to_string()));
         }
         // A fatal error occurred; surface it back into history.
         Err(FunctionCallError::Fatal(message)) => {

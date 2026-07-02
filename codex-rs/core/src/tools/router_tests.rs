@@ -193,14 +193,15 @@ fn truncated_structured_write_is_non_retriable_before_dispatch() {
         metadata: None,
     });
 
-    let Err(FunctionCallError::MalformedToolCallTruncated(diagnostic)) = result else {
-        panic!("expected non-retriable malformed tool call, got {result:?}");
+    let Err(FunctionCallError::RespondToModel(message)) = result else {
+        panic!("expected retriable malformed tool call error, got {result:?}");
     };
 
-    assert_eq!(diagnostic.tool, "structured_write");
-    assert_eq!(diagnostic.category, "Eof");
-    assert!(diagnostic.byte_len > 8192);
-    assert!(diagnostic.finish_reason.is_none());
+    assert!(message.contains("malformed tool call arguments for `structured_write`"));
+    assert!(message.contains("category=Eof"));
+    assert!(message.contains("Re-issue this tool call"));
+    // The full 8KiB+ argument blob must not be echoed back into model context.
+    assert!(message.len() < 2048);
 }
 
 #[tokio::test]
