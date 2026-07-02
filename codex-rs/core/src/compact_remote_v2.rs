@@ -348,8 +348,9 @@ async fn run_remote_compaction_request_v2(
         .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
     let mut retries = 0;
     loop {
+        let attempt_started_at = std::time::Instant::now();
         let result = match client_session
-            .stream(
+            .stream_with_same_turn_attempt(
                 prompt,
                 &turn_context.model_info,
                 &turn_context.session_telemetry,
@@ -358,12 +359,14 @@ async fn run_remote_compaction_request_v2(
                 turn_context.config.service_tier.clone(),
                 responses_metadata,
                 &InferenceTraceContext::disabled(),
+                retries + 1,
             )
             .await
         {
             Ok(stream) => collect_compaction_output(stream).await,
             Err(err) => Err(err),
         };
+        let attempt_elapsed = attempt_started_at.elapsed();
 
         match result {
             Ok(compaction_output) => return Ok(compaction_output),
@@ -377,6 +380,7 @@ async fn run_remote_compaction_request_v2(
                     sess,
                     turn_context,
                     ResponsesStreamRequest::RemoteCompactionV2,
+                    attempt_elapsed,
                 )
                 .await?;
             }

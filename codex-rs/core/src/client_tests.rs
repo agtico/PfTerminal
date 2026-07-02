@@ -335,7 +335,6 @@ fn chat_completions_wraps_freeform_tools_as_functions() {
         })],
         false,
         false,
-        false,
     )
     .expect("chat tools");
 
@@ -394,7 +393,6 @@ fn ambient_chat_completions_strips_strict_from_tools() {
         &[freeform, function],
         /*strip_strict*/ true,
         /*zai_native_web_search*/ false,
-        /*openrouter_server_web_search*/ false,
     )
     .expect("chat tools");
 
@@ -432,7 +430,6 @@ fn zai_chat_completions_serializes_native_web_search_tool() {
         }],
         /*strip_strict*/ true,
         /*zai_native_web_search*/ true,
-        /*openrouter_server_web_search*/ false,
     )
     .expect("chat tools");
 
@@ -462,7 +459,11 @@ fn zai_chat_completions_serializes_native_web_search_tool() {
 }
 
 #[test]
-fn openrouter_chat_completions_serializes_server_web_search_tool() {
+fn chat_completions_never_serializes_web_search_into_tools_without_zai() {
+    // A non-function `tools` entry makes every regular host ineligible on
+    // OpenRouter and diverts the request to a tool-middleware tier with a
+    // fixed ~10s header hold, so web search must never be expressed as a
+    // chat-completions tools entry (OpenRouter rides `plugins` instead).
     let tools = super::create_tools_json_for_chat_completions(
         &[ToolSpec::WebSearch {
             external_web_access: Some(true),
@@ -474,21 +475,54 @@ fn openrouter_chat_completions_serializes_server_web_search_tool() {
         }],
         /*strip_strict*/ false,
         /*zai_native_web_search*/ false,
-        /*openrouter_server_web_search*/ true,
     )
     .expect("chat tools");
 
+    assert_eq!(tools, Vec::<serde_json::Value>::new());
+}
+
+#[test]
+fn baseten_reasoning_effort_maps_to_glm52_supported_set() {
+    let effort = |s: &str| ReasoningEffortConfig::Custom(s.to_string());
+    let map = |model: &str, e: &str| {
+        super::ModelClient::baseten_reasoning_effort(model, Some(&effort(e)))
+    };
+
+    // GLM-5.2 accepts exactly {none, high, max}; everything else must clamp.
+    assert_eq!(map("zai-org/GLM-5.2", "medium").as_deref(), Some("high"));
+    assert_eq!(map("zai-org/GLM-5.2", "low").as_deref(), Some("high"));
+    assert_eq!(map("zai-org/GLM-5.2", "xhigh").as_deref(), Some("max"));
+    assert_eq!(map("zai-org/GLM-5.2", "none").as_deref(), Some("none"));
+    // Other Baseten models pass the configured effort through unchanged.
     assert_eq!(
-        tools,
-        vec![json!({
-            "type": "openrouter:web_search",
-            "parameters": {
-                "engine": "auto",
-                "max_results": 5,
-                "max_total_results": 10,
-                "search_context_size": "high",
-            },
-        })]
+        map("deepseek-ai/DeepSeek-V4-Pro", "medium").as_deref(),
+        Some("medium")
+    );
+    // No configured effort: GLM-5.2 standardizes to "high" (its server
+    // default under-thinks); other models keep their server default.
+    assert_eq!(
+        super::ModelClient::baseten_reasoning_effort("zai-org/GLM-5.2", None).as_deref(),
+        Some("high")
+    );
+    assert_eq!(
+        super::ModelClient::baseten_reasoning_effort("deepseek-ai/DeepSeek-V4-Pro", None),
+        None
+    );
+}
+
+#[test]
+fn openrouter_web_plugin_maps_context_size_to_max_results() {
+    assert_eq!(
+        super::openrouter_web_plugin(Some(WebSearchContextSize::Low)),
+        json!({"id": "web", "max_results": 3})
+    );
+    assert_eq!(
+        super::openrouter_web_plugin(None),
+        json!({"id": "web", "max_results": 5})
+    );
+    assert_eq!(
+        super::openrouter_web_plugin(Some(WebSearchContextSize::High)),
+        json!({"id": "web", "max_results": 10})
     );
 }
 
@@ -833,6 +867,52 @@ fn openrouter_chat_completions_request_uses_reasoning_object() {
             .and_then(|reasoning| reasoning.get("effort"))
             .and_then(|effort| effort.as_str()),
         Some("high")
+    );
+}
+
+#[test]
+fn openrouter_chat_completions_request_uses_configured_provider_object() {
+    let mut provider_info = ModelProviderInfo::create_openrouter_provider();
+    provider_info.chat_completions_provider = Some(json!({
+        "sort": "throughput",
+        "require_parameters": true,
+    }));
+    let client = ModelClient::new(
+        /*auth_manager*/ None,
+        ThreadId::new(),
+        provider_info,
+        SessionSource::Cli,
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*item_ids_enabled*/ false,
+        /*attestation_provider*/ None,
+    );
+    let prompt = super::Prompt {
+        input: vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "hello".to_string(),
+            }],
+            phase: None,
+            metadata: None,
+        }],
+        ..Default::default()
+    };
+    let model_info = test_openrouter_gemini_model_info();
+
+    let request = client
+        .build_chat_completions_request(&prompt, &model_info, None)
+        .expect("OpenRouter chat request");
+
+    assert_eq!(
+        request.provider,
+        Some(json!({
+            "sort": "throughput",
+            "require_parameters": true,
+        }))
     );
 }
 
@@ -1206,15 +1286,15 @@ fn openrouter_chat_completions_request_preserves_function_tools_with_web_search(
                     tool.get("type").and_then(serde_json::Value::as_str),
                     tool.pointer("/function/name")
                         .and_then(serde_json::Value::as_str),
-                    tool.pointer("/parameters/search_context_size")
-                        .and_then(serde_json::Value::as_str),
                 )
             })
             .collect::<Vec<_>>(),
-        vec![
-            (Some("function"), Some("exec_command"), None),
-            (Some("openrouter:web_search"), None, Some("low")),
-        ]
+        vec![(Some("function"), Some("exec_command"))],
+        "web search must not appear in tools; it rides `plugins`"
+    );
+    assert_eq!(
+        request.plugins,
+        Some(vec![json!({"id": "web", "max_results": 3})])
     );
     assert_eq!(request.tool_choice.as_deref(), Some("auto"));
 }
@@ -1268,7 +1348,9 @@ fn baseten_chat_completions_strips_strict_without_zai_reasoning_fields() {
 
     assert_eq!(request.enable_thinking, None);
     assert_eq!(request.emit_usage, None);
-    assert_eq!(request.reasoning_effort, None);
+    // Baseten DOES receive reasoning_effort (passed through for non-GLM-5.2
+    // models); only the Z.AI-specific fields must stay absent.
+    assert_eq!(request.reasoning_effort.as_deref(), Some("medium"));
     assert_eq!(request.reasoning, None);
     assert_eq!(request.prompt_cache_key, None);
     assert!(

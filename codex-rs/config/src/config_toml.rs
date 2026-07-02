@@ -400,6 +400,10 @@ pub struct ConfigToml {
     /// Base URL override for the built-in `openai` model provider.
     pub openai_base_url: Option<String>,
 
+    /// Optional OpenRouter `provider` object injected into Chat Completions
+    /// requests made through the built-in `openrouter` provider.
+    pub openrouter_provider: Option<JsonValue>,
+
     /// Machine-local realtime audio device preferences used by realtime voice.
     #[serde(default)]
     pub audio: Option<RealtimeAudioToml>,
@@ -1067,6 +1071,24 @@ mod tests {
     }
 
     #[test]
+    fn config_toml_deserializes_openrouter_provider_object() {
+        let config: ConfigToml = toml::from_str(
+            r#"
+openrouter_provider = { sort = "throughput", require_parameters = true, allow_fallbacks = false, order = ["StreamLake"] }
+"#,
+        )
+        .expect("OpenRouter provider object should deserialize");
+
+        let provider = config
+            .openrouter_provider
+            .expect("provider object should be set");
+        assert_eq!(provider["sort"], "throughput");
+        assert_eq!(provider["require_parameters"], true);
+        assert_eq!(provider["allow_fallbacks"], false);
+        assert_eq!(provider["order"][0], "StreamLake");
+    }
+
+    #[test]
     fn model_provider_validation_rejects_pfterminal_reserved_ids() {
         let mut providers = HashMap::new();
         providers.insert(
@@ -1143,5 +1165,23 @@ mod tests {
 
         validate_model_providers(&providers)
             .expect("unique OpenAI-auth responses mock provider should validate");
+    }
+
+    #[test]
+    fn model_provider_validation_rejects_non_object_chat_completions_provider() {
+        let mut providers = HashMap::new();
+        providers.insert(
+            "custom-chat".to_string(),
+            ModelProviderInfo {
+                name: "Custom Chat".to_string(),
+                chat_completions_provider: Some(JsonValue::String("Novita".to_string())),
+                ..Default::default()
+            },
+        );
+
+        let err = validate_model_providers(&providers)
+            .expect_err("non-object chat_completions_provider rejected");
+
+        assert!(err.contains("chat_completions_provider must be a JSON object"));
     }
 }

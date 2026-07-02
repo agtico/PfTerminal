@@ -11,10 +11,43 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::WarningEvent;
 use tracing::warn;
 
+const MAX_SAME_REQUEST_IDLE_FAILURES: u64 = 2;
+const SSE_IDLE_TIMEOUT_MESSAGE: &str = "idle timeout waiting for SSE";
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ResponsesStreamRequest {
     Sampling,
     RemoteCompactionV2,
+}
+
+pub(crate) fn guard_same_request_idle_retry(
+    err: &CodexErr,
+    same_request_idle_failures: &mut u64,
+) -> Result<(), CodexErr> {
+    if is_sse_idle_timeout(err) {
+        *same_request_idle_failures = (*same_request_idle_failures).saturating_add(1);
+        if *same_request_idle_failures >= MAX_SAME_REQUEST_IDLE_FAILURES {
+            return Err(CodexErr::Stream(
+                format!(
+                    "stream idle timeout repeated {} times for the same \
+                     request; aborting instead of restarting it again",
+                    *same_request_idle_failures,
+                ),
+                None,
+            ));
+        }
+    } else {
+        *same_request_idle_failures = 0;
+    }
+
+    Ok(())
+}
+
+fn is_sse_idle_timeout(err: &CodexErr) -> bool {
+    matches!(
+        err,
+        CodexErr::Stream(message, _) if message.contains(SSE_IDLE_TIMEOUT_MESSAGE)
+    )
 }
 
 /// Handles a retryable stream error and returns `Ok(())` when the caller should
@@ -27,8 +60,41 @@ pub(crate) async fn handle_retryable_response_stream_error(
     sess: &Session,
     turn_context: &TurnContext,
     request: ResponsesStreamRequest,
+    attempt_elapsed: Duration,
 ) -> Result<(), CodexErr> {
-    if *retries >= max_retries
+    let long_failure = attempt_elapsed
+        >= turn_context
+            .provider
+            .info()
+            .stream_long_failure_retry_threshold();
+    let effective_max_retries = effective_max_stream_retries(
+        max_retries,
+        long_failure,
+        turn_context
+            .provider
+            .info()
+            .stream_long_failure_max_retries(),
+    );
+
+    if long_failure {
+        warn_long_stream_failure(
+            sess,
+            turn_context,
+            *retries + 1,
+            effective_max_retries,
+            attempt_elapsed,
+            &err,
+        )
+        .await;
+    }
+
+    if *retries >= effective_max_retries {
+        if long_failure {
+            return Err(err);
+        }
+    }
+
+    if *retries >= effective_max_retries
         && client_session.try_switch_fallback_transport(
             &turn_context.session_telemetry,
             &turn_context.model_info,
@@ -45,7 +111,7 @@ pub(crate) async fn handle_retryable_response_stream_error(
         return Ok(());
     }
 
-    if *retries < max_retries {
+    if *retries < effective_max_retries {
         *retries += 1;
         let retry_count = *retries;
         let delay = match &err {
@@ -54,7 +120,14 @@ pub(crate) async fn handle_retryable_response_stream_error(
             }
             _ => backoff(retry_count),
         };
-        log_retry(request, turn_context, &err, retry_count, max_retries, delay);
+        log_retry(
+            request,
+            turn_context,
+            &err,
+            retry_count,
+            effective_max_retries,
+            delay,
+        );
 
         // In release builds, hide the first websocket retry notification to reduce noisy
         // transient reconnect messages. In debug builds, keep full visibility for diagnosis.
@@ -76,6 +149,44 @@ pub(crate) async fn handle_retryable_response_stream_error(
     }
 
     Err(err)
+}
+
+fn effective_max_stream_retries(
+    max_retries: u64,
+    long_failure: bool,
+    long_failure_max_retries: u64,
+) -> u64 {
+    if long_failure {
+        max_retries.min(long_failure_max_retries)
+    } else {
+        max_retries
+    }
+}
+
+async fn warn_long_stream_failure(
+    sess: &Session,
+    turn_context: &TurnContext,
+    attempt_number: u64,
+    effective_max_retries: u64,
+    attempt_elapsed: Duration,
+    err: &CodexErr,
+) {
+    let elapsed_seconds = attempt_elapsed.as_secs_f64();
+    let retry_state = if attempt_number <= effective_max_retries {
+        format!("retrying with long-failure cap {effective_max_retries}")
+    } else {
+        format!("not retrying; long-failure cap {effective_max_retries} reached")
+    };
+    sess.send_event(
+        turn_context,
+        EventMsg::Warning(WarningEvent {
+            message: format!(
+                "Provider stream failed after {elapsed_seconds:.1}s on attempt \
+                 {attempt_number}: {err:#}. {retry_state}."
+            ),
+        }),
+    )
+    .await;
 }
 
 fn log_retry(
@@ -101,5 +212,60 @@ fn log_retry(
                 "remote compaction v2 stream failed; retrying request after delay"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_request_idle_guard_aborts_after_second_idle_failure() {
+        let mut failures = 0;
+        let idle = CodexErr::Stream(SSE_IDLE_TIMEOUT_MESSAGE.to_string(), None);
+
+        guard_same_request_idle_retry(&idle, &mut failures).expect("first idle failure can retry");
+        assert_eq!(failures, 1);
+
+        let err = guard_same_request_idle_retry(&idle, &mut failures)
+            .expect_err("second same-request idle failure should abort");
+        assert_eq!(failures, 2);
+        assert!(
+            err.to_string()
+                .contains("aborting instead of restarting it again")
+        );
+    }
+
+    #[test]
+    fn same_request_idle_guard_resets_on_non_idle_error() {
+        let mut failures = 1;
+        let other = CodexErr::Stream("stream closed before completion".to_string(), None);
+
+        guard_same_request_idle_retry(&other, &mut failures)
+            .expect("non-idle stream error should not abort");
+
+        assert_eq!(failures, 0);
+    }
+
+    #[test]
+    fn long_stream_failure_retries_are_capped_to_one() {
+        assert_eq!(
+            effective_max_stream_retries(
+                /*max_retries*/ 5, /*long_failure*/ true,
+                /*long_failure_max_retries*/ 1,
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn normal_stream_failures_keep_provider_retry_count() {
+        assert_eq!(
+            effective_max_stream_retries(
+                /*max_retries*/ 5, /*long_failure*/ false,
+                /*long_failure_max_retries*/ 1,
+            ),
+            5
+        );
     }
 }

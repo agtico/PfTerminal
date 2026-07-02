@@ -2544,6 +2544,22 @@ fn resolve_model_for_provider(model: Option<String>, model_provider_id: &str) ->
     }
 }
 
+fn openrouter_provider_body_provider(
+    openrouter_provider: Option<serde_json::Value>,
+) -> std::io::Result<Option<serde_json::Value>> {
+    let Some(openrouter_provider) = openrouter_provider else {
+        return Ok(None);
+    };
+    if openrouter_provider.is_object() {
+        Ok(Some(openrouter_provider))
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "openrouter_provider must be a TOML inline table/object",
+        ))
+    }
+}
+
 fn normalize_ambient_reasoning_effort(effort: ReasoningEffort) -> ReasoningEffort {
     match effort {
         ReasoningEffort::High | ReasoningEffort::XHigh => ReasoningEffort::XHigh,
@@ -3436,8 +3452,16 @@ impl Config {
             .clone()
             .filter(|value| !value.is_empty());
 
+        let mut built_in_model_providers = built_in_model_providers(openai_base_url);
+        if let Some(openrouter_provider) =
+            openrouter_provider_body_provider(cfg.openrouter_provider.clone())?
+            && let Some(provider) = built_in_model_providers.get_mut(OPENROUTER_PROVIDER_ID)
+        {
+            provider.chat_completions_provider = Some(openrouter_provider);
+        }
+
         let model_providers =
-            merge_configured_model_providers(built_in_model_providers(openai_base_url), cfg.model_providers)
+            merge_configured_model_providers(built_in_model_providers, cfg.model_providers)
                 .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidData, message))?;
 
         let model_provider_id = model_provider

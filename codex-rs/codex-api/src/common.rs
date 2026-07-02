@@ -412,6 +412,10 @@ pub struct ChatCompletionsRequest {
     pub reasoning_effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugins: Option<Vec<Value>>,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -644,6 +648,74 @@ mod tests {
     use super::*;
     use codex_protocol::models::ReasoningItemContent;
     use pretty_assertions::assert_eq;
+    use serde_json::json;
+
+    #[test]
+    fn chat_completions_request_without_provider_serializes_unchanged() {
+        let request = ChatCompletionsRequest {
+            model: "z-ai/glm-5.2".to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Some(ChatMessageContent::text("hello")),
+                tool_call_id: None,
+                tool_calls: Vec::new(),
+            }],
+            stream: true,
+            stream_options: Some(ChatStreamOptions {
+                include_usage: true,
+            }),
+            tools: vec![json!({
+                "type": "function",
+                "function": {
+                    "name": "noop"
+                }
+            })],
+            tool_choice: Some("auto".to_string()),
+            parallel_tool_calls: Some(true),
+            prompt_cache_key: Some("cache-key".to_string()),
+            response_format: None,
+            emit_usage: None,
+            enable_thinking: None,
+            reasoning_effort: None,
+            reasoning: Some(json!({ "effort": "medium" })),
+            provider: None,
+            plugins: None,
+        };
+
+        let serialized = serde_json::to_string(&request).expect("serialize request");
+        assert_eq!(
+            serialized,
+            r#"{"model":"z-ai/glm-5.2","messages":[{"role":"user","content":"hello"}],"stream":true,"stream_options":{"include_usage":true},"tools":[{"function":{"name":"noop"},"type":"function"}],"tool_choice":"auto","parallel_tool_calls":true,"prompt_cache_key":"cache-key","reasoning":{"effort":"medium"}}"#
+        );
+    }
+
+    #[test]
+    fn chat_completions_request_serializes_provider_object_when_set() {
+        let request = ChatCompletionsRequest {
+            model: "z-ai/glm-5.2".to_string(),
+            messages: Vec::new(),
+            stream: true,
+            stream_options: None,
+            tools: Vec::new(),
+            tool_choice: None,
+            parallel_tool_calls: None,
+            prompt_cache_key: None,
+            response_format: None,
+            emit_usage: None,
+            enable_thinking: None,
+            reasoning_effort: None,
+            reasoning: None,
+            provider: Some(json!({
+                "sort": "throughput",
+                "require_parameters": true,
+            })),
+            plugins: None,
+        };
+
+        let body = serde_json::to_value(&request).expect("serialize request");
+        assert_eq!(body["provider"]["sort"], "throughput");
+        assert_eq!(body["provider"]["require_parameters"], true);
+    }
 
     #[test]
     fn ambient_input_does_not_replay_reasoning_items() {

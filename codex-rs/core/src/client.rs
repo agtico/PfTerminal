@@ -1016,6 +1016,33 @@ impl ModelClient {
         }
     }
 
+    fn baseten_reasoning_effort(
+        upstream_model: &str,
+        effort: Option<&ReasoningEffortConfig>,
+    ) -> Option<String> {
+        // Baseten's GLM-5.2 accepts exactly {none, high, max} for
+        // `reasoning_effort` and returns 400 for anything else; other Baseten
+        // models take the wider range or ignore the field
+        // (docs.baseten.co/inference/model-apis/reasoning, retrieved 2026-07-02).
+        let is_glm52 = upstream_model.to_ascii_lowercase().contains("glm-5.2");
+        let Some(effort) = effort.map(ReasoningEffortConfig::as_str) else {
+            // Nothing configured anywhere (new slugs have no catalog default):
+            // GLM-5.2's shallow server default abandons hard tasks early, so
+            // standardize it to "high"; other models keep their server default.
+            return is_glm52.then(|| "high".to_string());
+        };
+        if is_glm52 {
+            let mapped = match effort {
+                "none" => "none",
+                "xhigh" | "max" | "deep" | "extra_high" | "extra-high" => "max",
+                _ => "high",
+            };
+            Some(mapped.to_string())
+        } else {
+            Some(effort.to_string())
+        }
+    }
+
     fn openrouter_reasoning(
         model_info: &ModelInfo,
         effort: Option<&ReasoningEffortConfig>,
@@ -1158,8 +1185,27 @@ impl ModelClient {
             &prompt.tools,
             strip_strict_from_tools,
             self.state.provider.info().is_zai(),
-            self.state.provider.info().is_openrouter(),
         )?;
+        // OpenRouter web search must ride the request-level `plugins` field. A
+        // non-function entry in `tools` makes every GLM host ineligible and
+        // diverts the request to a tool-middleware tier with a fixed ~10s
+        // header hold (openrouter-parity IC probes, 2026-07-02).
+        let openrouter_web_plugins = self
+            .state
+            .provider
+            .info()
+            .is_openrouter()
+            .then(|| {
+                prompt.tools.iter().find_map(|tool| match tool {
+                    ToolSpec::WebSearch {
+                        search_context_size,
+                        ..
+                    } => Some(openrouter_web_plugin(*search_context_size)),
+                    _ => None,
+                })
+            })
+            .flatten()
+            .map(|plugin| vec![plugin]);
         if self.state.provider.info().is_zai() {
             let has_native_web_search = tools
                 .iter()
@@ -1211,6 +1257,20 @@ impl ModelClient {
 
         let upstream_model =
             chat_completions_upstream_model(&model_info.slug, self.state.provider.info());
+        let baseten_reasoning_effort = self
+            .state
+            .provider
+            .info()
+            .is_baseten()
+            .then(|| {
+                Self::baseten_reasoning_effort(
+                    upstream_model,
+                    effort
+                        .as_ref()
+                        .or(model_info.default_reasoning_level.as_ref()),
+                )
+            })
+            .flatten();
 
         Ok(ChatCompletionsRequest {
             model: upstream_model.to_string(),
@@ -1228,8 +1288,10 @@ impl ModelClient {
             response_format,
             emit_usage: uses_zai_reasoning.then_some(true),
             enable_thinking: ambient_enable_thinking,
-            reasoning_effort: ambient_reasoning_effort,
+            reasoning_effort: ambient_reasoning_effort.or(baseten_reasoning_effort),
             reasoning: openrouter_reasoning,
+            provider: self.state.provider.info().chat_completions_provider.clone(),
+            plugins: openrouter_web_plugins,
         })
     }
 
@@ -1596,6 +1658,14 @@ impl ModelClientSession {
                 }
                 headers
             },
+            same_turn_attempt_index: None,
+            actionable_silence_timeout: Some(
+                self.client
+                    .state
+                    .provider
+                    .info()
+                    .stream_actionable_timeout(),
+            ),
         }
     }
 
@@ -2007,6 +2077,7 @@ impl ModelClientSession {
         effort: Option<ReasoningEffortConfig>,
         responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
+        same_turn_attempt_index: u64,
     ) -> Result<ResponseStream> {
         let auth_manager = self.client.state.provider.auth_manager();
         let mut auth_recovery = auth_manager
@@ -2033,6 +2104,7 @@ impl ModelClientSession {
             let mut options = self
                 .build_chat_completions_options(responses_metadata)
                 .await;
+            options.same_turn_attempt_index = Some(same_turn_attempt_index);
             trace_stream_timing(
                 "chat_http_before_build_request",
                 provider_request_started_at,
@@ -2543,6 +2615,33 @@ impl ModelClientSession {
         responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
     ) -> Result<ResponseStream> {
+        self.stream_with_same_turn_attempt(
+            prompt,
+            model_info,
+            session_telemetry,
+            effort,
+            summary,
+            service_tier,
+            responses_metadata,
+            inference_trace,
+            1,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn stream_with_same_turn_attempt(
+        &mut self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        session_telemetry: &SessionTelemetry,
+        effort: Option<ReasoningEffortConfig>,
+        summary: ReasoningSummaryConfig,
+        service_tier: Option<String>,
+        responses_metadata: &CodexResponsesMetadata,
+        inference_trace: &InferenceTraceContext,
+        same_turn_attempt_index: u64,
+    ) -> Result<ResponseStream> {
         let wire_api = self.client.state.provider.info().wire_api;
         match wire_api {
             WireApi::Responses => {
@@ -2589,6 +2688,7 @@ impl ModelClientSession {
                     effort,
                     responses_metadata,
                     inference_trace,
+                    same_turn_attempt_index,
                 ))
                 .await
             }
@@ -3099,18 +3199,10 @@ fn create_tools_json_for_chat_completions(
     tools: &[ToolSpec],
     strip_strict: bool,
     zai_native_web_search: bool,
-    openrouter_server_web_search: bool,
 ) -> Result<Vec<Value>> {
     tools
         .iter()
-        .filter_map(|tool| {
-            tool_spec_to_chat_tool(
-                tool,
-                strip_strict,
-                zai_native_web_search,
-                openrouter_server_web_search,
-            )
-        })
+        .filter_map(|tool| tool_spec_to_chat_tool(tool, strip_strict, zai_native_web_search))
         .collect::<Result<Vec<_>>>()
 }
 
@@ -3118,7 +3210,6 @@ fn tool_spec_to_chat_tool(
     tool: &ToolSpec,
     strip_strict: bool,
     zai_native_web_search: bool,
-    openrouter_server_web_search: bool,
 ) -> Option<Result<Value>> {
     match tool {
         ToolSpec::Function(_) => Some(serde_json::to_value(tool).map_err(Into::into).and_then(
@@ -3130,12 +3221,6 @@ fn tool_spec_to_chat_tool(
         )),
         ToolSpec::Freeform(tool) => Some(Ok(freeform_tool_to_chat_tool(tool, strip_strict))),
         ToolSpec::WebSearch { .. } if zai_native_web_search => Some(Ok(zai_web_search_tool())),
-        ToolSpec::WebSearch {
-            search_context_size,
-            ..
-        } if openrouter_server_web_search => {
-            Some(Ok(openrouter_web_search_tool(*search_context_size)))
-        }
         ToolSpec::Namespace(_)
         | ToolSpec::ToolSearch { .. }
         | ToolSpec::ImageGeneration { .. }
@@ -3158,17 +3243,15 @@ fn zai_web_search_tool() -> Value {
     })
 }
 
-fn openrouter_web_search_tool(search_context_size: Option<WebSearchContextSize>) -> Value {
+fn openrouter_web_plugin(search_context_size: Option<WebSearchContextSize>) -> Value {
+    let max_results = match search_context_size.unwrap_or(WebSearchContextSize::Medium) {
+        WebSearchContextSize::Low => 3,
+        WebSearchContextSize::Medium => 5,
+        WebSearchContextSize::High => 10,
+    };
     json!({
-        "type": "openrouter:web_search",
-        "parameters": {
-            "engine": "auto",
-            "max_results": 5,
-            "max_total_results": 10,
-            "search_context_size": search_context_size
-                .unwrap_or(WebSearchContextSize::Medium)
-                .to_string(),
-        },
+        "id": "web",
+        "max_results": max_results,
     })
 }
 

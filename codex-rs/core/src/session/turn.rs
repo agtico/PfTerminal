@@ -40,6 +40,7 @@ use crate::plugins::build_plugin_injections;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_retry::ResponsesStreamRequest;
+use crate::responses_retry::guard_same_request_idle_retry;
 use crate::responses_retry::handle_retryable_response_stream_error;
 use crate::session::PreviousTurnSettings;
 use crate::session::TurnInput;
@@ -1211,6 +1212,7 @@ async fn run_sampling_request(
     );
     let max_retries = turn_context.provider.info().stream_max_retries();
     let mut retries = 0;
+    let mut same_request_idle_failures = 0;
     let mut initial_input = Some(input);
     let mut original_input = None;
     loop {
@@ -1228,7 +1230,9 @@ async fn run_sampling_request(
             base_instructions.clone(),
         );
         trace_turn_timing("after_build_prompt", sampling_started_at);
-        let err = match try_run_sampling_request(
+        let same_turn_attempt_index = retries + 1;
+        let attempt_started_at = Instant::now();
+        let attempt_result = try_run_sampling_request(
             tool_runtime.clone(),
             Arc::clone(&sess),
             Arc::clone(&turn_context),
@@ -1237,10 +1241,12 @@ async fn run_sampling_request(
             responses_metadata,
             Arc::clone(&turn_diff_tracker),
             &prompt,
+            same_turn_attempt_index,
             cancellation_token.child_token(),
         )
-        .await
-        {
+        .await;
+        let attempt_elapsed = attempt_started_at.elapsed();
+        let err = match attempt_result {
             Ok(output) => {
                 return Ok((output, original_input.unwrap_or(prompt.input)));
             }
@@ -1265,6 +1271,7 @@ async fn run_sampling_request(
         if !err.is_retryable() {
             return Err(err);
         }
+        guard_same_request_idle_retry(&err, &mut same_request_idle_failures)?;
 
         handle_retryable_response_stream_error(
             &mut retries,
@@ -1274,6 +1281,7 @@ async fn run_sampling_request(
             &sess,
             &turn_context,
             ResponsesStreamRequest::Sampling,
+            attempt_elapsed,
         )
         .await?;
         turn_context.turn_timing_state.record_sampling_retry();
@@ -2492,6 +2500,7 @@ async fn try_run_sampling_request(
     responses_metadata: &CodexResponsesMetadata,
     turn_diff_tracker: SharedTurnDiffTracker,
     prompt: &Prompt,
+    same_turn_attempt_index: u64,
     cancellation_token: CancellationToken,
 ) -> CodexResult<SamplingRequestResult> {
     let try_started_at = Instant::now();
@@ -2523,7 +2532,7 @@ async fn try_run_sampling_request(
     let sampling_timing_guard = turn_context.turn_timing_state.begin_sampling();
     trace_turn_timing("before_client_stream", try_started_at);
     let stream_result = client_session
-        .stream(
+        .stream_with_same_turn_attempt(
             prompt,
             &turn_context.model_info,
             &turn_context.session_telemetry,
@@ -2532,6 +2541,7 @@ async fn try_run_sampling_request(
             turn_context.config.service_tier.clone(),
             responses_metadata,
             &inference_trace,
+            same_turn_attempt_index,
         )
         .instrument(trace_span!("stream_request"))
         .or_cancel(&cancellation_token)

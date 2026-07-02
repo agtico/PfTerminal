@@ -20,11 +20,15 @@ use http::header::HeaderValue;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
 
-const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 300_000;
+const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 600_000;
+const DEFAULT_STREAM_ACTIONABLE_TIMEOUT_MS: u64 = 180_000;
+const DEFAULT_STREAM_LONG_FAILURE_RETRY_THRESHOLD_MS: u64 = 60_000;
+const DEFAULT_STREAM_LONG_FAILURE_MAX_RETRIES: u64 = 1;
 const DEFAULT_STREAM_MAX_RETRIES: u64 = 5;
 const DEFAULT_REQUEST_MAX_RETRIES: u64 = 4;
 pub const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS: u64 = 15_000;
@@ -215,6 +219,11 @@ pub struct ModelProviderInfo {
     /// value should be used. If the environment variable is not set, or the
     /// value is empty, the header will not be included in the request.
     pub env_http_headers: Option<HashMap<String, String>>,
+    /// Optional `provider` object to include in Chat Completions request bodies.
+    /// This is used by OpenRouter-compatible routes for provider routing
+    /// preferences such as `order`, `sort`, `allow_fallbacks`, and
+    /// `require_parameters`.
+    pub chat_completions_provider: Option<Value>,
     /// Maximum number of times to retry a failed HTTP request to this provider.
     pub request_max_retries: Option<u64>,
     /// Number of times to retry reconnecting a dropped streaming response before failing.
@@ -222,6 +231,13 @@ pub struct ModelProviderInfo {
     /// Idle timeout (in milliseconds) to wait for activity on a streaming response before treating
     /// the connection as lost.
     pub stream_idle_timeout_ms: Option<u64>,
+    /// Timeout (in milliseconds) to wait for actionable stream deltas after stream activity
+    /// starts. Comment frames and empty data events do not reset this deadline.
+    pub stream_actionable_timeout_ms: Option<u64>,
+    /// Elapsed stream-attempt duration after which retry policy switches to the long-failure cap.
+    pub stream_long_failure_retry_threshold_ms: Option<u64>,
+    /// Maximum retry count for long stream failures. Values above one are clamped to one.
+    pub stream_long_failure_max_retries: Option<u64>,
     /// Maximum time (in milliseconds) to wait for a websocket connection attempt before treating
     /// it as failed.
     pub websocket_connect_timeout_ms: Option<u64>,
@@ -248,6 +264,12 @@ pub struct ModelProviderAwsAuthInfo {
 
 impl ModelProviderInfo {
     pub fn validate(&self) -> std::result::Result<(), String> {
+        if let Some(chat_completions_provider) = &self.chat_completions_provider
+            && !chat_completions_provider.is_object()
+        {
+            return Err("chat_completions_provider must be a JSON object".to_string());
+        }
+
         if self.aws.is_some() {
             if self.supports_websockets {
                 // TODO(celia-oai): Support AWS SigV4 signing for WebSocket
@@ -414,6 +436,29 @@ impl ModelProviderInfo {
             .unwrap_or(Duration::from_millis(DEFAULT_STREAM_IDLE_TIMEOUT_MS))
     }
 
+    /// Effective actionable-silence timeout for streaming responses.
+    pub fn stream_actionable_timeout(&self) -> Duration {
+        self.stream_actionable_timeout_ms
+            .map(Duration::from_millis)
+            .unwrap_or(Duration::from_millis(DEFAULT_STREAM_ACTIONABLE_TIMEOUT_MS))
+    }
+
+    /// Effective threshold for treating retryable stream errors as long failures.
+    pub fn stream_long_failure_retry_threshold(&self) -> Duration {
+        self.stream_long_failure_retry_threshold_ms
+            .map(Duration::from_millis)
+            .unwrap_or(Duration::from_millis(
+                DEFAULT_STREAM_LONG_FAILURE_RETRY_THRESHOLD_MS,
+            ))
+    }
+
+    /// Effective retry cap for long stream failures. This intentionally never exceeds one.
+    pub fn stream_long_failure_max_retries(&self) -> u64 {
+        self.stream_long_failure_max_retries
+            .unwrap_or(DEFAULT_STREAM_LONG_FAILURE_MAX_RETRIES)
+            .min(DEFAULT_STREAM_LONG_FAILURE_MAX_RETRIES)
+    }
+
     /// Effective timeout for websocket connect attempts.
     pub fn websocket_connect_timeout(&self) -> Duration {
         self.websocket_connect_timeout_ms
@@ -452,9 +497,13 @@ impl ModelProviderInfo {
                 .collect(),
             ),
             // Use global defaults for retry/timeout unless overridden in config.toml.
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            stream_actionable_timeout_ms: None,
+            stream_long_failure_retry_threshold_ms: None,
+            stream_long_failure_max_retries: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: true,
             supports_websockets: true,
@@ -474,9 +523,13 @@ impl ModelProviderInfo {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            stream_actionable_timeout_ms: None,
+            stream_long_failure_retry_threshold_ms: None,
+            stream_long_failure_max_retries: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -507,9 +560,13 @@ impl ModelProviderInfo {
                 "claude-code-20250219,oauth-2025-04-20".to_string(),
             )])),
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            stream_actionable_timeout_ms: None,
+            stream_long_failure_retry_threshold_ms: None,
+            stream_long_failure_max_retries: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -529,9 +586,13 @@ impl ModelProviderInfo {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            stream_actionable_timeout_ms: None,
+            stream_long_failure_retry_threshold_ms: None,
+            stream_long_failure_max_retries: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -551,9 +612,13 @@ impl ModelProviderInfo {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            stream_actionable_timeout_ms: None,
+            stream_long_failure_retry_threshold_ms: None,
+            stream_long_failure_max_retries: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -573,9 +638,13 @@ impl ModelProviderInfo {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            stream_actionable_timeout_ms: None,
+            stream_long_failure_retry_threshold_ms: None,
+            stream_long_failure_max_retries: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -595,9 +664,13 @@ impl ModelProviderInfo {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            stream_actionable_timeout_ms: None,
+            stream_long_failure_retry_threshold_ms: None,
+            stream_long_failure_max_retries: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -617,9 +690,13 @@ impl ModelProviderInfo {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            stream_actionable_timeout_ms: None,
+            stream_long_failure_retry_threshold_ms: None,
+            stream_long_failure_max_retries: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -639,9 +716,13 @@ impl ModelProviderInfo {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            stream_actionable_timeout_ms: None,
+            stream_long_failure_retry_threshold_ms: None,
+            stream_long_failure_max_retries: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -661,9 +742,13 @@ impl ModelProviderInfo {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            stream_actionable_timeout_ms: None,
+            stream_long_failure_retry_threshold_ms: None,
+            stream_long_failure_max_retries: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -683,9 +768,13 @@ impl ModelProviderInfo {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            stream_actionable_timeout_ms: None,
+            stream_long_failure_retry_threshold_ms: None,
+            stream_long_failure_max_retries: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -705,9 +794,13 @@ impl ModelProviderInfo {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            stream_actionable_timeout_ms: None,
+            stream_long_failure_retry_threshold_ms: None,
+            stream_long_failure_max_retries: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -727,9 +820,13 @@ impl ModelProviderInfo {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            stream_actionable_timeout_ms: None,
+            stream_long_failure_retry_threshold_ms: None,
+            stream_long_failure_max_retries: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -757,9 +854,13 @@ impl ModelProviderInfo {
                 AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_VALUE.to_string(),
             )])),
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            stream_actionable_timeout_ms: None,
+            stream_long_failure_retry_threshold_ms: None,
+            stream_long_failure_max_retries: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -884,8 +985,10 @@ pub fn built_in_model_providers(
 /// Merge configured providers into the built-in provider catalog.
 ///
 /// Configured providers extend the built-in set. Built-in providers are not
-/// generally overridable, but the built-in Amazon Bedrock provider allows the
-/// user to set `aws.profile` and `aws.region`.
+/// generally overridable, but retry/timeout knobs can be overridden so users can
+/// tune transport behavior without redefining an entire provider. The built-in
+/// Amazon Bedrock provider also allows the user to set `aws.profile` and
+/// `aws.region`.
 pub fn merge_configured_model_providers(
     mut model_providers: HashMap<String, ModelProviderInfo>,
     configured_model_providers: HashMap<String, ModelProviderInfo>,
@@ -893,30 +996,84 @@ pub fn merge_configured_model_providers(
     for (key, mut provider) in configured_model_providers {
         if key == AMAZON_BEDROCK_PROVIDER_ID {
             let aws_override = provider.aws.take();
+            let transport_overrides = ModelProviderInfo {
+                request_max_retries: provider.request_max_retries.take(),
+                stream_max_retries: provider.stream_max_retries.take(),
+                stream_idle_timeout_ms: provider.stream_idle_timeout_ms.take(),
+                stream_actionable_timeout_ms: provider.stream_actionable_timeout_ms.take(),
+                stream_long_failure_retry_threshold_ms: provider
+                    .stream_long_failure_retry_threshold_ms
+                    .take(),
+                stream_long_failure_max_retries: provider.stream_long_failure_max_retries.take(),
+                websocket_connect_timeout_ms: provider.websocket_connect_timeout_ms.take(),
+                ..ModelProviderInfo::default()
+            };
             if provider != ModelProviderInfo::default() {
                 return Err(format!(
                     "model_providers.{AMAZON_BEDROCK_PROVIDER_ID} only supports changing \
-`aws.profile` and `aws.region`; other non-default provider fields are not supported"
+`aws.profile`, `aws.region`, and transport retry/timeout fields; other non-default provider fields \
+are not supported"
                 ));
             }
 
-            if let Some(aws_override) = aws_override
-                && let Some(built_in_provider) = model_providers.get_mut(AMAZON_BEDROCK_PROVIDER_ID)
-                && let Some(built_in_aws) = built_in_provider.aws.as_mut()
-            {
-                if let Some(profile) = aws_override.profile {
-                    built_in_aws.profile = Some(profile);
-                }
-                if let Some(region) = aws_override.region {
-                    built_in_aws.region = Some(region);
+            if let Some(built_in_provider) = model_providers.get_mut(AMAZON_BEDROCK_PROVIDER_ID) {
+                apply_transport_overrides(built_in_provider, transport_overrides);
+                if let Some(aws_override) = aws_override
+                    && let Some(built_in_aws) = built_in_provider.aws.as_mut()
+                {
+                    if let Some(profile) = aws_override.profile {
+                        built_in_aws.profile = Some(profile);
+                    }
+                    if let Some(region) = aws_override.region {
+                        built_in_aws.region = Some(region);
+                    }
                 }
             }
+        } else if let Some(built_in_provider) = model_providers.get_mut(&key) {
+            apply_transport_overrides(built_in_provider, provider);
         } else {
-            model_providers.entry(key).or_insert(provider);
+            model_providers.insert(key, provider);
         }
     }
 
     Ok(model_providers)
+}
+
+fn apply_transport_overrides(
+    built_in_provider: &mut ModelProviderInfo,
+    configured_provider: ModelProviderInfo,
+) {
+    if configured_provider.request_max_retries.is_some() {
+        built_in_provider.request_max_retries = configured_provider.request_max_retries;
+    }
+    if configured_provider.stream_max_retries.is_some() {
+        built_in_provider.stream_max_retries = configured_provider.stream_max_retries;
+    }
+    if configured_provider.stream_idle_timeout_ms.is_some() {
+        built_in_provider.stream_idle_timeout_ms = configured_provider.stream_idle_timeout_ms;
+    }
+    if configured_provider.stream_actionable_timeout_ms.is_some() {
+        built_in_provider.stream_actionable_timeout_ms =
+            configured_provider.stream_actionable_timeout_ms;
+    }
+    if configured_provider
+        .stream_long_failure_retry_threshold_ms
+        .is_some()
+    {
+        built_in_provider.stream_long_failure_retry_threshold_ms =
+            configured_provider.stream_long_failure_retry_threshold_ms;
+    }
+    if configured_provider
+        .stream_long_failure_max_retries
+        .is_some()
+    {
+        built_in_provider.stream_long_failure_max_retries =
+            configured_provider.stream_long_failure_max_retries;
+    }
+    if configured_provider.websocket_connect_timeout_ms.is_some() {
+        built_in_provider.websocket_connect_timeout_ms =
+            configured_provider.websocket_connect_timeout_ms;
+    }
 }
 
 pub fn create_oss_provider(default_provider_port: u16, wire_api: WireApi) -> ModelProviderInfo {
@@ -951,9 +1108,13 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         query_params: None,
         http_headers: None,
         env_http_headers: None,
+        chat_completions_provider: None,
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        stream_actionable_timeout_ms: None,
+        stream_long_failure_retry_threshold_ms: None,
+        stream_long_failure_max_retries: None,
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,

@@ -2,7 +2,9 @@ use super::*;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::AbsolutePathBufGuard;
 use pretty_assertions::assert_eq;
+use std::collections::HashMap;
 use std::num::NonZeroU64;
+use std::time::Duration;
 use tempfile::tempdir;
 
 #[test]
@@ -23,9 +25,13 @@ base_url = "http://localhost:11434/v1"
         query_params: None,
         http_headers: None,
         env_http_headers: None,
+        chat_completions_provider: None,
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        stream_actionable_timeout_ms: None,
+        stream_long_failure_retry_threshold_ms: None,
+        stream_long_failure_max_retries: None,
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
@@ -57,9 +63,13 @@ query_params = { api-version = "2025-04-01-preview" }
         }),
         http_headers: None,
         env_http_headers: None,
+        chat_completions_provider: None,
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        stream_actionable_timeout_ms: None,
+        stream_long_failure_retry_threshold_ms: None,
+        stream_long_failure_max_retries: None,
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
@@ -94,9 +104,13 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
         env_http_headers: Some(maplit::hashmap! {
             "X-Example-Env-Header".to_string() => "EXAMPLE_ENV_VAR".to_string(),
         }),
+        chat_completions_provider: None,
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        stream_actionable_timeout_ms: None,
+        stream_long_failure_retry_threshold_ms: None,
+        stream_long_failure_max_retries: None,
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
@@ -189,9 +203,13 @@ fn test_supports_remote_compaction_for_azure_name() {
         query_params: None,
         http_headers: None,
         env_http_headers: None,
+        chat_completions_provider: None,
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        stream_actionable_timeout_ms: None,
+        stream_long_failure_retry_threshold_ms: None,
+        stream_long_failure_max_retries: None,
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
@@ -214,9 +232,13 @@ fn test_supports_remote_compaction_for_non_openai_non_azure_provider() {
         query_params: None,
         http_headers: None,
         env_http_headers: None,
+        chat_completions_provider: None,
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        stream_actionable_timeout_ms: None,
+        stream_long_failure_retry_threshold_ms: None,
+        stream_long_failure_max_retries: None,
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
@@ -297,9 +319,13 @@ fn test_create_amazon_bedrock_provider() {
                     AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_VALUE.to_string(),
             }),
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            stream_actionable_timeout_ms: None,
+            stream_long_failure_retry_threshold_ms: None,
+            stream_long_failure_max_retries: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -323,9 +349,13 @@ fn test_create_ambient_provider() {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            stream_actionable_timeout_ms: None,
+            stream_long_failure_retry_threshold_ms: None,
+            stream_long_failure_max_retries: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -352,9 +382,13 @@ fn test_create_zai_provider() {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            stream_actionable_timeout_ms: None,
+            stream_long_failure_retry_threshold_ms: None,
+            stream_long_failure_max_retries: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -379,9 +413,13 @@ fn test_create_anthropic_provider() {
             query_params: None,
             http_headers: None,
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            stream_actionable_timeout_ms: None,
+            stream_long_failure_retry_threshold_ms: None,
+            stream_long_failure_max_retries: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -415,9 +453,13 @@ fn test_create_claude_plan_provider() {
                 "anthropic-beta".to_string() => "claude-code-20250219,oauth-2025-04-20".to_string(),
             }),
             env_http_headers: None,
+            chat_completions_provider: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            stream_actionable_timeout_ms: None,
+            stream_long_failure_retry_threshold_ms: None,
+            stream_long_failure_max_retries: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -549,7 +591,61 @@ fn test_built_in_model_providers_include_openrouter() {
         Some(OPENROUTER_API_KEY_ENV_VAR)
     );
     assert_eq!(openrouter.wire_api, WireApi::Chat);
+    assert_eq!(
+        openrouter.stream_idle_timeout(),
+        Duration::from_millis(600_000)
+    );
     assert!(!openrouter.requires_openai_auth);
+}
+
+#[test]
+fn configured_built_in_provider_can_override_transport_knobs() {
+    let configured = HashMap::from([(
+        OPENROUTER_PROVIDER_ID.to_string(),
+        ModelProviderInfo {
+            base_url: Some("https://ignored.example/v1".to_string()),
+            wire_api: WireApi::Responses,
+            request_max_retries: Some(2),
+            stream_max_retries: Some(3),
+            stream_idle_timeout_ms: Some(900_000),
+            stream_actionable_timeout_ms: Some(240_000),
+            stream_long_failure_retry_threshold_ms: Some(90_000),
+            stream_long_failure_max_retries: Some(0),
+            websocket_connect_timeout_ms: Some(30_000),
+            ..ModelProviderInfo::default()
+        },
+    )]);
+
+    let merged = merge_configured_model_providers(
+        built_in_model_providers(/*openai_base_url*/ None),
+        configured,
+    )
+    .expect("merge should allow transport overrides");
+    let openrouter = merged
+        .get(OPENROUTER_PROVIDER_ID)
+        .expect("OpenRouter provider should remain present");
+
+    assert_eq!(openrouter.base_url.as_deref(), Some(OPENROUTER_BASE_URL));
+    assert_eq!(openrouter.wire_api, WireApi::Chat);
+    assert_eq!(openrouter.request_max_retries(), 2);
+    assert_eq!(openrouter.stream_max_retries(), 3);
+    assert_eq!(
+        openrouter.stream_idle_timeout(),
+        Duration::from_millis(900_000)
+    );
+    assert_eq!(
+        openrouter.stream_actionable_timeout(),
+        Duration::from_millis(240_000)
+    );
+    assert_eq!(
+        openrouter.stream_long_failure_retry_threshold(),
+        Duration::from_millis(90_000)
+    );
+    assert_eq!(openrouter.stream_long_failure_max_retries(), 0);
+    assert_eq!(
+        openrouter.websocket_connect_timeout(),
+        Duration::from_millis(30_000)
+    );
 }
 
 #[test]
@@ -695,6 +791,63 @@ fn test_merge_configured_model_providers_applies_amazon_bedrock_profile_override
 }
 
 #[test]
+fn test_merge_configured_model_providers_applies_amazon_bedrock_transport_overrides() {
+    let configured_model_providers = HashMap::from([(
+        AMAZON_BEDROCK_PROVIDER_ID.to_string(),
+        ModelProviderInfo {
+            aws: Some(ModelProviderAwsAuthInfo {
+                profile: Some("codex-bedrock".to_string()),
+                region: Some("us-west-2".to_string()),
+            }),
+            request_max_retries: Some(2),
+            stream_max_retries: Some(3),
+            stream_idle_timeout_ms: Some(900_000),
+            stream_actionable_timeout_ms: Some(240_000),
+            stream_long_failure_retry_threshold_ms: Some(90_000),
+            stream_long_failure_max_retries: Some(0),
+            websocket_connect_timeout_ms: Some(30_000),
+            ..ModelProviderInfo::default()
+        },
+    )]);
+
+    let merged = merge_configured_model_providers(
+        built_in_model_providers(/*openai_base_url*/ None),
+        configured_model_providers,
+    )
+    .expect("merge should allow Amazon Bedrock transport overrides");
+    let bedrock = merged
+        .get(AMAZON_BEDROCK_PROVIDER_ID)
+        .expect("Amazon Bedrock provider should be built in");
+
+    assert_eq!(
+        bedrock.aws,
+        Some(ModelProviderAwsAuthInfo {
+            profile: Some("codex-bedrock".to_string()),
+            region: Some("us-west-2".to_string()),
+        })
+    );
+    assert_eq!(bedrock.request_max_retries(), 2);
+    assert_eq!(bedrock.stream_max_retries(), 3);
+    assert_eq!(
+        bedrock.stream_idle_timeout(),
+        Duration::from_millis(900_000)
+    );
+    assert_eq!(
+        bedrock.stream_actionable_timeout(),
+        Duration::from_millis(240_000)
+    );
+    assert_eq!(
+        bedrock.stream_long_failure_retry_threshold(),
+        Duration::from_millis(90_000)
+    );
+    assert_eq!(bedrock.stream_long_failure_max_retries(), 0);
+    assert_eq!(
+        bedrock.websocket_connect_timeout(),
+        Duration::from_millis(30_000)
+    );
+}
+
+#[test]
 fn test_merge_configured_model_providers_rejects_amazon_bedrock_non_default_fields() {
     let configured_model_providers = std::collections::HashMap::from([(
         AMAZON_BEDROCK_PROVIDER_ID.to_string(),
@@ -714,7 +867,7 @@ fn test_merge_configured_model_providers_rejects_amazon_bedrock_non_default_fiel
             configured_model_providers,
         ),
         Err(
-            "model_providers.amazon-bedrock only supports changing `aws.profile` and `aws.region`; other non-default provider fields are not supported"
+            "model_providers.amazon-bedrock only supports changing `aws.profile`, `aws.region`, and transport retry/timeout fields; other non-default provider fields are not supported"
                 .to_string()
         )
     );
