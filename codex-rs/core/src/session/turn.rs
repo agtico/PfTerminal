@@ -40,6 +40,7 @@ use crate::plugins::build_plugin_injections;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_retry::ResponsesStreamRequest;
+use crate::responses_retry::guard_same_request_idle_retry;
 use crate::responses_retry::handle_retryable_response_stream_error;
 use crate::session::PreviousTurnSettings;
 use crate::session::TurnInput;
@@ -1211,6 +1212,7 @@ async fn run_sampling_request(
     );
     let max_retries = turn_context.provider.info().stream_max_retries();
     let mut retries = 0;
+    let mut same_request_idle_failures = 0;
     let mut initial_input = Some(input);
     let mut original_input = None;
     loop {
@@ -1265,6 +1267,7 @@ async fn run_sampling_request(
         if !err.is_retryable() {
             return Err(err);
         }
+        guard_same_request_idle_retry(&err, &mut same_request_idle_failures)?;
 
         handle_retryable_response_stream_error(
             &mut retries,

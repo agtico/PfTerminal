@@ -11,10 +11,43 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::WarningEvent;
 use tracing::warn;
 
+const MAX_SAME_REQUEST_IDLE_FAILURES: u64 = 2;
+const SSE_IDLE_TIMEOUT_MESSAGE: &str = "idle timeout waiting for SSE";
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ResponsesStreamRequest {
     Sampling,
     RemoteCompactionV2,
+}
+
+pub(crate) fn guard_same_request_idle_retry(
+    err: &CodexErr,
+    same_request_idle_failures: &mut u64,
+) -> Result<(), CodexErr> {
+    if is_sse_idle_timeout(err) {
+        *same_request_idle_failures = (*same_request_idle_failures).saturating_add(1);
+        if *same_request_idle_failures >= MAX_SAME_REQUEST_IDLE_FAILURES {
+            return Err(CodexErr::Stream(
+                format!(
+                    "stream idle timeout repeated {} times for the same \
+                     request; aborting instead of restarting it again",
+                    *same_request_idle_failures,
+                ),
+                None,
+            ));
+        }
+    } else {
+        *same_request_idle_failures = 0;
+    }
+
+    Ok(())
+}
+
+fn is_sse_idle_timeout(err: &CodexErr) -> bool {
+    matches!(
+        err,
+        CodexErr::Stream(message, _) if message.contains(SSE_IDLE_TIMEOUT_MESSAGE)
+    )
 }
 
 /// Handles a retryable stream error and returns `Ok(())` when the caller should
@@ -101,5 +134,38 @@ fn log_retry(
                 "remote compaction v2 stream failed; retrying request after delay"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_request_idle_guard_aborts_after_second_idle_failure() {
+        let mut failures = 0;
+        let idle = CodexErr::Stream(SSE_IDLE_TIMEOUT_MESSAGE.to_string(), None);
+
+        guard_same_request_idle_retry(&idle, &mut failures).expect("first idle failure can retry");
+        assert_eq!(failures, 1);
+
+        let err = guard_same_request_idle_retry(&idle, &mut failures)
+            .expect_err("second same-request idle failure should abort");
+        assert_eq!(failures, 2);
+        assert!(
+            err.to_string()
+                .contains("aborting instead of restarting it again")
+        );
+    }
+
+    #[test]
+    fn same_request_idle_guard_resets_on_non_idle_error() {
+        let mut failures = 1;
+        let other = CodexErr::Stream("stream closed before completion".to_string(), None);
+
+        guard_same_request_idle_retry(&other, &mut failures)
+            .expect("non-idle stream error should not abort");
+
+        assert_eq!(failures, 0);
     }
 }

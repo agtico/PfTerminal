@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
 
-const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 300_000;
+const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 600_000;
 const DEFAULT_STREAM_MAX_RETRIES: u64 = 5;
 const DEFAULT_REQUEST_MAX_RETRIES: u64 = 4;
 pub const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS: u64 = 15_000;
@@ -884,8 +884,10 @@ pub fn built_in_model_providers(
 /// Merge configured providers into the built-in provider catalog.
 ///
 /// Configured providers extend the built-in set. Built-in providers are not
-/// generally overridable, but the built-in Amazon Bedrock provider allows the
-/// user to set `aws.profile` and `aws.region`.
+/// generally overridable, but retry/timeout knobs can be overridden so users can
+/// tune transport behavior without redefining an entire provider. The built-in
+/// Amazon Bedrock provider also allows the user to set `aws.profile` and
+/// `aws.region`.
 pub fn merge_configured_model_providers(
     mut model_providers: HashMap<String, ModelProviderInfo>,
     configured_model_providers: HashMap<String, ModelProviderInfo>,
@@ -893,30 +895,61 @@ pub fn merge_configured_model_providers(
     for (key, mut provider) in configured_model_providers {
         if key == AMAZON_BEDROCK_PROVIDER_ID {
             let aws_override = provider.aws.take();
+            let transport_overrides = ModelProviderInfo {
+                request_max_retries: provider.request_max_retries.take(),
+                stream_max_retries: provider.stream_max_retries.take(),
+                stream_idle_timeout_ms: provider.stream_idle_timeout_ms.take(),
+                websocket_connect_timeout_ms: provider.websocket_connect_timeout_ms.take(),
+                ..ModelProviderInfo::default()
+            };
             if provider != ModelProviderInfo::default() {
                 return Err(format!(
                     "model_providers.{AMAZON_BEDROCK_PROVIDER_ID} only supports changing \
-`aws.profile` and `aws.region`; other non-default provider fields are not supported"
+`aws.profile`, `aws.region`, and transport retry/timeout fields; other non-default provider fields \
+are not supported"
                 ));
             }
 
-            if let Some(aws_override) = aws_override
-                && let Some(built_in_provider) = model_providers.get_mut(AMAZON_BEDROCK_PROVIDER_ID)
-                && let Some(built_in_aws) = built_in_provider.aws.as_mut()
-            {
-                if let Some(profile) = aws_override.profile {
-                    built_in_aws.profile = Some(profile);
-                }
-                if let Some(region) = aws_override.region {
-                    built_in_aws.region = Some(region);
+            if let Some(built_in_provider) = model_providers.get_mut(AMAZON_BEDROCK_PROVIDER_ID) {
+                apply_transport_overrides(built_in_provider, transport_overrides);
+                if let Some(aws_override) = aws_override
+                    && let Some(built_in_aws) = built_in_provider.aws.as_mut()
+                {
+                    if let Some(profile) = aws_override.profile {
+                        built_in_aws.profile = Some(profile);
+                    }
+                    if let Some(region) = aws_override.region {
+                        built_in_aws.region = Some(region);
+                    }
                 }
             }
+        } else if let Some(built_in_provider) = model_providers.get_mut(&key) {
+            apply_transport_overrides(built_in_provider, provider);
         } else {
-            model_providers.entry(key).or_insert(provider);
+            model_providers.insert(key, provider);
         }
     }
 
     Ok(model_providers)
+}
+
+fn apply_transport_overrides(
+    built_in_provider: &mut ModelProviderInfo,
+    configured_provider: ModelProviderInfo,
+) {
+    if configured_provider.request_max_retries.is_some() {
+        built_in_provider.request_max_retries = configured_provider.request_max_retries;
+    }
+    if configured_provider.stream_max_retries.is_some() {
+        built_in_provider.stream_max_retries = configured_provider.stream_max_retries;
+    }
+    if configured_provider.stream_idle_timeout_ms.is_some() {
+        built_in_provider.stream_idle_timeout_ms = configured_provider.stream_idle_timeout_ms;
+    }
+    if configured_provider.websocket_connect_timeout_ms.is_some() {
+        built_in_provider.websocket_connect_timeout_ms =
+            configured_provider.websocket_connect_timeout_ms;
+    }
 }
 
 pub fn create_oss_provider(default_provider_port: u16, wire_api: WireApi) -> ModelProviderInfo {

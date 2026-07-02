@@ -14,14 +14,17 @@ use codex_client::EncodedJsonBody;
 use codex_client::HttpTransport;
 use codex_client::RequestTelemetry;
 use codex_client::StreamResponse;
+use codex_client::TransportError;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ReasoningItemReasoningSummary;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TokenUsage;
+use eventsource_stream::EventStreamError;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
+use futures::stream;
 use http::HeaderMap;
 use http::HeaderValue;
 use http::Method;
@@ -38,6 +41,7 @@ use tracing::instrument;
 use tracing::trace;
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
+const SSE_IDLE_TIMEOUT_MESSAGE: &str = "idle timeout waiting for SSE";
 const SERIALIZED_TOOL_TEXT_PROBE_CHARS: usize = 96;
 
 pub struct ChatCompletionsClient<T: HttpTransport> {
@@ -702,12 +706,12 @@ async fn process_chat_sse(
     telemetry: Option<Arc<dyn SseTelemetry>>,
     response_id_hint: Option<String>,
 ) {
-    let mut stream = stream.eventsource();
+    let mut stream = byte_idle_timeout_stream(stream, idle_timeout).eventsource();
     let mut state = ChatStreamState::new(response_id_hint);
 
     loop {
         let start = Instant::now();
-        let response = timeout(idle_timeout, stream.next()).await;
+        let response = Ok::<_, tokio::time::error::Elapsed>(stream.next().await);
         if let Some(t) = telemetry.as_ref() {
             t.on_sse_poll(&response, start.elapsed());
         }
@@ -715,7 +719,9 @@ async fn process_chat_sse(
             Ok(Some(Ok(sse))) => sse,
             Ok(Some(Err(e))) => {
                 debug!("Chat completions SSE error: {e:#}");
-                let _ = tx_event.send(Err(ApiError::Stream(e.to_string()))).await;
+                let _ = tx_event
+                    .send(Err(ApiError::Stream(chat_sse_error_message(e))))
+                    .await;
                 return;
             }
             Ok(None) => {
@@ -772,10 +778,37 @@ async fn process_chat_sse(
     }
 }
 
+fn byte_idle_timeout_stream(stream: ByteStream, idle_timeout: Duration) -> ByteStream {
+    Box::pin(stream::unfold(stream, move |mut stream| async move {
+        match timeout(idle_timeout, stream.next()).await {
+            Ok(Some(item)) => Some((item, stream)),
+            Ok(None) => None,
+            Err(_) => Some((
+                Err(TransportError::Network(
+                    SSE_IDLE_TIMEOUT_MESSAGE.to_string(),
+                )),
+                stream,
+            )),
+        }
+    }))
+}
+
+fn chat_sse_error_message(error: EventStreamError<TransportError>) -> String {
+    match error {
+        EventStreamError::Transport(TransportError::Network(message))
+            if message == SSE_IDLE_TIMEOUT_MESSAGE =>
+        {
+            message
+        }
+        error => error.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use assert_matches::assert_matches;
+    use bytes::Bytes;
     use codex_client::TransportError;
     use futures::TryStreamExt;
     use pretty_assertions::assert_eq;
@@ -823,6 +856,19 @@ mod tests {
             })
         )
         .into_bytes()
+    }
+
+    fn delayed_body(chunks: Vec<(Duration, Vec<u8>)>) -> ByteStream {
+        Box::pin(futures::stream::unfold(
+            chunks.into_iter(),
+            |mut chunks| async move {
+                let (delay, chunk) = chunks.next()?;
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
+                Some((Ok(Bytes::from(chunk)), chunks))
+            },
+        ))
     }
 
     #[tokio::test]
@@ -1045,6 +1091,75 @@ mod tests {
                     && message.contains(r#"{"cmd":"date"}"#)
         );
         assert_eq!(events.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn comment_frames_keep_idle_timer_alive() {
+        let body = delayed_body(vec![
+            (Duration::ZERO, b": OPENROUTER PROCESSING\n\n".to_vec()),
+            (
+                Duration::from_millis(20),
+                b": OPENROUTER PROCESSING\n\n".to_vec(),
+            ),
+            (
+                Duration::from_millis(20),
+                b": OPENROUTER PROCESSING\n\n".to_vec(),
+            ),
+            (
+                Duration::from_millis(20),
+                br#"data: {"id":"chatcmpl-comments","choices":[{"delta":{"content":"ok"}}]}"#
+                    .to_vec(),
+            ),
+            (Duration::ZERO, b"\n\n".to_vec()),
+            (Duration::ZERO, b"data: [DONE]\n\n".to_vec()),
+        ]);
+        let (tx_event, mut rx_event) = mpsc::channel(1600);
+
+        process_chat_sse(
+            body,
+            tx_event,
+            Duration::from_millis(30),
+            /*telemetry*/ None,
+            None,
+        )
+        .await;
+
+        let mut events = Vec::new();
+        while let Some(event) = rx_event.recv().await {
+            events.push(event);
+        }
+
+        assert!(
+            events.iter().all(Result::is_ok),
+            "comment keepalives should not produce errors: {events:?}"
+        );
+        assert_matches!(
+            events.last(),
+            Some(Ok(ResponseEvent::Completed { response_id, .. }))
+                if response_id == "chatcmpl-comments"
+        );
+    }
+
+    #[tokio::test]
+    async fn truly_silent_stream_hits_idle_timeout() {
+        let body: ByteStream =
+            Box::pin(futures::stream::pending::<Result<Bytes, TransportError>>());
+        let (tx_event, mut rx_event) = mpsc::channel(1600);
+
+        process_chat_sse(
+            body,
+            tx_event,
+            Duration::from_millis(10),
+            /*telemetry*/ None,
+            None,
+        )
+        .await;
+
+        let event = rx_event.recv().await.expect("event should be emitted");
+        assert_matches!(
+            event,
+            Err(ApiError::Stream(message)) if message == SSE_IDLE_TIMEOUT_MESSAGE
+        );
     }
 
     #[tokio::test]
