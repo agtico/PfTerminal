@@ -10,8 +10,12 @@ use crate::claude_panes::CODEX_MAIN_PANE_ID;
 use crate::claude_panes::ClaudeProviderProfileKind;
 use crate::multi_agents::agent_picker_status_dot_spans;
 use crate::multi_agents::format_agent_picker_item_name;
+use crate::session_state::ThreadSessionState;
+use chrono::Utc;
 use codex_app_server_protocol::AdditionalContextEntry;
 use codex_app_server_protocol::AdditionalContextKind;
+use codex_app_server_protocol::SessionSource as AppServerSessionSource;
+use codex_app_server_protocol::ThreadStatus;
 use codex_features::Feature;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_model_provider_info::VERCEL_ANTHROPIC_FAST_PROVIDER_ID;
@@ -21,11 +25,18 @@ use codex_model_provider_info::ZAI_PROVIDER_ID;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::SessionSource as CoreSessionSource;
+use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::ThreadSource as CoreThreadSource;
+use codex_state::DirectionalThreadSpawnEdgeStatus;
 use color_eyre::eyre::Result;
 use color_eyre::eyre::eyre;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Write as _;
+use std::fs::OpenOptions;
+use std::io::Write as _;
+use std::path::Path;
 use std::sync::Arc;
 
 const NAZGUL_ROLE_NAME: &str = "nazgul";
@@ -38,6 +49,7 @@ const SEND_TASK_CLOSE: &str = "</pfterminal_send_task>";
 const SPAWN_PARENT_REPORT_LIMIT: usize = 12;
 const SPAWN_PROCESSED_DISPATCH_TURN_LIMIT: usize = 1024;
 const SPAWN_PROCESSED_DISPATCH_TURN_RETAIN: usize = SPAWN_PROCESSED_DISPATCH_TURN_LIMIT / 2;
+const SPAWN_REPORT_RESULT_MAX_CHARS: usize = 12_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SpawnTaskDispatch {
@@ -48,6 +60,30 @@ pub(crate) struct SpawnTaskDispatch {
 enum SpawnTaskTarget {
     Native(ThreadId),
     ClaudePane(String),
+    UnavailableNative(ThreadId),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct SavedSpawnThreadMetadata {
+    nickname: Option<String>,
+    role: Option<String>,
+}
+
+struct SpawnThreadStateMetadata<'a> {
+    thread_id: ThreadId,
+    parent_thread_id: Option<ThreadId>,
+    agent_role: &'a str,
+    agent_nickname: Option<String>,
+    model: String,
+    model_provider: String,
+    rollout_path: Option<std::path::PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SavedSpawnChildIdentity {
+    parent_node_id: String,
+    role: String,
+    identity: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +120,15 @@ impl SpawnRole {
                 "<pfterminal_spawn_role>\nYou are the PFTerminal Orc: an IC executor at the bottom of the chain of command. You report to your supervising Troll engineering manager, who reports to the Nazgul CTO, who reports to Sauron/the human CEO. Do exactly what the Troll tells you. Do not expand scope, reinterpret the assignment, or wander into unrelated work. Execute directly, produce concrete evidence, and report changed files, tests, benchmark output, or findings. Do not spawn child agents. Do not declare done without evidence. If your work is rejected, fix it precisely.\n</pfterminal_spawn_role>",
             ),
         }
+    }
+}
+
+fn spawn_role_from_agent_type(agent_type: &str) -> Option<SpawnRole> {
+    match agent_type {
+        NAZGUL_ROLE_NAME => Some(SpawnRole::Nazgul),
+        TROLL_ROLE => Some(SpawnRole::Troll),
+        ORC_ROLE => Some(SpawnRole::Orc),
+        _ => None,
     }
 }
 
@@ -265,6 +310,379 @@ impl App {
             ORC_ROLE => Some(self.render_orc_spawn_context_for_thread(thread_id, label)),
             _ => None,
         }
+    }
+
+    pub(crate) fn native_agent_thread_has_loaded_session(&self, thread_id: ThreadId) -> bool {
+        self.thread_has_loaded_session(thread_id)
+    }
+
+    pub(crate) fn unloaded_agent_thread_reason(&self, thread_id: ThreadId) -> Option<String> {
+        let entry = self.agent_navigation.get(&thread_id)?;
+        if self.native_agent_thread_has_loaded_session(thread_id) || !entry.is_closed {
+            return None;
+        }
+        Some(
+            "Saved in pane layout, but no replay transcript or live session is loaded for this thread."
+                .to_string(),
+        )
+    }
+
+    fn native_spawn_task_disabled_reason(
+        &self,
+        thread_id: ThreadId,
+        entry: &crate::multi_agents::AgentPickerThreadEntry,
+    ) -> Option<String> {
+        if self.native_agent_thread_has_loaded_session(thread_id) || !entry.is_closed {
+            return None;
+        }
+        if self.saved_native_spawn_thread_is_task_routable(thread_id) {
+            return None;
+        }
+        Some(
+            "Saved in pane layout, but this pane has no loaded session to receive tasks."
+                .to_string(),
+        )
+    }
+
+    fn saved_native_spawn_thread_is_task_routable(&self, thread_id: ThreadId) -> bool {
+        let thread_node_id = thread_node_id(thread_id);
+        self.spawn_nazgul_pane_id.as_deref() == Some(thread_node_id.as_str())
+            || self.spawn_parent_by_node.contains_key(&thread_node_id)
+            || self
+                .spawn_parent_by_node
+                .values()
+                .any(|parent_node_id| parent_node_id == &thread_node_id)
+            || self.spawn_parent_by_thread.contains_key(&thread_id)
+            || self
+                .spawn_parent_by_thread
+                .values()
+                .any(|parent_thread_id| *parent_thread_id == thread_id)
+    }
+
+    fn replacement_for_superseded_saved_native_spawn_thread(
+        &self,
+        thread_id: ThreadId,
+        entry: &crate::multi_agents::AgentPickerThreadEntry,
+    ) -> Option<ThreadId> {
+        self.unloaded_agent_thread_reason(thread_id)?;
+        let nickname = entry
+            .agent_nickname
+            .as_deref()
+            .map(str::trim)
+            .filter(|nickname| !nickname.is_empty())?;
+        let role = entry.agent_role.as_deref()?;
+
+        self.agent_navigation
+            .ordered_threads()
+            .into_iter()
+            .find_map(|(candidate_thread_id, candidate_entry)| {
+                if candidate_thread_id == thread_id {
+                    return None;
+                }
+                if self
+                    .unloaded_agent_thread_reason(candidate_thread_id)
+                    .is_some()
+                {
+                    return None;
+                }
+                let same_role = candidate_entry.agent_role.as_deref() == Some(role);
+                let same_nickname = candidate_entry
+                    .agent_nickname
+                    .as_deref()
+                    .is_some_and(|candidate| candidate.trim() == nickname);
+                (same_role && same_nickname).then_some(candidate_thread_id)
+            })
+    }
+
+    fn is_superseded_saved_native_spawn_thread(
+        &self,
+        thread_id: ThreadId,
+        entry: &crate::multi_agents::AgentPickerThreadEntry,
+    ) -> bool {
+        self.replacement_for_superseded_saved_native_spawn_thread(thread_id, entry)
+            .is_some()
+    }
+
+    pub(crate) fn apply_native_spawn_task_session_fallbacks(
+        &self,
+        thread_id: ThreadId,
+        session: &mut ThreadSessionState,
+    ) {
+        if session.model.trim().is_empty() {
+            session.model = self.native_spawn_fallback_model_for_thread(thread_id);
+        }
+        if session.model_provider_id.trim().is_empty() {
+            session.model_provider_id = self.config.model_provider_id.clone();
+        }
+        if session.runtime_workspace_roots.is_empty() {
+            session.runtime_workspace_roots = self.config.workspace_roots.clone();
+        }
+    }
+
+    fn native_spawn_fallback_model_for_thread(&self, thread_id: ThreadId) -> String {
+        match self
+            .agent_navigation
+            .get(&thread_id)
+            .and_then(|entry| entry.agent_role.as_deref())
+        {
+            Some(NAZGUL_ROLE_NAME) => Self::STANDARD_NAZGUL_MODEL.to_string(),
+            Some(TROLL_ROLE) => Self::STANDARD_TROLL_MODEL.to_string(),
+            Some(ORC_ROLE) => Self::STANDARD_ORC_MODEL.to_string(),
+            _ => self.chat_widget.current_model().to_string(),
+        }
+    }
+
+    pub(crate) async fn materialize_saved_native_spawn_thread_for_task(
+        &mut self,
+        app_server: &mut AppServerSession,
+        requested_thread_id: ThreadId,
+    ) -> Result<ThreadId> {
+        if self.thread_has_loaded_session(requested_thread_id) {
+            return Ok(requested_thread_id);
+        }
+
+        let mut chain = Vec::new();
+        let mut current_thread_id = requested_thread_id;
+        let mut seen = HashSet::new();
+        loop {
+            if self.thread_has_loaded_session(current_thread_id) {
+                break;
+            }
+            if !seen.insert(current_thread_id) {
+                return Err(eyre!(
+                    "Cannot materialize saved spawn pane {requested_thread_id}: cycle in saved hierarchy."
+                ));
+            }
+            if !self.saved_native_spawn_thread_is_task_routable(current_thread_id) {
+                return Err(eyre!(
+                    "Cannot materialize saved spawn pane {current_thread_id}: no saved hierarchy edge."
+                ));
+            }
+            chain.push(current_thread_id);
+
+            let current_node_id = thread_node_id(current_thread_id);
+            let Some(parent_node_id) = self.spawn_parent_by_node.get(&current_node_id).cloned()
+            else {
+                break;
+            };
+            let Some(parent_thread_id) = node_id_thread(&parent_node_id) else {
+                break;
+            };
+            current_thread_id = parent_thread_id;
+        }
+
+        let mut materialized_thread_id = requested_thread_id;
+        for old_thread_id in chain.into_iter().rev() {
+            if self.thread_has_loaded_session(old_thread_id) {
+                continue;
+            }
+            let (role, nickname) =
+                self.saved_native_spawn_materialization_metadata(old_thread_id)?;
+            let old_node_id = thread_node_id(old_thread_id);
+            let parent_node_id = self
+                .spawn_parent_by_node
+                .get(&old_node_id)
+                .cloned()
+                .unwrap_or_else(|| self.spawn_root_node_id());
+            let Some(parent_thread_id) =
+                self.backend_parent_thread_for_spawn(role, Some(parent_node_id.as_str()))
+            else {
+                return Err(eyre!(
+                    "Cannot materialize {}: saved parent {parent_node_id} is not backed by a runnable native thread.",
+                    self.thread_label(old_thread_id)
+                ));
+            };
+            let Some(agent_type) = role.agent_type() else {
+                return Err(eyre!(
+                    "Cannot materialize {}: unsupported saved role.",
+                    self.thread_label(old_thread_id)
+                ));
+            };
+            let (model, provider, effort) = Self::standard_native_spawn_runtime_for_role(role);
+            self.ensure_native_spawn_provider_ready(Some(provider))?;
+            let spawn_config = self.native_spawn_agent_config()?;
+            let started = app_server
+                .spawn_agent_thread(
+                    &spawn_config,
+                    parent_thread_id,
+                    agent_type.to_string(),
+                    nickname.clone(),
+                    model.to_string(),
+                    Some(provider.to_string()),
+                    effort,
+                    /*base_instructions*/ None,
+                )
+                .await?;
+            let new_thread_id = started.session.thread_id;
+            self.register_spawn_agent_pane(
+                new_thread_id,
+                parent_thread_id,
+                parent_node_id.clone(),
+                nickname.clone(),
+                agent_type,
+                started,
+            )
+            .await;
+            self.replace_saved_native_spawn_thread(old_thread_id, new_thread_id);
+            if old_thread_id == requested_thread_id {
+                materialized_thread_id = new_thread_id;
+            }
+        }
+
+        Ok(materialized_thread_id)
+    }
+
+    fn saved_native_spawn_materialization_metadata(
+        &self,
+        thread_id: ThreadId,
+    ) -> Result<(SpawnRole, Option<String>)> {
+        let entry = self.agent_navigation.get(&thread_id);
+        let role_name = entry
+            .and_then(|entry| entry.agent_role.as_deref())
+            .or_else(|| {
+                saved_spawn_role_for_thread(
+                    thread_id,
+                    self.spawn_nazgul_pane_id.as_deref(),
+                    &self.spawn_parent_by_node,
+                )
+            })
+            .ok_or_else(|| eyre!("Saved spawn pane {thread_id} is missing role metadata."))?;
+        let role = spawn_role_from_agent_type(role_name).ok_or_else(|| {
+            eyre!("Saved spawn pane {thread_id} has unsupported role {role_name}.")
+        })?;
+        let nickname = entry.and_then(|entry| entry.agent_nickname.clone());
+        Ok((role, nickname))
+    }
+
+    fn standard_native_spawn_runtime_for_role(
+        role: SpawnRole,
+    ) -> (&'static str, &'static str, Option<ReasoningEffort>) {
+        match role {
+            SpawnRole::Nazgul => (
+                Self::STANDARD_NAZGUL_MODEL,
+                ZAI_PROVIDER_ID,
+                Some(ReasoningEffort::XHigh),
+            ),
+            SpawnRole::Troll => (
+                Self::STANDARD_TROLL_MODEL,
+                VERCEL_ANTHROPIC_FAST_PROVIDER_ID,
+                None,
+            ),
+            SpawnRole::Orc => (
+                Self::STANDARD_ORC_MODEL,
+                OPENAI_PROVIDER_ID,
+                Some(ReasoningEffort::XHigh),
+            ),
+        }
+    }
+
+    fn replace_saved_native_spawn_thread(
+        &mut self,
+        old_thread_id: ThreadId,
+        new_thread_id: ThreadId,
+    ) {
+        let old_node_id = thread_node_id(old_thread_id);
+        let new_node_id = thread_node_id(new_thread_id);
+
+        if self.spawn_nazgul_pane_id.as_deref() == Some(old_node_id.as_str()) {
+            self.spawn_nazgul_pane_id = Some(new_node_id.clone());
+        }
+        self.spawn_parent_by_node.remove(&old_node_id);
+        for parent_node_id in self.spawn_parent_by_node.values_mut() {
+            if parent_node_id == &old_node_id {
+                *parent_node_id = new_node_id.clone();
+            }
+        }
+        self.spawn_parent_by_thread.remove(&old_thread_id);
+        for parent_thread_id in self.spawn_parent_by_thread.values_mut() {
+            if *parent_thread_id == old_thread_id {
+                *parent_thread_id = new_thread_id;
+            }
+        }
+        self.agent_navigation.remove(old_thread_id);
+        self.persist_pane_state();
+    }
+
+    fn prune_superseded_saved_native_spawn_threads(&mut self) {
+        let replacements = self
+            .agent_navigation
+            .ordered_threads()
+            .into_iter()
+            .filter_map(|(thread_id, entry)| {
+                self.replacement_for_superseded_saved_native_spawn_thread(thread_id, entry)
+                    .map(|replacement_thread_id| (thread_id, replacement_thread_id))
+            })
+            .collect::<Vec<_>>();
+        if replacements.is_empty() {
+            return;
+        }
+
+        for (old_thread_id, new_thread_id) in replacements {
+            let old_node_id = thread_node_id(old_thread_id);
+            let new_node_id = thread_node_id(new_thread_id);
+            if self.spawn_nazgul_pane_id.as_deref() == Some(old_node_id.as_str()) {
+                self.spawn_nazgul_pane_id = Some(new_node_id.clone());
+            }
+            self.spawn_parent_by_node.remove(&old_node_id);
+            for parent_node_id in self.spawn_parent_by_node.values_mut() {
+                if parent_node_id == &old_node_id {
+                    *parent_node_id = new_node_id.clone();
+                }
+            }
+            self.spawn_parent_by_thread.remove(&old_thread_id);
+            for parent_thread_id in self.spawn_parent_by_thread.values_mut() {
+                if *parent_thread_id == old_thread_id {
+                    *parent_thread_id = new_thread_id;
+                }
+            }
+            self.agent_navigation.remove(old_thread_id);
+        }
+
+        self.persist_pane_state();
+    }
+
+    pub(crate) fn prune_duplicate_live_native_spawn_threads(&mut self) {
+        let mut retained_by_identity: HashMap<(String, String, String), ThreadId> = HashMap::new();
+        let mut replacements = Vec::new();
+        for (thread_id, entry) in self.agent_navigation.ordered_threads() {
+            if self.unloaded_agent_thread_reason(thread_id).is_some() {
+                continue;
+            }
+            let node_id = thread_node_id(thread_id);
+            let Some(parent_node_id) = self.spawn_parent_by_node.get(&node_id).cloned() else {
+                continue;
+            };
+            let Some(role) = entry
+                .agent_role
+                .as_deref()
+                .map(str::trim)
+                .filter(|role| !role.is_empty())
+                .map(ToString::to_string)
+            else {
+                continue;
+            };
+            let Some(identity) = entry
+                .agent_nickname
+                .as_deref()
+                .or(entry.agent_path.as_deref())
+                .map(str::trim)
+                .filter(|identity| !identity.is_empty())
+                .map(ToString::to_string)
+            else {
+                continue;
+            };
+            let key = (parent_node_id, role, identity);
+            if let Some(previous_thread_id) = retained_by_identity.insert(key, thread_id) {
+                replacements.push((previous_thread_id, thread_id));
+            }
+        }
+        if replacements.is_empty() {
+            return;
+        }
+        for (old_thread_id, new_thread_id) in replacements {
+            self.replace_saved_native_spawn_thread(old_thread_id, new_thread_id);
+        }
+        self.persist_pane_state();
     }
 
     pub(crate) fn spawn_additional_context_for_thread(
@@ -621,8 +1039,9 @@ impl App {
             context,
             "You are receiving this task through /spawn as {troll_name}."
         );
-        let orcs = self.spawn_orc_children(thread_id);
-        let has_orcs = !orcs.is_empty();
+        let troll_node_id = thread_node_id(thread_id);
+        let (orcs, claude_orcs) = self.spawn_orc_children_for_node(&troll_node_id);
+        let has_orcs = !orcs.is_empty() || !claude_orcs.is_empty();
         if !has_orcs {
             let _ = writeln!(context, "No existing Orc panes are assigned to you yet.");
             let _ = writeln!(
@@ -644,7 +1063,10 @@ impl App {
                 let _ = writeln!(context, "  canonical_task_name={path}");
             }
         }
-        self.write_spawn_parent_reports(&mut context, &thread_node_id(thread_id));
+        for pane in claude_orcs {
+            self.write_spawn_context_claude_pane(&mut context, "- ", pane, SpawnRole::Orc);
+        }
+        self.write_spawn_parent_reports(&mut context, &troll_node_id);
         if has_orcs {
             let _ = writeln!(
                 context,
@@ -652,11 +1074,11 @@ impl App {
             );
             let _ = writeln!(
                 context,
-                "Assign work with followup_task when available; otherwise use send_input. Target the exact listed name, thread id, or canonical_task_name."
+                "Assign work by emitting one pfterminal_send_task host dispatch block per target. Target the exact listed name, thread id, pane id, or canonical_task_name."
             );
             let _ = writeln!(
                 context,
-                "Use wait_agent and list_agents to observe each Orc's completion/result before reviewing or claiming completion."
+                "Observe completion from child report messages and /spawn status before reviewing or claiming completion."
             );
             let _ = writeln!(
                 context,
@@ -725,6 +1147,13 @@ impl App {
                         source_is_active,
                         &format!("Queued task for {label}."),
                         &dispatch.task,
+                    );
+                }
+                Ok(SpawnTaskTarget::UnavailableNative(thread_id)) => {
+                    self.record_spawn_dispatch_error(
+                        source_pane_id,
+                        source_is_active,
+                        self.unavailable_native_spawn_target_error(thread_id),
                     );
                 }
                 Ok(SpawnTaskTarget::ClaudePane(pane_id)) => {
@@ -987,9 +1416,9 @@ impl App {
         // Drain the queue into a single combined processing turn so the parent reviews every pending
         // report at once rather than starting one turn per report. This keeps the parent's attention
         // on the full set of outstanding child results and avoids interleaving many short turns.
-        let reports: Vec<String> = queue.drain(..).collect();
+        let mut reports: Vec<String> = queue.drain(..).collect();
         let body = if reports.len() == 1 {
-            reports.into_iter().next().expect("non-empty")
+            reports.remove(0)
         } else {
             let mut combined = String::from(
                 "Multiple child panes have reported back while you were busy. Review every report \
@@ -1219,6 +1648,7 @@ impl App {
         // Bind the freshly spawned Nazgul as the visible root so Troll spawns and "Nazgul"
         // dispatches route to it.
         self.set_spawn_nazgul_pane_binding(thread_node_id(nazgul_thread_id));
+        self.persist_bound_nazgul_root_thread_metadata().await;
 
         // Troll — zai/glm-5.2-fast (Vercel) under the Nazgul.
         let troll_nickname = self.next_spawn_agent_nickname(SpawnRole::Troll);
@@ -1376,6 +1806,615 @@ impl App {
         );
         let channel = self.ensure_thread_channel(thread_id);
         channel.set_session(started.session, started.turns).await;
+        self.persist_spawn_thread_state_metadata(SpawnThreadStateMetadata {
+            thread_id,
+            parent_thread_id: Some(parent_thread_id),
+            agent_role,
+            agent_nickname: self
+                .agent_navigation
+                .get(&thread_id)
+                .and_then(|entry| entry.agent_nickname.clone()),
+            model: self.native_spawn_fallback_model_for_thread(thread_id),
+            model_provider: self.config.model_provider_id.clone(),
+            rollout_path: None,
+        })
+        .await;
+    }
+
+    pub(crate) async fn persist_bound_nazgul_root_thread_metadata(&self) {
+        let root_thread_id = if let Some(bound_thread_id) = self.nazgul_bound_thread_id() {
+            Some(bound_thread_id)
+        } else if self.spawn_nazgul_bound_target() == CODEX_MAIN_PANE_ID {
+            self.primary_thread_id
+        } else {
+            None
+        };
+        let Some(root_thread_id) = root_thread_id else {
+            return;
+        };
+        let nickname = self
+            .agent_navigation
+            .get(&root_thread_id)
+            .and_then(|entry| entry.agent_nickname.clone())
+            .or_else(|| {
+                if self.primary_thread_id == Some(root_thread_id) {
+                    Some("Main".to_string())
+                } else {
+                    self.next_spawn_agent_nickname(SpawnRole::Nazgul)
+                }
+            });
+        let model = self.chat_widget.current_model().to_string();
+        self.persist_spawn_thread_state_metadata(SpawnThreadStateMetadata {
+            thread_id: root_thread_id,
+            parent_thread_id: None,
+            agent_role: NAZGUL_ROLE_NAME,
+            agent_nickname: nickname,
+            model,
+            model_provider: self.config.model_provider_id.clone(),
+            rollout_path: None,
+        })
+        .await;
+    }
+
+    async fn persist_spawn_thread_state_metadata(
+        &self,
+        metadata_update: SpawnThreadStateMetadata<'_>,
+    ) {
+        let Some(state_db) = self.state_db.as_ref() else {
+            return;
+        };
+        let SpawnThreadStateMetadata {
+            thread_id,
+            parent_thread_id,
+            agent_role,
+            agent_nickname,
+            model,
+            model_provider,
+            rollout_path,
+        } = metadata_update;
+        let now = Utc::now();
+        let source = parent_thread_id
+            .map(|parent_thread_id| {
+                CoreSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id,
+                    depth: 0,
+                    agent_path: None,
+                    agent_nickname: agent_nickname.clone(),
+                    agent_role: Some(agent_role.to_string()),
+                })
+            })
+            .unwrap_or(CoreSessionSource::Cli);
+        let mut metadata = match state_db.get_thread(thread_id).await {
+            Ok(Some(mut metadata)) => {
+                metadata.updated_at = now;
+                metadata.recency_at = now;
+                metadata
+            }
+            Ok(None) | Err(_) => {
+                let rollout_path = rollout_path.clone().unwrap_or_else(|| {
+                    self.config
+                        .codex_home
+                        .join("sessions")
+                        .join("spawn-placeholders")
+                        .join(format!("rollout-{thread_id}.jsonl"))
+                        .to_path_buf()
+                });
+                let mut builder =
+                    codex_state::ThreadMetadataBuilder::new(thread_id, rollout_path, now, source);
+                if parent_thread_id.is_some() {
+                    builder.thread_source = Some(CoreThreadSource::Subagent);
+                }
+                builder.agent_nickname = agent_nickname.clone();
+                builder.agent_role = Some(agent_role.to_string());
+                builder.model_provider = Some(model_provider.clone());
+                builder.cwd = self.config.cwd.to_path_buf();
+                builder.cli_version = Some(env!("CARGO_PKG_VERSION").to_string());
+                builder.build(&self.config.model_provider_id)
+            }
+        };
+        metadata.agent_nickname = agent_nickname;
+        metadata.agent_role = Some(agent_role.to_string());
+        metadata.model = Some(model);
+        metadata.model_provider = model_provider;
+        metadata.cwd = self.config.cwd.to_path_buf();
+        if parent_thread_id.is_some() {
+            metadata.thread_source = Some(CoreThreadSource::Subagent);
+        }
+        if let Some(rollout_path) = rollout_path {
+            metadata.rollout_path = rollout_path;
+        }
+        if let Err(err) = state_db.upsert_thread(&metadata).await {
+            tracing::warn!(
+                thread_id = %thread_id,
+                error = %err,
+                "failed to persist spawn thread metadata"
+            );
+            return;
+        }
+        if let Some(parent_thread_id) = parent_thread_id
+            && let Err(err) = state_db
+                .upsert_thread_spawn_edge(
+                    parent_thread_id,
+                    thread_id,
+                    DirectionalThreadSpawnEdgeStatus::Open,
+                )
+                .await
+        {
+            tracing::warn!(
+                parent_thread_id = %parent_thread_id,
+                child_thread_id = %thread_id,
+                error = %err,
+                "failed to persist spawn thread edge"
+            );
+        }
+    }
+
+    pub(crate) async fn persist_claude_spawn_pane_state(
+        &self,
+        pane_id: &str,
+        parent_node_id: &str,
+    ) {
+        let Some(pane) = self
+            .claude_panes
+            .panes()
+            .iter()
+            .find(|pane| pane.id == pane_id)
+        else {
+            return;
+        };
+        let Some(role) = pane.spawn_role else {
+            return;
+        };
+        let Some(agent_role) = role.agent_type() else {
+            return;
+        };
+        let Some(thread_id) = pane.spawn_thread_id else {
+            return;
+        };
+        let Some(parent_thread_id) = self.spawn_node_backing_thread_id(parent_node_id) else {
+            tracing::warn!(
+                pane_id = pane_id,
+                parent_node_id = parent_node_id,
+                "cannot persist Claude spawn pane without a backing parent thread"
+            );
+            return;
+        };
+        let profile = pane.profile.profile();
+        let rollout_path = claude_spawn_rollout_path(pane);
+        if let Err(err) =
+            ensure_claude_spawn_rollout_session_meta(pane, parent_thread_id, agent_role)
+        {
+            tracing::warn!(
+                pane_id = pane_id,
+                thread_id = %thread_id,
+                error = %err,
+                "failed to initialize Claude spawn rollout"
+            );
+        }
+        self.persist_spawn_thread_state_metadata(SpawnThreadStateMetadata {
+            thread_id,
+            parent_thread_id: Some(parent_thread_id),
+            agent_role,
+            agent_nickname: pane.spawn_nickname.clone(),
+            model: profile.provider_model.to_string(),
+            model_provider: "claude-code".to_string(),
+            rollout_path: Some(rollout_path),
+        })
+        .await;
+    }
+
+    pub(crate) fn record_claude_spawn_rollout_task_started(
+        &self,
+        pane_id: &str,
+        task: &str,
+        turn_index: u64,
+    ) {
+        let Some(pane) = self
+            .claude_panes
+            .panes()
+            .iter()
+            .find(|pane| pane.id == pane_id)
+        else {
+            return;
+        };
+        if pane.spawn_thread_id.is_none() {
+            return;
+        }
+        if let Some(parent_node_id) = self.logical_parent_node_for_pane(pane_id)
+            && let Some(parent_thread_id) = self.spawn_node_backing_thread_id(&parent_node_id)
+            && let Some(role) = pane.spawn_role.and_then(SpawnRole::agent_type)
+        {
+            let _ = ensure_claude_spawn_rollout_session_meta(pane, parent_thread_id, role);
+        }
+        if let Err(err) = append_claude_spawn_rollout_task_started(pane, turn_index, task) {
+            tracing::warn!(
+                pane_id = pane_id,
+                turn_index,
+                error = %err,
+                "failed to append Claude spawn task-start rollout event"
+            );
+        }
+    }
+
+    pub(crate) fn record_claude_spawn_rollout_task_completed(
+        &self,
+        pane_id: &str,
+        output: &crate::claude_panes::ClaudePaneTurnOutput,
+    ) {
+        let Some(turn_index) = claude_turn_index_from_artifact_path(&output.artifact_path) else {
+            return;
+        };
+        let Some(pane) = self
+            .claude_panes
+            .panes()
+            .iter()
+            .find(|pane| pane.id == pane_id)
+        else {
+            return;
+        };
+        if pane.spawn_thread_id.is_none() {
+            return;
+        }
+        let result = if output.text.trim().is_empty() {
+            output.failure_message()
+        } else {
+            output.text.clone()
+        };
+        if let Err(err) = append_claude_spawn_rollout_task_completed(pane, turn_index, &result) {
+            tracing::warn!(
+                pane_id = pane_id,
+                turn_index,
+                error = %err,
+                "failed to append Claude spawn task-complete rollout event"
+            );
+        }
+    }
+
+    pub(crate) async fn restore_native_spawn_panes_from_saved_state(
+        &mut self,
+        app_server: &mut AppServerSession,
+    ) {
+        let saved_metadata = self.saved_spawn_metadata_from_loaded_rollouts().await;
+        self.recover_native_spawn_edges_from_saved_context(&saved_metadata)
+            .await;
+        let thread_ids = native_spawn_thread_ids_from_saved_state(
+            self.spawn_nazgul_pane_id.as_deref(),
+            &self.spawn_parent_by_node,
+        );
+        let saved_parent_edges = self.spawn_parent_by_node.clone();
+        for (child_node_id, parent_node_id) in saved_parent_edges {
+            if let (Some(child_thread_id), Some(parent_thread_id)) = (
+                node_id_thread(&child_node_id),
+                node_id_thread(&parent_node_id),
+            ) {
+                self.spawn_parent_by_thread
+                    .insert(child_thread_id, parent_thread_id);
+            }
+        }
+
+        for thread_id in thread_ids {
+            let saved_metadata_for_thread = saved_metadata.get(&thread_id);
+            let saved_nickname = saved_metadata_for_thread.and_then(|metadata| {
+                metadata
+                    .nickname
+                    .as_deref()
+                    .filter(|nickname| !nickname.trim().is_empty())
+                    .map(ToString::to_string)
+            });
+            let saved_role = saved_metadata_for_thread
+                .and_then(|metadata| metadata.role.clone())
+                .or_else(|| {
+                    saved_spawn_role_for_thread(
+                        thread_id,
+                        self.spawn_nazgul_pane_id.as_deref(),
+                        &self.spawn_parent_by_node,
+                    )
+                    .map(ToString::to_string)
+                });
+            if self.primary_thread_id == Some(thread_id) {
+                let existing_entry = self.agent_navigation.get(&thread_id).cloned();
+                self.upsert_agent_picker_thread(
+                    thread_id,
+                    existing_entry
+                        .as_ref()
+                        .and_then(|entry| entry.agent_nickname.clone())
+                        .or(saved_nickname),
+                    existing_entry
+                        .as_ref()
+                        .and_then(|entry| entry.agent_role.clone())
+                        .or(saved_role),
+                    /*is_closed*/ false,
+                );
+                continue;
+            }
+
+            let existing_entry = self.agent_navigation.get(&thread_id).cloned();
+            match app_server
+                .thread_read(thread_id, /*include_turns*/ false)
+                .await
+            {
+                Ok(thread) => {
+                    let agent_path = thread_spawn_agent_path(&thread.source);
+                    let is_running = matches!(&thread.status, ThreadStatus::Active { .. });
+                    let is_closed = !self
+                        .attach_restored_native_spawn_thread(app_server, thread_id)
+                        .await;
+                    self.upsert_agent_picker_thread(
+                        thread_id,
+                        thread
+                            .agent_nickname
+                            .or_else(|| {
+                                existing_entry
+                                    .as_ref()
+                                    .and_then(|entry| entry.agent_nickname.clone())
+                            })
+                            .or(saved_nickname),
+                        thread
+                            .agent_role
+                            .or_else(|| {
+                                existing_entry
+                                    .as_ref()
+                                    .and_then(|entry| entry.agent_role.clone())
+                            })
+                            .or(saved_role),
+                        is_closed,
+                    );
+                    self.agent_navigation.set_running(thread_id, is_running);
+                    self.agent_navigation.set_agent_path(thread_id, agent_path);
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        thread_id = %thread_id,
+                        error = %err,
+                        "failed to restore native spawn pane from saved layout"
+                    );
+                    let is_closed = !self
+                        .attach_restored_native_spawn_thread(app_server, thread_id)
+                        .await;
+                    self.upsert_agent_picker_thread(
+                        thread_id,
+                        existing_entry
+                            .as_ref()
+                            .and_then(|entry| entry.agent_nickname.clone())
+                            .or(saved_nickname),
+                        existing_entry
+                            .as_ref()
+                            .and_then(|entry| entry.agent_role.clone())
+                            .or(saved_role),
+                        is_closed,
+                    );
+                    self.agent_navigation
+                        .set_running(thread_id, /*is_running*/ false);
+                }
+            }
+        }
+        self.materialize_restored_saved_native_spawn_threads(app_server)
+            .await;
+        self.prune_superseded_saved_native_spawn_threads();
+        self.prune_duplicate_live_native_spawn_threads();
+        self.sync_active_agent_label();
+    }
+
+    async fn materialize_restored_saved_native_spawn_threads(
+        &mut self,
+        app_server: &mut AppServerSession,
+    ) {
+        let candidates = self
+            .agent_navigation
+            .ordered_threads()
+            .into_iter()
+            .filter_map(|(thread_id, entry)| {
+                self.unloaded_agent_thread_reason(thread_id)?;
+                self.saved_native_spawn_thread_is_task_routable(thread_id)
+                    .then_some((thread_id, self.thread_label(thread_id), entry.clone()))
+            })
+            .collect::<Vec<_>>();
+
+        for (thread_id, label, _entry) in candidates {
+            if self.unloaded_agent_thread_reason(thread_id).is_none() {
+                continue;
+            }
+            match self
+                .materialize_saved_native_spawn_thread_for_task(app_server, thread_id)
+                .await
+            {
+                Ok(materialized_thread_id) => {
+                    tracing::warn!(
+                        old_thread_id = %thread_id,
+                        new_thread_id = %materialized_thread_id,
+                        label = %label,
+                        "materialized restored saved native spawn pane"
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        thread_id = %thread_id,
+                        label = %label,
+                        error = %err,
+                        "failed to materialize restored saved native spawn pane"
+                    );
+                    self.chat_widget.add_error_message(format!(
+                        "Failed to restore saved spawn pane {label}: {err}"
+                    ));
+                }
+            }
+        }
+    }
+
+    async fn attach_restored_native_spawn_thread(
+        &mut self,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+    ) -> bool {
+        if self.thread_has_loaded_session(thread_id) {
+            return true;
+        }
+        match app_server
+            .resume_thread(self.config.clone(), thread_id, /*model_override*/ None)
+            .await
+        {
+            Ok(started) => {
+                let channel = self.ensure_thread_channel(thread_id);
+                channel.set_session(started.session, started.turns).await;
+                true
+            }
+            Err(err) => {
+                tracing::warn!(
+                    thread_id = %thread_id,
+                    error = %err,
+                    "failed to reattach restored native spawn pane"
+                );
+                false
+            }
+        }
+    }
+
+    async fn recover_native_spawn_edges_from_saved_context(
+        &mut self,
+        saved_metadata: &HashMap<ThreadId, SavedSpawnThreadMetadata>,
+    ) {
+        let Some(primary_thread_id) = self.primary_thread_id else {
+            return;
+        };
+
+        let recovered_edges = self
+            .saved_spawn_parent_edges_from_loaded_rollouts(primary_thread_id)
+            .await;
+        if recovered_edges.is_empty() {
+            return;
+        }
+
+        self.spawn_nazgul_pane_id
+            .get_or_insert_with(|| thread_node_id(primary_thread_id));
+        self.spawn_parent_by_node
+            .entry(thread_node_id(primary_thread_id))
+            .or_insert_with(|| pane_node_id(CODEX_MAIN_PANE_ID));
+        let existing_identities = self
+            .current_saved_spawn_child_identities(saved_metadata)
+            .await;
+        merge_recovered_native_spawn_parent_edges(
+            &mut self.spawn_parent_by_node,
+            recovered_edges,
+            saved_metadata,
+            existing_identities,
+        );
+    }
+
+    async fn current_saved_spawn_child_identities(
+        &self,
+        saved_metadata: &HashMap<ThreadId, SavedSpawnThreadMetadata>,
+    ) -> HashSet<SavedSpawnChildIdentity> {
+        let mut identities = HashSet::new();
+        for (child_node_id, parent_node_id) in &self.spawn_parent_by_node {
+            let Some(child_thread_id) = node_id_thread(child_node_id) else {
+                continue;
+            };
+            if let Some(identity) = self
+                .saved_spawn_child_identity_for_existing_thread(
+                    child_thread_id,
+                    parent_node_id,
+                    saved_metadata,
+                )
+                .await
+            {
+                identities.insert(identity);
+            }
+        }
+        identities
+    }
+
+    async fn saved_spawn_child_identity_for_existing_thread(
+        &self,
+        thread_id: ThreadId,
+        parent_node_id: &str,
+        saved_metadata: &HashMap<ThreadId, SavedSpawnThreadMetadata>,
+    ) -> Option<SavedSpawnChildIdentity> {
+        let entry_nickname = self
+            .agent_navigation
+            .get(&thread_id)
+            .and_then(|entry| entry.agent_nickname.clone());
+        let entry_role = self
+            .agent_navigation
+            .get(&thread_id)
+            .and_then(|entry| entry.agent_role.clone());
+        let entry_agent_path = self
+            .agent_navigation
+            .get(&thread_id)
+            .and_then(|entry| entry.agent_path.clone());
+        let saved_nickname = saved_metadata
+            .get(&thread_id)
+            .and_then(|metadata| metadata.nickname.clone());
+        let saved_role = saved_metadata
+            .get(&thread_id)
+            .and_then(|metadata| metadata.role.clone());
+        let db_metadata = match self.state_db.as_ref() {
+            Some(state_db) => state_db.get_thread(thread_id).await.ok().flatten(),
+            None => None,
+        };
+        let role = entry_role
+            .as_deref()
+            .or(saved_role.as_deref())
+            .or_else(|| {
+                db_metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.agent_role.as_deref())
+            })
+            .or_else(|| {
+                saved_spawn_role_for_thread(
+                    thread_id,
+                    self.spawn_nazgul_pane_id.as_deref(),
+                    &self.spawn_parent_by_node,
+                )
+            });
+        let nickname = entry_nickname
+            .as_deref()
+            .or(saved_nickname.as_deref())
+            .or_else(|| {
+                db_metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.agent_nickname.as_deref())
+            });
+        let agent_path = entry_agent_path.as_deref().or_else(|| {
+            db_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.agent_path.as_deref())
+        });
+        saved_spawn_child_identity(parent_node_id, role, nickname, agent_path)
+    }
+
+    async fn saved_spawn_metadata_from_loaded_rollouts(
+        &self,
+    ) -> HashMap<ThreadId, SavedSpawnThreadMetadata> {
+        let mut metadata = HashMap::new();
+        let mut seen_paths = HashSet::new();
+        for path in self.loaded_thread_rollout_paths().await {
+            if !seen_paths.insert(path.clone()) {
+                continue;
+            }
+            merge_saved_spawn_metadata(
+                &mut metadata,
+                saved_spawn_metadata_from_rollout_file(&path),
+            );
+        }
+        metadata
+    }
+
+    async fn saved_spawn_parent_edges_from_loaded_rollouts(
+        &self,
+        primary_thread_id: ThreadId,
+    ) -> HashMap<ThreadId, ThreadId> {
+        let mut edges = HashMap::new();
+        let mut seen_paths = HashSet::new();
+        for path in self.loaded_thread_rollout_paths().await {
+            if !seen_paths.insert(path.clone()) {
+                continue;
+            }
+            merge_saved_spawn_parent_edges(
+                &mut edges,
+                saved_spawn_parent_edges_from_rollout_file(&path, primary_thread_id),
+            );
+        }
+        edges
     }
 
     pub(crate) async fn register_codex_user_pane(
@@ -1731,6 +2770,9 @@ impl App {
         self.agent_navigation
             .ordered_threads()
             .into_iter()
+            .filter(|(thread_id, entry)| {
+                !self.is_superseded_saved_native_spawn_thread(*thread_id, entry)
+            })
             .filter(|(_, entry)| entry.agent_role.as_deref() == Some(role))
             .collect()
     }
@@ -1739,6 +2781,9 @@ impl App {
         self.agent_navigation
             .ordered_threads()
             .into_iter()
+            .filter(|(thread_id, entry)| {
+                !self.is_superseded_saved_native_spawn_thread(*thread_id, entry)
+            })
             .filter(|(thread_id, entry)| {
                 if entry.agent_role.as_deref() == Some(TROLL_ROLE) {
                     return true;
@@ -1750,14 +2795,6 @@ impl App {
                         .is_some_and(|parent| Some(*parent) == self.primary_thread_id)
             })
             .collect()
-    }
-
-    fn spawn_orc_children(
-        &self,
-        parent_thread_id: ThreadId,
-    ) -> Vec<(ThreadId, &crate::multi_agents::AgentPickerThreadEntry)> {
-        let parent_node_id = thread_node_id(parent_thread_id);
-        self.spawn_orc_children_for_node(&parent_node_id).0
     }
 
     fn spawn_orc_children_for_node(
@@ -1854,6 +2891,17 @@ impl App {
         false
     }
 
+    fn spawn_node_backing_thread_id(&self, node_id: &str) -> Option<ThreadId> {
+        if node_id == pane_node_id(CODEX_MAIN_PANE_ID) || node_id == CODEX_MAIN_PANE_ID {
+            return self.primary_thread_id;
+        }
+        if let Some(thread_id) = node_id_thread(node_id) {
+            return Some(thread_id);
+        }
+        let pane_id = node_id_pane(node_id).unwrap_or(node_id);
+        self.claude_panes.claude_pane_spawn_thread_id(pane_id)
+    }
+
     fn spawn_node_title(&self, node_id: &str) -> Option<String> {
         if let Some(thread_id) = node_id_thread(node_id) {
             let entry = self.agent_navigation.get(&thread_id)?;
@@ -1908,11 +2956,16 @@ impl App {
         }
 
         if let Some(thread_id) = node_id_thread(target) {
-            return self
-                .agent_navigation
-                .get(&thread_id)
-                .map(|_| SpawnTaskTarget::Native(thread_id))
-                .ok_or_else(|| format!("No native spawn pane found for `{target}`."));
+            let Some(entry) = self.agent_navigation.get(&thread_id) else {
+                return Err(format!("No native spawn pane found for `{target}`."));
+            };
+            if self
+                .native_spawn_task_disabled_reason(thread_id, entry)
+                .is_some()
+            {
+                return Ok(SpawnTaskTarget::UnavailableNative(thread_id));
+            }
+            return Ok(SpawnTaskTarget::Native(thread_id));
         }
         if let Some(pane_id) = node_id_pane(target)
             && self
@@ -1924,9 +2977,24 @@ impl App {
             return Ok(SpawnTaskTarget::ClaudePane(pane_id.to_string()));
         }
         if let Ok(thread_id) = ThreadId::from_string(target)
-            && self.agent_navigation.get(&thread_id).is_some()
+            && let Some(entry) = self.agent_navigation.get(&thread_id)
         {
+            if self
+                .native_spawn_task_disabled_reason(thread_id, entry)
+                .is_some()
+            {
+                return Ok(SpawnTaskTarget::UnavailableNative(thread_id));
+            }
             return Ok(SpawnTaskTarget::Native(thread_id));
+        }
+        if let Ok(thread_id) = ThreadId::from_string(target)
+            && let Some(pane) = self
+                .claude_panes
+                .panes()
+                .iter()
+                .find(|pane| pane.spawn_thread_id == Some(thread_id))
+        {
+            return Ok(SpawnTaskTarget::ClaudePane(pane.id.clone()));
         }
         if self
             .claude_panes
@@ -1940,6 +3008,9 @@ impl App {
         let mut matches = Vec::new();
         let target_folded = target.to_ascii_lowercase();
         for (thread_id, entry) in self.agent_navigation.ordered_threads() {
+            if self.is_superseded_saved_native_spawn_thread(thread_id, entry) {
+                continue;
+            }
             if !entry
                 .agent_role
                 .as_deref()
@@ -1957,10 +3028,15 @@ impl App {
                 .as_deref()
                 .is_some_and(|name| name.eq_ignore_ascii_case(target));
             if nickname_matches || label.eq_ignore_ascii_case(target) {
-                matches.push((
-                    format!("{label} ({thread_id})"),
-                    SpawnTaskTarget::Native(thread_id),
-                ));
+                let target = if self
+                    .native_spawn_task_disabled_reason(thread_id, entry)
+                    .is_some()
+                {
+                    SpawnTaskTarget::UnavailableNative(thread_id)
+                } else {
+                    SpawnTaskTarget::Native(thread_id)
+                };
+                matches.push((format!("{label} ({thread_id})"), target));
             }
         }
         for pane in self
@@ -1976,6 +3052,9 @@ impl App {
             if nickname_matches
                 || pane.title.eq_ignore_ascii_case(target)
                 || pane.title.to_ascii_lowercase().contains(&target_folded)
+                || pane
+                    .spawn_thread_id
+                    .is_some_and(|thread_id| thread_id.to_string().eq_ignore_ascii_case(target))
             {
                 matches.push((
                     format!("{} ({})", pane.title, pane.id),
@@ -1996,6 +3075,11 @@ impl App {
                     .join(", ")
             )),
         }
+    }
+
+    fn unavailable_native_spawn_target_error(&self, thread_id: ThreadId) -> String {
+        let label = self.thread_label(thread_id);
+        format!("Cannot dispatch to {label}; pane session is not loaded.")
     }
 
     fn unassigned_orc_nodes(
@@ -2040,15 +3124,7 @@ impl App {
             self.primary_thread_id == Some(thread_id),
         );
         let prefix = " ".repeat(indent);
-        let status = if let Some(status) = self.spawn_status_by_thread.get(&thread_id) {
-            spawn_status_label(status)
-        } else if entry.is_closed {
-            "done"
-        } else if entry.is_running {
-            "running"
-        } else {
-            "idle"
-        };
+        let status = spawn_entry_status(self, thread_id, entry);
         let description = spawn_agent_description(
             status,
             thread_id,
@@ -2057,7 +3133,7 @@ impl App {
         );
         let task_search = entry.last_task_message.as_deref().unwrap_or_default();
         let result_search = entry.last_result_message.as_deref().unwrap_or_default();
-        SelectionItem {
+        let mut item = SelectionItem {
             name: format!("{prefix}{name}"),
             name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
             description: Some(description),
@@ -2068,7 +3144,14 @@ impl App {
             dismiss_on_select: true,
             search_value: Some(format!("{name} {thread_id} {task_search} {result_search}")),
             ..Default::default()
+        };
+        if let Some(reason) = self.unloaded_agent_thread_reason(thread_id) {
+            item.actions.clear();
+            item.is_disabled = true;
+            item.disabled_reason = Some(reason);
+            item.dismiss_on_select = false;
         }
+        item
     }
 
     fn claude_spawn_panes(&self, role: SpawnRole) -> Vec<&crate::claude_panes::ClaudePane> {
@@ -2096,10 +3179,16 @@ impl App {
             description.push_str(&format!("; audit: {}", path.display()));
         }
         if let Some(task) = pane.latest_task_message.as_deref() {
-            description.push_str(&format!("; current task: {task}"));
+            description.push_str(&format!(
+                "; current task: {}",
+                compact_spawn_context_value(task)
+            ));
         }
         if let Some(result) = pane.latest_result_message.as_deref() {
-            description.push_str(&format!("; latest result: {result}"));
+            description.push_str(&format!(
+                "; latest result: {}",
+                compact_spawn_context_value(result)
+            ));
         }
         let pane_id = pane.id.clone();
         SelectionItem {
@@ -2151,7 +3240,7 @@ impl App {
             self.primary_thread_id == Some(thread_id),
         );
         let prefix = " ".repeat(indent);
-        SelectionItem {
+        let mut item = SelectionItem {
             name: format!("{prefix}Send task to {name}"),
             description: Some("Start a turn in this pane.".to_string()),
             actions: vec![Box::new(move |tx| {
@@ -2160,7 +3249,14 @@ impl App {
             dismiss_on_select: true,
             search_value: Some(format!("send task to {name} {thread_id}")),
             ..Default::default()
+        };
+        if let Some(reason) = self.native_spawn_task_disabled_reason(thread_id, entry) {
+            item.actions.clear();
+            item.is_disabled = true;
+            item.disabled_reason = Some(reason);
+            item.dismiss_on_select = false;
         }
+        item
     }
     fn render_troll_spawn_context(&self, pane: &crate::claude_panes::ClaudePane) -> String {
         let mut context = String::new();
@@ -2488,14 +3584,26 @@ impl App {
             crate::claude_panes::ClaudePaneStatus::Idle => "idle",
             crate::claude_panes::ClaudePaneStatus::Running => "running",
         };
-        let _ = writeln!(
-            context,
-            "{prefix}{}; role={}; harness=Claude Code; status={}; pane={}",
-            pane.title,
-            role.label(),
-            status,
-            pane.id
-        );
+        if let Some(thread_id) = pane.spawn_thread_id {
+            let _ = writeln!(
+                context,
+                "{prefix}{}; role={}; harness=Claude Code; status={}; thread={}; pane={}",
+                pane.title,
+                role.label(),
+                status,
+                thread_id,
+                pane.id
+            );
+        } else {
+            let _ = writeln!(
+                context,
+                "{prefix}{}; role={}; harness=Claude Code; status={}; pane={}",
+                pane.title,
+                role.label(),
+                status,
+                pane.id
+            );
+        }
         if let Some(task) = pane.latest_task_message.as_deref() {
             let _ = writeln!(
                 context,
@@ -2556,7 +3664,11 @@ fn write_spawn_dispatch_contract(context: &mut String) {
     );
     let _ = writeln!(
         context,
-        "The listed Troll/Orc panes already exist and are routable through these host dispatch blocks. Do not say they are missing from your tool surface or unavailable."
+        "If Sauron asks you to dispatch, assign, send, or deploy work to a named pane, emit the pfterminal_send_task block immediately; do not start executing that work yourself, do not read skills first in the root pane, and do not replace dispatch with a plan."
+    );
+    let _ = writeln!(
+        context,
+        "Listed Troll/Orc panes are routable through these host dispatch blocks. Panes marked saved-only have recovered hierarchy metadata but no loaded transcript yet; dispatching a task to them materializes the pane."
     );
     let _ = writeln!(
         context,
@@ -2609,6 +3721,327 @@ fn spawn_parent_thread_for_new_agent(
     }
 }
 
+fn native_spawn_thread_ids_from_saved_state(
+    spawn_nazgul_pane_id: Option<&str>,
+    spawn_parent_by_node: &HashMap<String, String>,
+) -> Vec<ThreadId> {
+    let mut thread_ids = Vec::new();
+    let mut seen = HashSet::new();
+    if let Some(pane_id) = spawn_nazgul_pane_id {
+        push_native_spawn_thread_id(pane_id, &mut thread_ids, &mut seen);
+    }
+    for (child_node_id, parent_node_id) in spawn_parent_by_node {
+        push_native_spawn_thread_id(child_node_id, &mut thread_ids, &mut seen);
+        push_native_spawn_thread_id(parent_node_id, &mut thread_ids, &mut seen);
+    }
+    thread_ids.sort_by_key(std::string::ToString::to_string);
+    thread_ids
+}
+
+fn saved_spawn_role_for_thread(
+    thread_id: ThreadId,
+    spawn_nazgul_pane_id: Option<&str>,
+    spawn_parent_by_node: &HashMap<String, String>,
+) -> Option<&'static str> {
+    let node_id = thread_node_id(thread_id);
+    if spawn_nazgul_pane_id == Some(node_id.as_str()) {
+        return Some(NAZGUL_ROLE_NAME);
+    }
+
+    let parent_node_id = spawn_parent_by_node.get(&node_id)?;
+    if spawn_nazgul_pane_id == Some(parent_node_id.as_str())
+        || parent_node_id == &pane_node_id(CODEX_MAIN_PANE_ID)
+    {
+        return Some(TROLL_ROLE);
+    }
+
+    if saved_spawn_node_has_children(parent_node_id, spawn_parent_by_node) {
+        return Some(ORC_ROLE);
+    }
+
+    None
+}
+
+fn saved_spawn_node_has_children(
+    node_id: &str,
+    spawn_parent_by_node: &HashMap<String, String>,
+) -> bool {
+    spawn_parent_by_node
+        .values()
+        .any(|parent_node_id| parent_node_id == node_id)
+}
+
+fn push_native_spawn_thread_id(
+    node_id: &str,
+    thread_ids: &mut Vec<ThreadId>,
+    seen: &mut HashSet<ThreadId>,
+) {
+    if let Some(thread_id) = node_id_thread(node_id)
+        && seen.insert(thread_id)
+    {
+        thread_ids.push(thread_id);
+    }
+}
+
+fn thread_spawn_agent_path(source: &AppServerSessionSource) -> Option<String> {
+    match source {
+        AppServerSessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_path, .. }) => {
+            agent_path.clone().map(String::from)
+        }
+        _ => None,
+    }
+}
+
+fn saved_spawn_metadata_from_rollout_file(
+    path: &Path,
+) -> HashMap<ThreadId, SavedSpawnThreadMetadata> {
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return HashMap::new();
+    };
+    saved_spawn_metadata_from_jsonl(&contents)
+}
+
+fn saved_spawn_parent_edges_from_rollout_file(
+    path: &Path,
+    primary_thread_id: ThreadId,
+) -> HashMap<ThreadId, ThreadId> {
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return HashMap::new();
+    };
+    saved_spawn_parent_edges_from_jsonl(&contents, primary_thread_id)
+}
+
+fn saved_spawn_metadata_from_jsonl(contents: &str) -> HashMap<ThreadId, SavedSpawnThreadMetadata> {
+    let mut metadata = HashMap::new();
+    for line in contents.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        collect_saved_spawn_metadata_from_json_value(&value, &mut metadata);
+    }
+    metadata
+}
+
+fn saved_spawn_parent_edges_from_jsonl(
+    contents: &str,
+    primary_thread_id: ThreadId,
+) -> HashMap<ThreadId, ThreadId> {
+    let mut edges = HashMap::new();
+    for line in contents.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        collect_saved_spawn_parent_edges_from_json_value(&value, primary_thread_id, &mut edges);
+    }
+    edges
+}
+
+fn collect_saved_spawn_metadata_from_json_value(
+    value: &serde_json::Value,
+    metadata: &mut HashMap<ThreadId, SavedSpawnThreadMetadata>,
+) {
+    match value {
+        serde_json::Value::String(text) => {
+            if text.contains("<pfterminal_spawn_context>") || text.contains("; thread=") {
+                merge_saved_spawn_metadata(metadata, saved_spawn_metadata_from_text(text));
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_saved_spawn_metadata_from_json_value(value, metadata);
+            }
+        }
+        serde_json::Value::Object(values) => {
+            for value in values.values() {
+                collect_saved_spawn_metadata_from_json_value(value, metadata);
+            }
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+}
+
+fn collect_saved_spawn_parent_edges_from_json_value(
+    value: &serde_json::Value,
+    primary_thread_id: ThreadId,
+    edges: &mut HashMap<ThreadId, ThreadId>,
+) {
+    match value {
+        serde_json::Value::String(text) => {
+            if text.contains("<pfterminal_spawn_context>") || text.contains("; thread=") {
+                merge_saved_spawn_parent_edges(
+                    edges,
+                    saved_spawn_parent_edges_from_text(text, primary_thread_id),
+                );
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_saved_spawn_parent_edges_from_json_value(value, primary_thread_id, edges);
+            }
+        }
+        serde_json::Value::Object(values) => {
+            for value in values.values() {
+                collect_saved_spawn_parent_edges_from_json_value(value, primary_thread_id, edges);
+            }
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+}
+
+fn saved_spawn_metadata_from_text(text: &str) -> HashMap<ThreadId, SavedSpawnThreadMetadata> {
+    let mut metadata = HashMap::new();
+    for line in text.lines() {
+        if let Some((thread_id, entry)) = saved_spawn_metadata_from_context_line(line) {
+            merge_saved_spawn_metadata_entry(&mut metadata, thread_id, entry);
+        }
+    }
+    metadata
+}
+
+fn saved_spawn_parent_edges_from_text(
+    text: &str,
+    primary_thread_id: ThreadId,
+) -> HashMap<ThreadId, ThreadId> {
+    let mut edges = HashMap::new();
+    let mut current_troll_thread_id = None;
+    for line in text.lines() {
+        let Some((thread_id, metadata)) = saved_spawn_metadata_from_context_line(line) else {
+            continue;
+        };
+        match metadata.role.as_deref() {
+            Some(TROLL_ROLE) => {
+                edges.insert(thread_id, primary_thread_id);
+                current_troll_thread_id = Some(thread_id);
+            }
+            Some(ORC_ROLE) => {
+                if let Some(troll_thread_id) = current_troll_thread_id {
+                    edges.insert(thread_id, troll_thread_id);
+                }
+            }
+            _ => {}
+        }
+    }
+    edges
+}
+
+fn saved_spawn_metadata_from_context_line(
+    line: &str,
+) -> Option<(ThreadId, SavedSpawnThreadMetadata)> {
+    let (prefix, tail) = line.split_once("; thread=")?;
+    let thread_id_text = tail
+        .split(|ch: char| ch.is_whitespace() || ch == ';')
+        .next()?
+        .trim();
+    let thread_id = ThreadId::from_string(thread_id_text).ok()?;
+    let label = prefix
+        .split(';')
+        .next()
+        .unwrap_or(prefix)
+        .trim()
+        .trim_start_matches('-')
+        .trim();
+    let (nickname, role) = spawn_label_nickname_and_role(label);
+    Some((thread_id, SavedSpawnThreadMetadata { nickname, role }))
+}
+
+fn spawn_label_nickname_and_role(label: &str) -> (Option<String>, Option<String>) {
+    let Some((nickname, rest)) = label.rsplit_once(" [") else {
+        return non_empty_string(label).map_or((None, None), |nickname| (Some(nickname), None));
+    };
+    let role = rest.split(']').next().and_then(non_empty_string);
+    (non_empty_string(nickname), role)
+}
+
+fn non_empty_string(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn merge_saved_spawn_metadata(
+    target: &mut HashMap<ThreadId, SavedSpawnThreadMetadata>,
+    source: HashMap<ThreadId, SavedSpawnThreadMetadata>,
+) {
+    for (thread_id, metadata) in source {
+        merge_saved_spawn_metadata_entry(target, thread_id, metadata);
+    }
+}
+
+fn merge_saved_spawn_metadata_entry(
+    target: &mut HashMap<ThreadId, SavedSpawnThreadMetadata>,
+    thread_id: ThreadId,
+    metadata: SavedSpawnThreadMetadata,
+) {
+    let entry = target.entry(thread_id).or_default();
+    if entry.nickname.is_none() {
+        entry.nickname = metadata.nickname;
+    }
+    if entry.role.is_none() {
+        entry.role = metadata.role;
+    }
+}
+
+fn merge_saved_spawn_parent_edges(
+    target: &mut HashMap<ThreadId, ThreadId>,
+    source: HashMap<ThreadId, ThreadId>,
+) {
+    for (child_thread_id, parent_thread_id) in source {
+        target.entry(child_thread_id).or_insert(parent_thread_id);
+    }
+}
+
+fn merge_recovered_native_spawn_parent_edges(
+    spawn_parent_by_node: &mut HashMap<String, String>,
+    recovered_edges: HashMap<ThreadId, ThreadId>,
+    recovered_metadata: &HashMap<ThreadId, SavedSpawnThreadMetadata>,
+    existing_identities: HashSet<SavedSpawnChildIdentity>,
+) {
+    let mut known_identities = existing_identities;
+    for (child_thread_id, parent_thread_id) in recovered_edges {
+        let child_node_id = thread_node_id(child_thread_id);
+        if spawn_parent_by_node.contains_key(&child_node_id) {
+            continue;
+        }
+        let parent_node_id = thread_node_id(parent_thread_id);
+        if let Some(identity) = saved_spawn_child_identity_from_metadata(
+            &parent_node_id,
+            recovered_metadata.get(&child_thread_id),
+        ) && !known_identities.insert(identity)
+        {
+            continue;
+        }
+        spawn_parent_by_node.insert(child_node_id, parent_node_id);
+    }
+}
+
+fn saved_spawn_child_identity_from_metadata(
+    parent_node_id: &str,
+    metadata: Option<&SavedSpawnThreadMetadata>,
+) -> Option<SavedSpawnChildIdentity> {
+    saved_spawn_child_identity(
+        parent_node_id,
+        metadata.and_then(|metadata| metadata.role.as_deref()),
+        metadata.and_then(|metadata| metadata.nickname.as_deref()),
+        None,
+    )
+}
+
+fn saved_spawn_child_identity(
+    parent_node_id: &str,
+    role: Option<&str>,
+    nickname: Option<&str>,
+    agent_path: Option<&str>,
+) -> Option<SavedSpawnChildIdentity> {
+    let role = role.and_then(non_empty_string)?;
+    let identity = nickname
+        .and_then(non_empty_string)
+        .or_else(|| agent_path.and_then(non_empty_string))?;
+    Some(SavedSpawnChildIdentity {
+        parent_node_id: parent_node_id.to_string(),
+        role,
+        identity,
+    })
+}
+
 pub(crate) fn thread_node_id(thread_id: ThreadId) -> String {
     format!("thread:{thread_id}")
 }
@@ -2635,6 +4068,129 @@ fn task_with_dispatch_provenance(task: &str, source_title: &str, target_title: &
     format!(
         "Assigned by {source_title} to {target_title} through PFTerminal /spawn dispatch.\n\n{task}"
     )
+}
+
+fn claude_spawn_rollout_path(pane: &crate::claude_panes::ClaudePane) -> std::path::PathBuf {
+    pane.artifact_dir.join("spawn-thread-rollout.jsonl")
+}
+
+fn claude_spawn_rollout_turn_id(turn_index: u64) -> String {
+    format!("claude-pane-turn-{turn_index:04}")
+}
+
+fn claude_spawn_event_timestamp() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+fn ensure_claude_spawn_rollout_session_meta(
+    pane: &crate::claude_panes::ClaudePane,
+    parent_thread_id: ThreadId,
+    agent_role: &str,
+) -> std::io::Result<()> {
+    let Some(thread_id) = pane.spawn_thread_id else {
+        return Ok(());
+    };
+    let path = claude_spawn_rollout_path(pane);
+    if path.is_file() {
+        return Ok(());
+    }
+    let source = CoreSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id,
+        depth: 0,
+        agent_path: None,
+        agent_nickname: pane.spawn_nickname.clone(),
+        agent_role: Some(agent_role.to_string()),
+    });
+    append_jsonl_value(
+        &path,
+        &serde_json::json!({
+            "type": "session_meta",
+            "payload": {
+                "id": thread_id,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "cwd": pane.cwd.display().to_string(),
+                "originator": "pfterminal-claude-pane",
+                "cli_version": env!("CARGO_PKG_VERSION"),
+                "source": source,
+                "thread_source": "subagent",
+                "agent_nickname": pane.spawn_nickname.clone(),
+                "agent_role": agent_role,
+                "model_provider": "claude-code",
+                "model": pane.profile.profile().provider_model,
+                "base_instructions": null,
+            },
+        }),
+    )
+}
+
+fn append_claude_spawn_rollout_task_started(
+    pane: &crate::claude_panes::ClaudePane,
+    turn_index: u64,
+    task: &str,
+) -> std::io::Result<()> {
+    let path = claude_spawn_rollout_path(pane);
+    let turn_id = claude_spawn_rollout_turn_id(turn_index);
+    append_jsonl_value(
+        &path,
+        &serde_json::json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "task_started",
+                "turn_id": turn_id,
+                "started_at": claude_spawn_event_timestamp(),
+            },
+        }),
+    )?;
+    append_jsonl_value(
+        &path,
+        &serde_json::json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "user_message",
+                "message": task,
+                "kind": "plain",
+            },
+        }),
+    )
+}
+
+fn append_claude_spawn_rollout_task_completed(
+    pane: &crate::claude_panes::ClaudePane,
+    turn_index: u64,
+    last_agent_message: &str,
+) -> std::io::Result<()> {
+    append_jsonl_value(
+        &claude_spawn_rollout_path(pane),
+        &serde_json::json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "task_complete",
+                "turn_id": claude_spawn_rollout_turn_id(turn_index),
+                "completed_at": claude_spawn_event_timestamp(),
+                "last_agent_message": last_agent_message,
+            },
+        }),
+    )
+}
+
+fn append_jsonl_value(path: &Path, value: &serde_json::Value) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    let mut line = serde_json::to_string(value).map_err(std::io::Error::other)?;
+    line.push('\n');
+    file.write_all(line.as_bytes())
+}
+
+fn claude_turn_index_from_artifact_path(path: &Path) -> Option<u64> {
+    let name = path.file_name()?.to_str()?;
+    name.strip_prefix("turn-")?
+        .strip_suffix(".jsonl")
+        .and_then(|value| value.parse::<u64>().ok())
 }
 
 pub(crate) fn extract_spawn_task_dispatches(text: &str) -> (String, Vec<SpawnTaskDispatch>) {
@@ -2820,12 +4376,11 @@ fn spawn_model_item(
     }
 }
 
-fn spawn_reasoning_effort_for_role(role: SpawnRole, preset: &ModelPreset) -> ReasoningEffort {
-    if role == SpawnRole::Orc
-        && preset
-            .supported_reasoning_efforts
-            .iter()
-            .any(|option| option.effort == ReasoningEffort::XHigh)
+fn spawn_reasoning_effort_for_role(_role: SpawnRole, preset: &ModelPreset) -> ReasoningEffort {
+    if preset
+        .supported_reasoning_efforts
+        .iter()
+        .any(|option| option.effort == ReasoningEffort::XHigh)
     {
         return ReasoningEffort::XHigh;
     }
@@ -2845,7 +4400,9 @@ fn spawn_entry_status(
     thread_id: ThreadId,
     entry: &crate::multi_agents::AgentPickerThreadEntry,
 ) -> &'static str {
-    if let Some(status) = app.spawn_status_by_thread.get(&thread_id) {
+    if app.unloaded_agent_thread_reason(thread_id).is_some() {
+        "saved-only"
+    } else if let Some(status) = app.spawn_status_by_thread.get(&thread_id) {
         spawn_status_label(status)
     } else if entry.is_closed {
         "done"
@@ -2870,6 +4427,37 @@ fn compact_spawn_context_value(value: &str) -> String {
     truncated
 }
 
+pub(crate) fn bounded_spawn_report_value(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.chars().count() <= SPAWN_REPORT_RESULT_MAX_CHARS {
+        return trimmed.to_string();
+    }
+
+    let marker = format!(
+        "\n[spawn report truncated: middle omitted to keep parent prompt under {SPAWN_REPORT_RESULT_MAX_CHARS} chars]\n"
+    );
+    let available = SPAWN_REPORT_RESULT_MAX_CHARS.saturating_sub(marker.chars().count());
+    if available == 0 {
+        return trimmed
+            .chars()
+            .take(SPAWN_REPORT_RESULT_MAX_CHARS)
+            .collect();
+    }
+
+    let head_chars = available / 2;
+    let tail_chars = available.saturating_sub(head_chars);
+    let head = trimmed.chars().take(head_chars).collect::<String>();
+    let tail = trimmed
+        .chars()
+        .rev()
+        .take(tail_chars)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    format!("{head}{marker}{tail}")
+}
+
 fn spawn_agent_description(
     status: &str,
     thread_id: ThreadId,
@@ -2878,10 +4466,16 @@ fn spawn_agent_description(
 ) -> String {
     let mut parts = vec![status.to_string()];
     if let Some(task) = task.filter(|task| !task.trim().is_empty()) {
-        parts.push(format!("current task: {task}"));
+        parts.push(format!(
+            "current task: {}",
+            compact_spawn_context_value(task)
+        ));
     }
     if let Some(result) = result.filter(|result| !result.trim().is_empty()) {
-        parts.push(format!("latest result: {result}"));
+        parts.push(format!(
+            "latest result: {}",
+            compact_spawn_context_value(result)
+        ));
     }
     if parts.len() == 1 {
         parts.push(thread_id.to_string());
@@ -2908,7 +4502,7 @@ fn collab_status_label(status: &codex_app_server_protocol::CollabAgentStatus) ->
 fn spawn_child_report(child_title: &str, status: &str, result: Option<&str>) -> String {
     let mut report = format!("{child_title}; status={status}");
     if let Some(result) = result.filter(|result| !result.trim().is_empty()) {
-        let _ = write!(report, "; result={}", compact_spawn_context_value(result));
+        let _ = write!(report, "; result={}", bounded_spawn_report_value(result));
     }
     report
 }
@@ -3174,8 +4768,10 @@ Done."#;
 
         assert!(context.contains("<pfterminal_send_task target=\"Burzum\">"));
         assert!(context.contains("Do not claim you sent a task unless you emit a dispatch block"));
+        assert!(context.contains("do not read skills first in the root pane"));
         assert!(context.contains("Dispatch blocks are plain assistant text"));
-        assert!(context.contains("already exist and are routable"));
+        assert!(context.contains("Listed Troll/Orc panes are routable"));
+        assert!(context.contains("dispatching a task to them materializes the pane"));
         assert!(context.contains("Do not spawn fresh panes"));
         assert!(context.contains("tool-call syntax"));
         assert!(context.contains("<invoke>"));
@@ -3232,7 +4828,257 @@ Done."#;
     }
 
     #[test]
-    fn orc_spawn_prefers_xhigh_when_supported() {
+    fn saved_spawn_layout_preserves_native_thread_ids_for_restore() {
+        let nazgul_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000701").expect("valid id");
+        let troll_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000702").expect("valid id");
+        let first_orc_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000703").expect("valid id");
+        let second_orc_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000704").expect("valid id");
+
+        let mut spawn_parent_by_node = HashMap::new();
+        spawn_parent_by_node.insert(
+            thread_node_id(troll_thread_id),
+            thread_node_id(nazgul_thread_id),
+        );
+        spawn_parent_by_node.insert(
+            thread_node_id(first_orc_thread_id),
+            thread_node_id(troll_thread_id),
+        );
+        spawn_parent_by_node.insert(
+            thread_node_id(second_orc_thread_id),
+            thread_node_id(troll_thread_id),
+        );
+
+        let nazgul_node_id = thread_node_id(nazgul_thread_id);
+        let restored =
+            native_spawn_thread_ids_from_saved_state(Some(&nazgul_node_id), &spawn_parent_by_node);
+
+        assert_eq!(
+            restored,
+            vec![
+                nazgul_thread_id,
+                troll_thread_id,
+                first_orc_thread_id,
+                second_orc_thread_id
+            ]
+        );
+        assert_eq!(
+            saved_spawn_role_for_thread(
+                nazgul_thread_id,
+                Some(&nazgul_node_id),
+                &spawn_parent_by_node
+            ),
+            Some(NAZGUL_ROLE_NAME)
+        );
+        assert_eq!(
+            saved_spawn_role_for_thread(
+                troll_thread_id,
+                Some(&nazgul_node_id),
+                &spawn_parent_by_node
+            ),
+            Some(TROLL_ROLE)
+        );
+        assert_eq!(
+            saved_spawn_role_for_thread(
+                first_orc_thread_id,
+                Some(&nazgul_node_id),
+                &spawn_parent_by_node
+            ),
+            Some(ORC_ROLE)
+        );
+        assert_eq!(
+            saved_spawn_role_for_thread(
+                second_orc_thread_id,
+                Some(&nazgul_node_id),
+                &spawn_parent_by_node
+            ),
+            Some(ORC_ROLE)
+        );
+    }
+
+    #[test]
+    fn saved_spawn_metadata_from_jsonl_recovers_spawn_context_labels() {
+        let troll_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000711").expect("valid id");
+        let first_orc_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000712").expect("valid id");
+        let second_orc_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000713").expect("valid id");
+        let context = format!(
+            "<pfterminal_spawn_context>\nTrolls:\n- Burzum [troll]; status=idle; thread={troll_thread_id}\n  - Snaga [orc]; status=done; thread={first_orc_thread_id}\n  - Ghash [orc]; status=idle; thread={second_orc_thread_id}\n</pfterminal_spawn_context>"
+        );
+        let jsonl = format!(
+            "{}\n",
+            serde_json::json!({
+                "type": "response_item",
+                "payload": {
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": context
+                        }
+                    ]
+                }
+            })
+        );
+
+        let metadata = saved_spawn_metadata_from_jsonl(&jsonl);
+
+        assert_eq!(
+            metadata.get(&troll_thread_id),
+            Some(&SavedSpawnThreadMetadata {
+                nickname: Some("Burzum".to_string()),
+                role: Some(TROLL_ROLE.to_string()),
+            })
+        );
+        assert_eq!(
+            metadata.get(&first_orc_thread_id),
+            Some(&SavedSpawnThreadMetadata {
+                nickname: Some("Snaga".to_string()),
+                role: Some(ORC_ROLE.to_string()),
+            })
+        );
+        assert_eq!(
+            metadata.get(&second_orc_thread_id),
+            Some(&SavedSpawnThreadMetadata {
+                nickname: Some("Ghash".to_string()),
+                role: Some(ORC_ROLE.to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn saved_spawn_parent_edges_from_jsonl_recovers_spawn_context_hierarchy() {
+        let primary_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000720").expect("valid id");
+        let troll_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000721").expect("valid id");
+        let first_orc_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000722").expect("valid id");
+        let second_orc_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000723").expect("valid id");
+        let context = format!(
+            "<pfterminal_spawn_context>\nTrolls:\n- Burzum [troll]; status=idle; thread={troll_thread_id}\n  - Snaga [orc]; status=done; thread={first_orc_thread_id}\n  - Ghash [orc]; status=idle; thread={second_orc_thread_id}\n</pfterminal_spawn_context>"
+        );
+        let jsonl = format!(
+            "{}\n",
+            serde_json::json!({
+                "type": "response_item",
+                "payload": {
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": context
+                        }
+                    ]
+                }
+            })
+        );
+
+        let edges = saved_spawn_parent_edges_from_jsonl(&jsonl, primary_thread_id);
+
+        assert_eq!(edges.get(&troll_thread_id), Some(&primary_thread_id));
+        assert_eq!(edges.get(&first_orc_thread_id), Some(&troll_thread_id));
+        assert_eq!(edges.get(&second_orc_thread_id), Some(&troll_thread_id));
+    }
+
+    #[test]
+    fn recovered_spawn_parent_edges_fill_missing_children_without_overwriting_existing_edges() {
+        let primary_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000730").expect("valid id");
+        let troll_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000731").expect("valid id");
+        let orc_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000732").expect("valid id");
+        let existing_parent_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000733").expect("valid id");
+
+        let mut spawn_parent_by_node = HashMap::from([(
+            thread_node_id(troll_thread_id),
+            thread_node_id(existing_parent_thread_id),
+        )]);
+        let recovered_edges = HashMap::from([
+            (troll_thread_id, primary_thread_id),
+            (orc_thread_id, troll_thread_id),
+        ]);
+
+        merge_recovered_native_spawn_parent_edges(
+            &mut spawn_parent_by_node,
+            recovered_edges,
+            &HashMap::new(),
+            HashSet::new(),
+        );
+
+        assert_eq!(
+            spawn_parent_by_node.get(&thread_node_id(troll_thread_id)),
+            Some(&thread_node_id(existing_parent_thread_id))
+        );
+        assert_eq!(
+            spawn_parent_by_node.get(&thread_node_id(orc_thread_id)),
+            Some(&thread_node_id(troll_thread_id))
+        );
+    }
+
+    #[test]
+    fn recovered_spawn_parent_edges_skip_duplicate_named_children() {
+        let troll_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000741").expect("valid id");
+        let current_orc_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000742").expect("valid id");
+        let stale_orc_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000743").expect("valid id");
+        let missing_orc_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000744").expect("valid id");
+        let troll_node_id = thread_node_id(troll_thread_id);
+        let mut spawn_parent_by_node =
+            HashMap::from([(thread_node_id(current_orc_thread_id), troll_node_id.clone())]);
+        let recovered_edges = HashMap::from([
+            (stale_orc_thread_id, troll_thread_id),
+            (missing_orc_thread_id, troll_thread_id),
+        ]);
+        let recovered_metadata = HashMap::from([
+            (
+                stale_orc_thread_id,
+                SavedSpawnThreadMetadata {
+                    nickname: Some("Snaga".to_string()),
+                    role: Some(ORC_ROLE.to_string()),
+                },
+            ),
+            (
+                missing_orc_thread_id,
+                SavedSpawnThreadMetadata {
+                    nickname: Some("Ghash".to_string()),
+                    role: Some(ORC_ROLE.to_string()),
+                },
+            ),
+        ]);
+        let existing_identities = HashSet::from([saved_spawn_child_identity(
+            &troll_node_id,
+            Some(ORC_ROLE),
+            Some("Snaga"),
+            None,
+        )
+        .expect("identity")]);
+
+        merge_recovered_native_spawn_parent_edges(
+            &mut spawn_parent_by_node,
+            recovered_edges,
+            &recovered_metadata,
+            existing_identities,
+        );
+
+        assert!(!spawn_parent_by_node.contains_key(&thread_node_id(stale_orc_thread_id)));
+        assert_eq!(
+            spawn_parent_by_node.get(&thread_node_id(missing_orc_thread_id)),
+            Some(&troll_node_id)
+        );
+    }
+
+    #[test]
+    fn spawn_prefers_xhigh_when_supported() {
         let mut preset = test_model_preset(
             ReasoningEffort::Medium,
             vec![ReasoningEffort::Medium, ReasoningEffort::XHigh],
@@ -3244,7 +5090,7 @@ Done."#;
         );
         assert_eq!(
             spawn_reasoning_effort_for_role(SpawnRole::Troll, &preset),
-            ReasoningEffort::Medium
+            ReasoningEffort::XHigh
         );
 
         preset.supported_reasoning_efforts =

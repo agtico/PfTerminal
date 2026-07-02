@@ -83,6 +83,8 @@ use codex_model_provider_info::VERCEL_ANTHROPIC_FAST_PROVIDER_ID;
 use codex_model_provider_info::VERCEL_API_KEY_ENV_VAR;
 use codex_model_provider_info::VERCEL_GLM_5_2_FAST_MODEL;
 use codex_model_provider_info::VERCEL_PROVIDER_ID;
+use codex_model_provider_info::ZAI_API_KEY_ENV_VAR;
+use codex_model_provider_info::ZAI_PROVIDER_ID;
 use codex_models_manager::test_support::construct_model_info_offline_for_tests;
 use codex_models_manager::test_support::get_model_offline_for_tests;
 use codex_otel::SessionTelemetry;
@@ -1373,6 +1375,391 @@ async fn pane_spawn_tree_hides_task_actions() {
 }
 
 #[tokio::test]
+async fn pane_spawn_tree_disables_restored_unloaded_native_rows() {
+    let mut app = make_test_app().await;
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000231").expect("valid thread id");
+    let troll_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000232").expect("valid thread id");
+    let orc_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000233").expect("valid thread id");
+
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(main_thread_id);
+    app.upsert_agent_picker_thread(
+        troll_thread_id,
+        Some("Burzum".to_string()),
+        Some("troll".to_string()),
+        /*is_closed*/ true,
+    );
+    app.upsert_agent_picker_thread(
+        orc_thread_id,
+        Some("Snaga".to_string()),
+        Some("orc".to_string()),
+        /*is_closed*/ true,
+    );
+    app.spawn_parent_by_thread
+        .insert(troll_thread_id, main_thread_id);
+    app.spawn_parent_by_thread
+        .insert(orc_thread_id, troll_thread_id);
+
+    let pane_items = app.spawn_tree_items(/*show_task_actions*/ false);
+    let troll_item = pane_items
+        .iter()
+        .find(|item| item.name.contains("Burzum [troll]"))
+        .expect("restored Troll row");
+    assert!(troll_item.is_disabled);
+    assert!(troll_item.actions.is_empty());
+    assert!(
+        troll_item
+            .disabled_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("no replay transcript or live session"))
+    );
+    assert!(
+        troll_item
+            .description
+            .as_deref()
+            .is_some_and(|description| description.contains("saved-only"))
+    );
+    let orc_item = pane_items
+        .iter()
+        .find(|item| item.name.contains("Snaga [orc]"))
+        .expect("restored Orc row");
+    assert!(orc_item.is_disabled);
+    assert!(orc_item.actions.is_empty());
+
+    let status_items = app.spawn_tree_items(/*show_task_actions*/ true);
+    let troll_task_item = status_items
+        .iter()
+        .find(|item| item.name.contains("Send task to Burzum [troll]"))
+        .expect("restored Troll task row");
+    assert!(!troll_task_item.is_disabled);
+    assert!(!troll_task_item.actions.is_empty());
+}
+
+#[tokio::test]
+async fn pane_spawn_tree_hides_superseded_saved_native_duplicates() {
+    let mut app = make_test_app().await;
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000241").expect("valid thread id");
+    let old_troll_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000242").expect("valid thread id");
+    let old_orc_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000243").expect("valid thread id");
+    let live_troll_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000244").expect("valid thread id");
+    let live_orc_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000245").expect("valid thread id");
+
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(main_thread_id);
+    app.spawn_nazgul_pane_id = Some(crate::spawn_orchestration::thread_node_id(main_thread_id));
+    app.upsert_agent_picker_thread(
+        old_troll_thread_id,
+        Some("Burzum".to_string()),
+        Some("troll".to_string()),
+        /*is_closed*/ true,
+    );
+    app.upsert_agent_picker_thread(
+        old_orc_thread_id,
+        Some("Snaga".to_string()),
+        Some("orc".to_string()),
+        /*is_closed*/ true,
+    );
+    app.upsert_agent_picker_thread(
+        live_troll_thread_id,
+        Some("Burzum".to_string()),
+        Some("troll".to_string()),
+        /*is_closed*/ false,
+    );
+    app.upsert_agent_picker_thread(
+        live_orc_thread_id,
+        Some("Snaga".to_string()),
+        Some("orc".to_string()),
+        /*is_closed*/ false,
+    );
+    app.spawn_parent_by_node.insert(
+        crate::spawn_orchestration::thread_node_id(old_troll_thread_id),
+        crate::spawn_orchestration::thread_node_id(main_thread_id),
+    );
+    app.spawn_parent_by_node.insert(
+        crate::spawn_orchestration::thread_node_id(old_orc_thread_id),
+        crate::spawn_orchestration::thread_node_id(old_troll_thread_id),
+    );
+    app.spawn_parent_by_node.insert(
+        crate::spawn_orchestration::thread_node_id(live_troll_thread_id),
+        crate::spawn_orchestration::thread_node_id(main_thread_id),
+    );
+    app.spawn_parent_by_node.insert(
+        crate::spawn_orchestration::thread_node_id(live_orc_thread_id),
+        crate::spawn_orchestration::thread_node_id(live_troll_thread_id),
+    );
+
+    let items = app.spawn_tree_items(/*show_task_actions*/ false);
+    let burzum_rows = items
+        .iter()
+        .filter(|item| item.name.contains("Burzum [troll]"))
+        .collect::<Vec<_>>();
+    let snaga_rows = items
+        .iter()
+        .filter(|item| item.name.contains("Snaga [orc]"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(burzum_rows.len(), 1);
+    assert_eq!(snaga_rows.len(), 1);
+    assert!(
+        !burzum_rows[0]
+            .description
+            .as_deref()
+            .is_some_and(|description| description.contains(&old_troll_thread_id.to_string()))
+    );
+    assert!(
+        !snaga_rows[0]
+            .description
+            .as_deref()
+            .is_some_and(|description| description.contains(&old_orc_thread_id.to_string()))
+    );
+}
+
+#[tokio::test]
+async fn duplicate_live_native_replacements_are_pruned() {
+    let mut app = make_test_app().await;
+    let troll_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000246").expect("valid thread id");
+    let old_snaga_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000247").expect("valid thread id");
+    let old_ghash_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000248").expect("valid thread id");
+    let new_snaga_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000249").expect("valid thread id");
+    let new_ghash_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000250").expect("valid thread id");
+    let troll_node_id = crate::spawn_orchestration::thread_node_id(troll_thread_id);
+
+    app.upsert_agent_picker_thread(
+        troll_thread_id,
+        Some("Burzum".to_string()),
+        Some("troll".to_string()),
+        /*is_closed*/ false,
+    );
+    for (thread_id, nickname) in [
+        (old_snaga_thread_id, "Snaga"),
+        (old_ghash_thread_id, "Ghash"),
+        (new_snaga_thread_id, "Snaga"),
+        (new_ghash_thread_id, "Ghash"),
+    ] {
+        app.upsert_agent_picker_thread(
+            thread_id,
+            Some(nickname.to_string()),
+            Some("orc".to_string()),
+            /*is_closed*/ false,
+        );
+        app.spawn_parent_by_node.insert(
+            crate::spawn_orchestration::thread_node_id(thread_id),
+            troll_node_id.clone(),
+        );
+    }
+
+    app.prune_duplicate_live_native_spawn_threads();
+
+    assert!(app.agent_navigation.get(&old_snaga_thread_id).is_none());
+    assert!(app.agent_navigation.get(&old_ghash_thread_id).is_none());
+    assert!(app.agent_navigation.get(&new_snaga_thread_id).is_some());
+    assert!(app.agent_navigation.get(&new_ghash_thread_id).is_some());
+    let child_thread_ids = app
+        .spawn_parent_by_node
+        .iter()
+        .filter_map(|(child_node_id, parent_node_id)| {
+            (parent_node_id == &troll_node_id)
+                .then(|| crate::spawn_orchestration::node_id_thread(child_node_id))
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(child_thread_ids.len(), 2);
+    assert!(child_thread_ids.contains(&new_snaga_thread_id));
+    assert!(child_thread_ids.contains(&new_ghash_thread_id));
+}
+
+#[tokio::test]
+async fn restore_materializes_saved_native_orcs_without_rollouts() -> Result<()> {
+    let mut app = make_test_app().await;
+    let codex_home = tempdir()?;
+    app.config.codex_home = codex_home.path().to_path_buf().abs();
+    std::fs::write(
+        app.config.codex_home.join("provider_auth.json"),
+        format!(
+            r#"{{"api_keys":{{"{ZAI_API_KEY_ENV_VAR}":"test-key","{VERCEL_API_KEY_ENV_VAR}":"test-key"}}}}"#
+        ),
+    )?;
+    app.chat_widget.update_account_state(
+        None, None, /*has_chatgpt_account*/ true, /*has_codex_backend_auth*/ true,
+    );
+    let mut app_server = start_config_write_test_app_server(&app).await?;
+    let main = app_server.start_thread(&app.config).await?;
+    let main_thread_id = main.session.thread_id;
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(main_thread_id);
+    app.primary_session_configured = Some(main.session.clone());
+
+    let spawn_config = app.native_spawn_agent_config()?;
+    let nazgul = app_server
+        .spawn_agent_thread(
+            &spawn_config,
+            main_thread_id,
+            "nazgul".to_string(),
+            Some("Angmar".to_string()),
+            App::STANDARD_NAZGUL_MODEL.to_string(),
+            Some(ZAI_PROVIDER_ID.to_string()),
+            /*reasoning_effort*/ None,
+            /*base_instructions*/ None,
+        )
+        .await?;
+    let nazgul_thread_id = nazgul.session.thread_id;
+    let nazgul_rollout_path = nazgul
+        .session
+        .rollout_path
+        .as_ref()
+        .expect("nazgul rollout path");
+    assert!(nazgul_rollout_path.exists());
+    app.register_spawn_agent_pane(
+        nazgul_thread_id,
+        main_thread_id,
+        crate::spawn_orchestration::pane_node_id(crate::claude_panes::CODEX_MAIN_PANE_ID),
+        Some("Angmar".to_string()),
+        "nazgul",
+        nazgul,
+    )
+    .await;
+    app.set_spawn_nazgul_pane_binding(crate::spawn_orchestration::thread_node_id(nazgul_thread_id));
+
+    let troll = app_server
+        .spawn_agent_thread(
+            &spawn_config,
+            nazgul_thread_id,
+            "troll".to_string(),
+            Some("Burzum".to_string()),
+            App::STANDARD_TROLL_MODEL.to_string(),
+            Some(VERCEL_ANTHROPIC_FAST_PROVIDER_ID.to_string()),
+            /*reasoning_effort*/ None,
+            /*base_instructions*/ None,
+        )
+        .await?;
+    let troll_thread_id = troll.session.thread_id;
+    let troll_rollout_path = troll
+        .session
+        .rollout_path
+        .as_ref()
+        .expect("troll rollout path");
+    assert!(troll_rollout_path.exists());
+    app.register_spawn_agent_pane(
+        troll_thread_id,
+        nazgul_thread_id,
+        crate::spawn_orchestration::thread_node_id(nazgul_thread_id),
+        Some("Burzum".to_string()),
+        "troll",
+        troll,
+    )
+    .await;
+    app.thread_event_channels.remove(&troll_thread_id);
+    assert!(!app.thread_has_loaded_session(troll_thread_id));
+
+    let old_snaga_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000251").expect("valid thread id");
+    let old_ghash_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000252").expect("valid thread id");
+    let troll_node_id = crate::spawn_orchestration::thread_node_id(troll_thread_id);
+    let old_snaga_node_id = crate::spawn_orchestration::thread_node_id(old_snaga_thread_id);
+    let old_ghash_node_id = crate::spawn_orchestration::thread_node_id(old_ghash_thread_id);
+    app.spawn_parent_by_node
+        .insert(old_snaga_node_id.clone(), troll_node_id.clone());
+    app.spawn_parent_by_node
+        .insert(old_ghash_node_id.clone(), troll_node_id.clone());
+    app.upsert_agent_picker_thread(
+        old_snaga_thread_id,
+        Some("Snaga".to_string()),
+        Some("orc".to_string()),
+        /*is_closed*/ true,
+    );
+    app.upsert_agent_picker_thread(
+        old_ghash_thread_id,
+        Some("Ghash".to_string()),
+        Some("orc".to_string()),
+        /*is_closed*/ true,
+    );
+
+    app.restore_native_spawn_panes_from_saved_state(&mut app_server)
+        .await;
+
+    assert!(app.agent_navigation.get(&old_snaga_thread_id).is_none());
+    assert!(app.agent_navigation.get(&old_ghash_thread_id).is_none());
+    assert!(app.thread_has_loaded_session(troll_thread_id));
+    assert!(!app.spawn_parent_by_node.contains_key(&old_snaga_node_id));
+    assert!(!app.spawn_parent_by_node.contains_key(&old_ghash_node_id));
+
+    let restored_orcs = app
+        .agent_navigation
+        .ordered_threads()
+        .into_iter()
+        .filter(|(thread_id, entry)| {
+            entry.agent_role.as_deref() == Some("orc")
+                && app
+                    .spawn_parent_by_node
+                    .get(&crate::spawn_orchestration::thread_node_id(*thread_id))
+                    == Some(&troll_node_id)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(restored_orcs.len(), 2);
+    let restored_names = restored_orcs
+        .iter()
+        .filter_map(|(_, entry)| entry.agent_nickname.as_deref())
+        .collect::<Vec<_>>();
+    assert!(restored_names.contains(&"Snaga"));
+    assert!(restored_names.contains(&"Ghash"));
+    for (thread_id, entry) in restored_orcs {
+        assert!(!entry.is_closed);
+        assert!(app.thread_has_loaded_session(thread_id));
+    }
+    let items = app.spawn_tree_items(/*show_task_actions*/ false);
+    assert!(
+        items
+            .iter()
+            .filter(|item| item.name.contains("[orc]"))
+            .all(|item| !item.is_disabled)
+    );
+    assert!(items.iter().all(|item| {
+        !item
+            .description
+            .as_deref()
+            .is_some_and(|description| description.contains("saved-only"))
+    }));
+
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_spawn_task_session_fallback_fills_model_for_restored_troll() {
+    let mut app = make_test_app().await;
+    let troll_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000234").expect("valid thread id");
+    app.upsert_agent_picker_thread(
+        troll_thread_id,
+        Some("Burzum".to_string()),
+        Some("troll".to_string()),
+        /*is_closed*/ true,
+    );
+    let mut session = test_thread_session(troll_thread_id, test_path_buf("/tmp/restored-troll"));
+    session.model.clear();
+    session.model_provider_id.clear();
+
+    app.apply_native_spawn_task_session_fallbacks(troll_thread_id, &mut session);
+
+    assert_eq!(session.model, VERCEL_GLM_5_2_FAST_MODEL);
+    assert_eq!(session.model_provider_id, app.config.model_provider_id);
+}
+
+#[tokio::test]
 async fn nazgul_can_be_bound_to_a_codex_agent_pane() {
     let mut app = make_test_app().await;
     let main_thread_id =
@@ -1492,6 +1879,110 @@ async fn child_report_to_idle_parent_triggers_a_processing_turn() {
         app.spawn_pending_reports_by_thread
             .get(&troll_thread_id)
             .is_none_or(std::collections::VecDeque::is_empty)
+    );
+}
+
+#[tokio::test]
+async fn child_report_processing_turn_preserves_actionable_tail_content() {
+    let (mut app, mut rx, _op_rx) = make_test_app_with_channels().await;
+    let troll_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000405").expect("valid thread id");
+    let orc_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000406").expect("valid thread id");
+
+    app.upsert_agent_picker_thread(
+        troll_thread_id,
+        Some("Burzum".to_string()),
+        Some("troll".to_string()),
+        /*is_closed*/ false,
+    );
+    app.upsert_agent_picker_thread(
+        orc_thread_id,
+        Some("Snaga".to_string()),
+        Some("orc".to_string()),
+        /*is_closed*/ false,
+    );
+    app.spawn_parent_by_thread
+        .insert(orc_thread_id, troll_thread_id);
+
+    let actionable_tail = "ANGMAR ACTION REQUIRED: audit the evidence and write ACCEPTANCE.md";
+    let report = format!(
+        "{}\n\n{}",
+        "Independent re-verification confirms both artifacts are intact. ".repeat(12),
+        actionable_tail
+    );
+
+    app.record_spawn_child_report_for_thread(
+        orc_thread_id,
+        codex_app_server_protocol::CollabAgentStatus::Completed,
+        Some(report.clone()),
+    );
+
+    let task = drain_spawn_agent_task_for(&mut rx, troll_thread_id)
+        .expect("idle parent should immediately receive the child report task");
+    assert!(
+        task.contains(actionable_tail),
+        "parent turn input must preserve actionable tail content, got:\n{task}"
+    );
+
+    app.agent_navigation.set_running(troll_thread_id, true);
+    let queued_report = format!("{report}\nQueued follow-up report.");
+    app.record_spawn_child_report_for_thread(
+        orc_thread_id,
+        codex_app_server_protocol::CollabAgentStatus::Completed,
+        Some(queued_report),
+    );
+
+    rx.try_recv()
+        .expect_err("busy parent should not get an immediate report turn");
+    assert!(app.flush_pending_reports_for_thread(troll_thread_id));
+    let task = drain_spawn_agent_task_for(&mut rx, troll_thread_id)
+        .expect("idle transition should flush queued report as a task");
+    assert!(
+        task.contains(actionable_tail),
+        "flushed parent turn input must preserve actionable tail content, got:\n{task}"
+    );
+}
+
+#[tokio::test]
+async fn native_turn_completion_report_preserves_actionable_tail_content() {
+    let (mut app, mut rx, _op_rx) = make_test_app_with_channels().await;
+    let troll_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000407").expect("valid thread id");
+    let orc_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000408").expect("valid thread id");
+
+    app.upsert_agent_picker_thread(
+        troll_thread_id,
+        Some("Burzum".to_string()),
+        Some("troll".to_string()),
+        /*is_closed*/ false,
+    );
+    app.upsert_agent_picker_thread(
+        orc_thread_id,
+        Some("Snaga".to_string()),
+        Some("orc".to_string()),
+        /*is_closed*/ false,
+    );
+    app.spawn_parent_by_thread
+        .insert(orc_thread_id, troll_thread_id);
+
+    let actionable_tail = "ANGMAR ACTION REQUIRED: audit the evidence and write ACCEPTANCE.md";
+    let report = format!(
+        "{}\n\n{}",
+        "Independent re-verification confirms both artifacts are intact. ".repeat(12),
+        actionable_tail
+    );
+
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        turn_completed_with_agent_message(orc_thread_id, "turn-1", TurnStatus::Completed, &report),
+    ));
+
+    let task = drain_spawn_agent_task_for(&mut rx, troll_thread_id)
+        .expect("native completion should submit a parent report-processing turn");
+    assert!(
+        task.contains(actionable_tail),
+        "native completion report must preserve actionable tail content, got:\n{task}"
     );
 }
 
@@ -1726,8 +2217,7 @@ async fn troll_spawn_task_submission_names_existing_orc_panes() {
     assert!(task.contains("Ghash [orc]"));
     assert!(task.contains(&ghash_thread_id.to_string()));
     assert!(task.contains("Do not call spawn_agent"));
-    assert!(task.contains("followup_task"));
-    assert!(task.contains("send_input"));
+    assert!(task.contains("pfterminal_send_task"));
     assert!(task.contains("Task from Sauron/Nazgul:"));
     assert!(task.ends_with("Build the site and review it."));
 }
@@ -2922,6 +3412,131 @@ async fn claude_orc_completion_is_reported_to_native_troll_context() {
     assert!(context.contains("Recent child reports delivered to this pane:"));
     assert!(context.contains("Claude Code Snaga [orc] - Opus 4.8 Claude Plan; status=success"));
     assert!(context.contains("result=Finished the latency benchmark table and saved the output."));
+}
+
+#[tokio::test]
+async fn bound_nazgul_root_persists_role_metadata_to_state_db() {
+    let mut app = make_test_app().await;
+    let codex_home = tempdir().expect("codex home");
+    app.config.codex_home = codex_home.path().to_path_buf().abs();
+    app.config.sqlite_home = codex_home.path().to_path_buf();
+    let state_db = codex_state::StateRuntime::init(
+        codex_home.path().to_path_buf(),
+        app.config.model_provider_id.clone(),
+    )
+    .await
+    .expect("state db");
+    app.state_db = Some(state_db.clone());
+
+    let root_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000236").expect("valid thread id");
+    app.primary_thread_id = Some(root_thread_id);
+    app.active_thread_id = Some(root_thread_id);
+    app.set_spawn_nazgul_pane_binding(crate::spawn_orchestration::thread_node_id(root_thread_id));
+
+    app.persist_bound_nazgul_root_thread_metadata().await;
+
+    let metadata = state_db
+        .get_thread(root_thread_id)
+        .await
+        .expect("read metadata")
+        .expect("root row should be persisted");
+    assert_eq!(metadata.agent_role.as_deref(), Some("nazgul"));
+    assert_eq!(metadata.agent_nickname.as_deref(), Some("Main"));
+}
+
+#[tokio::test]
+async fn claude_orc_has_routing_thread_row_and_dispatches_by_thread_id() {
+    let (mut app, mut rx, _op_rx) = make_test_app_with_channels().await;
+    let codex_home = tempdir().expect("codex home");
+    app.config.codex_home = codex_home.path().to_path_buf().abs();
+    app.config.sqlite_home = codex_home.path().to_path_buf();
+    let state_db = codex_state::StateRuntime::init(
+        codex_home.path().to_path_buf(),
+        app.config.model_provider_id.clone(),
+    )
+    .await
+    .expect("state db");
+    app.state_db = Some(state_db.clone());
+
+    let troll_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000237").expect("valid thread id");
+    app.upsert_agent_picker_thread(
+        troll_thread_id,
+        Some("Burzum".to_string()),
+        Some("troll".to_string()),
+        /*is_closed*/ false,
+    );
+    let orc_pane_id = app
+        .claude_panes
+        .create_pane_with_role(
+            crate::claude_panes::ClaudeProviderProfileKind::ClaudePlan,
+            app.config.cwd.to_path_buf(),
+            app.config.codex_home.as_ref(),
+            Some(crate::spawn_orchestration::SpawnRole::Orc),
+            Some("Ghash".to_string()),
+        )
+        .expect("create Claude Orc pane");
+    let orc_thread_id = app
+        .claude_panes
+        .claude_pane_spawn_thread_id(&orc_pane_id)
+        .expect("Claude Orc should have a routing thread id");
+    let troll_node_id = crate::spawn_orchestration::thread_node_id(troll_thread_id);
+    app.spawn_parent_by_node.insert(
+        crate::spawn_orchestration::pane_node_id(&orc_pane_id),
+        troll_node_id.clone(),
+    );
+
+    app.persist_claude_spawn_pane_state(&orc_pane_id, &troll_node_id)
+        .await;
+
+    let metadata = state_db
+        .get_thread(orc_thread_id)
+        .await
+        .expect("read metadata")
+        .expect("Claude Orc row should be persisted");
+    assert_eq!(metadata.agent_role.as_deref(), Some("orc"));
+    assert_eq!(metadata.agent_nickname.as_deref(), Some("Ghash"));
+    assert_eq!(metadata.model_provider, "claude-code");
+    let children = state_db
+        .list_thread_spawn_children(troll_thread_id)
+        .await
+        .expect("spawn children");
+    assert_eq!(children, vec![orc_thread_id]);
+
+    let context = app
+        .spawn_context_for_thread(troll_thread_id)
+        .expect("Troll should receive context");
+    assert!(
+        context.contains(&format!("thread={orc_thread_id}")),
+        "got: {context}"
+    );
+    assert!(
+        context.contains(&format!("pane={orc_pane_id}")),
+        "got: {context}"
+    );
+
+    app.dispatch_spawn_task_blocks(
+        &crate::spawn_orchestration::thread_node_id(troll_thread_id),
+        vec![crate::spawn_orchestration::SpawnTaskDispatch {
+            target: orc_thread_id.to_string(),
+            task: "write the proof file".to_string(),
+        }],
+    );
+
+    let mut routed_to_claude = false;
+    while let Ok(event) = rx.try_recv() {
+        if let AppEvent::SubmitSpawnClaudePaneTask { pane_id, task } = event
+            && pane_id == orc_pane_id
+        {
+            routed_to_claude = true;
+            assert!(task.contains("write the proof file"));
+        }
+    }
+    assert!(
+        routed_to_claude,
+        "thread-id target should route to Claude Orc pane"
+    );
 }
 
 #[test]
@@ -8258,4 +8873,133 @@ async fn side_backtrack_rejection_reports_unavailable_message_snapshot() {
 }
 async fn start_config_write_test_app_server(app: &App) -> Result<AppServerSession> {
     Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await
+}
+
+fn claude_pane_text_op(text: &str) -> Op {
+    Op::UserTurn {
+        items: vec![UserInput::Text {
+            text: text.to_string(),
+            text_elements: Vec::new(),
+        }],
+        cwd: std::path::PathBuf::from("/tmp"),
+        approval_policy: codex_app_server_protocol::AskForApproval::Never,
+        approvals_reviewer: None,
+        active_permission_profile: None,
+        model: "glm-5.2".to_string(),
+        effort: None,
+        summary: None,
+        service_tier: None,
+        final_output_json_schema: None,
+        collaboration_mode: None,
+        personality: None,
+    }
+}
+
+/// Round-3 B5 regression: a spawned Claude worker pane must not steal the
+/// operator's active control surface. Only user-created panes activate.
+#[tokio::test]
+async fn spawned_claude_worker_pane_does_not_become_active() {
+    let mut app = make_test_app().await;
+
+    let user_pane_id = app
+        .claude_panes
+        .create_pane_with_role(
+            crate::claude_panes::ClaudeProviderProfileKind::ClaudePlan,
+            app.config.cwd.to_path_buf(),
+            app.config.codex_home.as_ref(),
+            /*spawn_role*/ None,
+            /*spawn_nickname*/ None,
+        )
+        .expect("create user pane");
+    assert_eq!(
+        app.claude_panes.active_claude_pane_id(),
+        Some(user_pane_id.as_str()),
+        "a user-created Claude pane should become active"
+    );
+
+    let orc_pane_id = app
+        .claude_panes
+        .create_pane_with_role(
+            crate::claude_panes::ClaudeProviderProfileKind::ClaudePlan,
+            app.config.cwd.to_path_buf(),
+            app.config.codex_home.as_ref(),
+            Some(crate::spawn_orchestration::SpawnRole::Orc),
+            Some("Krimp".to_string()),
+        )
+        .expect("create Claude Orc pane");
+    assert_ne!(orc_pane_id, user_pane_id);
+    assert_eq!(
+        app.claude_panes.active_claude_pane_id(),
+        Some(user_pane_id.as_str()),
+        "a spawned Claude worker must not steal the active control surface"
+    );
+}
+
+/// Round-3 B5 regression: recognized slash commands stay global while a
+/// Claude pane is active — they must never be forwarded to the worker as a
+/// task, even when entered with unsupported inline args.
+#[tokio::test]
+async fn slash_commands_stay_global_while_claude_pane_is_active() {
+    let (mut app, mut rx, _op_rx) = make_test_app_with_channels().await;
+
+    let pane_id = app
+        .claude_panes
+        .create_pane_with_role(
+            crate::claude_panes::ClaudeProviderProfileKind::ClaudePlan,
+            app.config.cwd.to_path_buf(),
+            app.config.codex_home.as_ref(),
+            /*spawn_role*/ None,
+            /*spawn_nickname*/ None,
+        )
+        .expect("create user pane");
+    assert_eq!(
+        app.claude_panes.active_claude_pane_id(),
+        Some(pane_id.as_str())
+    );
+
+    // Bare recognized command: consumed by the control plane, opens the picker.
+    let consumed = app.try_submit_active_claude_pane_op(&claude_pane_text_op("/panes"));
+    assert!(consumed, "/panes op should be consumed");
+
+    // Recognized command with unsupported inline args: still a command, never
+    // worker-task text (this was the exact round-3 swallow path).
+    let consumed = app.try_submit_active_claude_pane_op(&claude_pane_text_op("/panes extra junk"));
+    assert!(consumed, "/panes with args should be consumed");
+
+    let mut picker_events = 0;
+    while let Ok(event) = rx.try_recv() {
+        if matches!(event, AppEvent::OpenPanePicker) {
+            picker_events += 1;
+        }
+    }
+    assert_eq!(
+        picker_events, 2,
+        "both slash inputs must dispatch the pane picker instead of becoming Claude turns"
+    );
+}
+
+/// The slash-input guard recognizes commands and rejects everything else.
+#[tokio::test]
+async fn try_dispatch_slash_input_only_claims_recognized_commands() {
+    let (mut app, mut rx, _op_rx) = make_test_app_with_channels().await;
+
+    assert!(app.chat_widget.try_dispatch_slash_input("/panes"));
+    assert!(app.chat_widget.try_dispatch_slash_input("  /panes  "));
+    assert!(
+        !app.chat_widget.try_dispatch_slash_input("hello world"),
+        "plain text must not be claimed by the slash guard"
+    );
+    assert!(
+        !app.chat_widget
+            .try_dispatch_slash_input("/no-such-command-xyz"),
+        "unrecognized commands must fall through to normal handling"
+    );
+
+    let mut picker_events = 0;
+    while let Ok(event) = rx.try_recv() {
+        if matches!(event, AppEvent::OpenPanePicker) {
+            picker_events += 1;
+        }
+    }
+    assert_eq!(picker_events, 2);
 }

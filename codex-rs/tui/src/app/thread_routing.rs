@@ -57,6 +57,33 @@ impl App {
             .or_insert_with(|| ThreadEventChannel::new(THREAD_EVENT_CHANNEL_CAPACITY))
     }
 
+    pub(crate) fn thread_has_loaded_session(&self, thread_id: ThreadId) -> bool {
+        self.primary_thread_id == Some(thread_id)
+            || self.thread_event_channels.contains_key(&thread_id)
+    }
+
+    pub(crate) async fn loaded_thread_rollout_paths(&self) -> Vec<PathBuf> {
+        let mut rollout_paths = Vec::new();
+        if let Some(path) = self
+            .primary_session_configured
+            .as_ref()
+            .and_then(|session| session.rollout_path.clone())
+        {
+            rollout_paths.push(path);
+        }
+        for channel in self.thread_event_channels.values() {
+            let store = channel.store.lock().await;
+            if let Some(path) = store
+                .session
+                .as_ref()
+                .and_then(|session| session.rollout_path.clone())
+            {
+                rollout_paths.push(path);
+            }
+        }
+        rollout_paths
+    }
+
     pub(super) async fn set_thread_active(&mut self, thread_id: ThreadId, active: bool) {
         if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
             let mut store = channel.store.lock().await;
@@ -1255,7 +1282,7 @@ impl App {
         }
 
         match app_server
-            .resume_thread(self.config.clone(), thread_id)
+            .resume_thread(self.config.clone(), thread_id, /*model_override*/ None)
             .await
         {
             Ok(started) => {
@@ -1559,7 +1586,7 @@ impl App {
                 (
                     thread_id,
                     status,
-                    spawn_turn_result_preview(&notification.turn),
+                    spawn_turn_result_message(&notification.turn),
                 )
             }
             _ => return,
@@ -1681,26 +1708,16 @@ impl App {
     }
 }
 
-fn spawn_turn_result_preview(turn: &codex_app_server_protocol::Turn) -> Option<String> {
-    const MAX_CHARS: usize = 240;
+fn spawn_turn_result_message(turn: &codex_app_server_protocol::Turn) -> Option<String> {
     let text = turn.items.iter().rev().find_map(|item| match item {
         codex_app_server_protocol::ThreadItem::AgentMessage { text, .. } => {
-            let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
-            (!compact.is_empty()).then_some(compact)
+            let trimmed = text.trim();
+            (!trimmed.is_empty()).then_some(trimmed)
         }
         _ => None,
     })?;
 
-    if text.chars().count() <= MAX_CHARS {
-        return Some(text);
-    }
-
-    let mut truncated = text
-        .chars()
-        .take(MAX_CHARS.saturating_sub(3))
-        .collect::<String>();
-    truncated.push_str("...");
-    Some(truncated)
+    Some(crate::spawn_orchestration::bounded_spawn_report_value(text))
 }
 
 #[cfg(test)]

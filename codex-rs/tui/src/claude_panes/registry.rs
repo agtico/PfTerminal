@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::UNIX_EPOCH;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -13,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::spawn_orchestration::SpawnRole;
+use codex_protocol::ThreadId;
 
 use super::command_plan::build_claude_command_plan;
 use super::command_plan::claude_pane_title;
@@ -191,6 +193,7 @@ impl ClaudePaneRegistry {
             profile,
             spawn_role,
             spawn_nickname,
+            spawn_thread_id: spawn_role.map(|_| ThreadId::new()),
             cwd,
             claude_session_id: None,
             status: ClaudePaneStatus::Idle,
@@ -208,8 +211,19 @@ impl ClaudePaneRegistry {
         };
         persist_claude_pane_metadata(&pane)?;
         self.panes.push(pane);
-        self.active_user_pane_id = id.clone();
+        // Spawned workers (panes created with a spawn role) must not steal the
+        // operator's control surface: only user-created panes become active.
+        if spawn_role.is_none() {
+            self.active_user_pane_id = id.clone();
+        }
         Ok(id)
+    }
+
+    pub(crate) fn claude_pane_spawn_thread_id(&self, pane_id: &str) -> Option<ThreadId> {
+        self.panes
+            .iter()
+            .find(|pane| pane.id == pane_id)
+            .and_then(|pane| pane.spawn_thread_id)
     }
 
     pub(crate) fn prepare_turn(
@@ -409,15 +423,69 @@ pub(crate) fn load_pane_layout(
 ) -> Option<PaneLayoutState> {
     let thread_id = codex_thread_id?;
     let thread_scoped_path = thread_scoped_pane_layout_path(codex_home, thread_id);
-    if let Some(layout) = read_pane_layout(&thread_scoped_path)
-        && layout.codex_thread_id.as_deref() == Some(thread_id)
+    let thread_scoped_layout = read_pane_layout(&thread_scoped_path)
+        .filter(|layout| layout.codex_thread_id.as_deref() == Some(thread_id));
+    if thread_scoped_layout
+        .as_ref()
+        .is_some_and(pane_layout_has_panes)
     {
+        return thread_scoped_layout;
+    }
+    if let Some(layout) = find_related_pane_layout(codex_home, thread_id) {
         return Some(layout);
     }
 
     let legacy_path = codex_home.join("panes").join(PANE_LAYOUT_FILE);
-    read_pane_layout(&legacy_path)
-        .and_then(|layout| (layout.codex_thread_id.as_deref() == Some(thread_id)).then_some(layout))
+    let legacy_layout = read_pane_layout(&legacy_path)
+        .filter(|layout| layout.codex_thread_id.as_deref() == Some(thread_id));
+    thread_scoped_layout.or(legacy_layout)
+}
+
+fn find_related_pane_layout(codex_home: &Path, thread_id: &str) -> Option<PaneLayoutState> {
+    let layout_dir = codex_home.join("panes").join(PANE_LAYOUTS_DIR);
+    let mut best: Option<(u128, PaneLayoutState)> = None;
+    let thread_node_id = format!("thread:{thread_id}");
+    for entry in fs::read_dir(layout_dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(layout) = read_pane_layout(&path) else {
+            continue;
+        };
+        if !pane_layout_has_panes(&layout) || !pane_layout_mentions_thread(&layout, &thread_node_id)
+        {
+            continue;
+        }
+        let modified_ms = entry
+            .metadata()
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0);
+        if best
+            .as_ref()
+            .is_none_or(|(best_modified_ms, _)| modified_ms > *best_modified_ms)
+        {
+            best = Some((modified_ms, layout));
+        }
+    }
+    best.map(|(_, layout)| layout)
+}
+
+fn pane_layout_has_panes(layout: &PaneLayoutState) -> bool {
+    layout.spawn_nazgul_pane_id.is_some()
+        || !layout.claude_pane_ids.is_empty()
+        || !layout.spawn_parent_by_node.is_empty()
+}
+
+fn pane_layout_mentions_thread(layout: &PaneLayoutState, thread_node_id: &str) -> bool {
+    layout.spawn_nazgul_pane_id.as_deref() == Some(thread_node_id)
+        || layout
+            .spawn_parent_by_node
+            .iter()
+            .any(|(child, parent)| child == thread_node_id || parent == thread_node_id)
 }
 
 fn read_pane_layout(path: &Path) -> Option<PaneLayoutState> {

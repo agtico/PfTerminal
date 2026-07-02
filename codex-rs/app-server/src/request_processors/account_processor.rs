@@ -873,12 +873,17 @@ impl AccountRequestProcessor {
         // If a custom provider is configured with `requires_openai_auth == false`,
         // then no auth step is required; otherwise, default to requiring auth.
         let requires_openai_auth = self.config.model_provider.requires_openai_auth;
+        let cached_codex_backend_auth = self
+            .auth_manager
+            .auth_cached()
+            .is_some_and(|auth| auth.uses_codex_backend());
 
         let response = if !requires_openai_auth {
             GetAuthStatusResponse {
                 auth_method: None,
                 auth_token: None,
                 requires_openai_auth: Some(false),
+                has_codex_backend_auth: Some(cached_codex_backend_auth),
             }
         } else {
             let auth = if do_refresh {
@@ -917,12 +922,16 @@ impl AccountRequestProcessor {
                         auth_method: reported_auth_method,
                         auth_token: token_opt,
                         requires_openai_auth: Some(true),
+                        has_codex_backend_auth: Some(
+                            auth.uses_codex_backend() || cached_codex_backend_auth,
+                        ),
                     }
                 }
                 None => GetAuthStatusResponse {
                     auth_method: None,
                     auth_token: None,
                     requires_openai_auth: Some(true),
+                    has_codex_backend_auth: Some(cached_codex_backend_auth),
                 },
             }
         };

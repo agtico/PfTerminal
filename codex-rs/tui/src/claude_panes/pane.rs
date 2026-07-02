@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::spawn_orchestration::SpawnRole;
+use codex_protocol::ThreadId;
 
 use super::progress::format_elapsed_ms;
 use super::progress::progress_status_text;
@@ -101,6 +102,7 @@ pub(crate) struct ClaudePane {
     pub(crate) profile: ClaudeProviderProfileKind,
     pub(crate) spawn_role: Option<SpawnRole>,
     pub(crate) spawn_nickname: Option<String>,
+    pub(crate) spawn_thread_id: Option<ThreadId>,
     pub(crate) cwd: PathBuf,
     pub(crate) claude_session_id: Option<String>,
     pub(crate) status: ClaudePaneStatus,
@@ -125,6 +127,7 @@ pub(crate) struct PersistedClaudePaneMetadata {
     pub(crate) profile: ClaudeProviderProfileKind,
     pub(crate) spawn_role: Option<String>,
     pub(crate) spawn_nickname: Option<String>,
+    pub(crate) spawn_thread_id: Option<String>,
     pub(crate) cwd: PathBuf,
     pub(crate) claude_session_id: Option<String>,
     pub(crate) latest_usage_summary: Option<String>,

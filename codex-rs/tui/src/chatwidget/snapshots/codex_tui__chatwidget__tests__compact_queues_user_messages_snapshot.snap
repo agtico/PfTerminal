@@ -19,4 +19,4 @@ expression: normalize_snapshot_paths(term.backend().vt100().screen().contents())
 
 › Ask PFTerminal to do anything
 
-  z-ai/glm-5.2 standard · /tmp/project · Post Fiat Terminal · TPS: -- to…
+  z-ai/glm-5.2 standard · /tmp/project · Post Fiat Terminal · TPS: -- tok/s

@@ -1149,7 +1149,7 @@ model_reasoning_effort = "low"
     .await?;
 
     assert_eq!(config.model_provider_id, AMBIENT_PROVIDER_ID);
-    assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::Medium));
+    assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::XHigh));
 
     Ok(())
 }
@@ -5547,7 +5547,7 @@ async fn memory_tool_makes_memories_root_readable_without_creating_or_widening_w
 }
 
 #[tokio::test]
-async fn config_defaults_to_auto_cli_auth_store_mode() -> std::io::Result<()> {
+async fn config_defaults_to_resolved_cli_auth_store_mode() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let cfg = ConfigToml::default();
 
@@ -5619,7 +5619,18 @@ async fn config_resolves_default_oauth_store_mode() -> std::io::Result<()> {
 }
 
 #[test]
-fn local_dev_builds_force_file_for_explicit_keyring_cli_auth_store_mode() {
+fn local_debug_builds_force_file_for_keyring_backed_cli_auth_store_modes() {
+    let non_local_keyring_mode = if cfg!(debug_assertions) {
+        AuthCredentialsStoreMode::File
+    } else {
+        AuthCredentialsStoreMode::Keyring
+    };
+    let non_local_auto_mode = if cfg!(debug_assertions) {
+        AuthCredentialsStoreMode::File
+    } else {
+        AuthCredentialsStoreMode::Auto
+    };
+
     assert_eq!(
         resolve_cli_auth_credentials_store_mode(
             AuthCredentialsStoreMode::Keyring,
@@ -5632,7 +5643,7 @@ fn local_dev_builds_force_file_for_explicit_keyring_cli_auth_store_mode() {
             AuthCredentialsStoreMode::Auto,
             LOCAL_DEV_BUILD_VERSION,
         ),
-        AuthCredentialsStoreMode::Auto,
+        AuthCredentialsStoreMode::File,
     );
     assert_eq!(
         resolve_cli_auth_credentials_store_mode(
@@ -5643,12 +5654,27 @@ fn local_dev_builds_force_file_for_explicit_keyring_cli_auth_store_mode() {
     );
     assert_eq!(
         resolve_cli_auth_credentials_store_mode(AuthCredentialsStoreMode::Keyring, "1.2.3"),
-        AuthCredentialsStoreMode::Keyring,
+        non_local_keyring_mode,
+    );
+    assert_eq!(
+        resolve_cli_auth_credentials_store_mode(AuthCredentialsStoreMode::Auto, "1.2.3"),
+        non_local_auto_mode,
     );
 }
 
 #[test]
-fn local_dev_builds_force_file_mcp_oauth_store_modes() {
+fn local_debug_builds_force_file_mcp_oauth_store_modes() {
+    let non_local_keyring_mode = if cfg!(debug_assertions) {
+        OAuthCredentialsStoreMode::File
+    } else {
+        OAuthCredentialsStoreMode::Keyring
+    };
+    let non_local_auto_mode = if cfg!(debug_assertions) {
+        OAuthCredentialsStoreMode::File
+    } else {
+        OAuthCredentialsStoreMode::Auto
+    };
+
     assert_eq!(
         resolve_mcp_oauth_credentials_store_mode(
             OAuthCredentialsStoreMode::Keyring,
@@ -5665,7 +5691,11 @@ fn local_dev_builds_force_file_mcp_oauth_store_modes() {
     );
     assert_eq!(
         resolve_mcp_oauth_credentials_store_mode(OAuthCredentialsStoreMode::Keyring, "1.2.3"),
-        OAuthCredentialsStoreMode::Keyring,
+        non_local_keyring_mode,
+    );
+    assert_eq!(
+        resolve_mcp_oauth_credentials_store_mode(OAuthCredentialsStoreMode::Auto, "1.2.3"),
+        non_local_auto_mode,
     );
 }
 

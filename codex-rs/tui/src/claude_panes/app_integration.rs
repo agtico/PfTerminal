@@ -8,12 +8,14 @@ use anyhow::anyhow;
 use crate::app::App;
 use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
+use crate::app_server_session::AppServerSession;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
 use crate::bottom_pane::popup_consts::standard_popup_hint_line;
 use crate::chatwidget::ChatWidget;
 use crate::spawn_orchestration::SpawnRole;
 use crate::tui;
+use codex_protocol::ThreadId;
 
 use super::command_plan::claude_pane_title;
 use super::command_plan::compose_claude_pane_prompt;
@@ -25,19 +27,25 @@ use super::pane::PaneLayoutState;
 use super::progress::truncate_for_display;
 use super::provider::ClaudeProviderProfileKind;
 use super::registry::CODEX_MAIN_PANE_ID;
+use super::registry::ClaudePaneRegistry;
 use super::registry::PANE_LAYOUT_VERSION;
+use super::registry::load_pane_layout;
 use super::registry::persist_pane_layout;
 use super::turn_types::ClaudePaneTurnOutput;
 use super::turn_types::ClaudePaneTurnProgress;
 impl App {
-    pub(crate) fn open_pane_picker(&mut self) {
+    pub(crate) async fn open_pane_picker(&mut self, app_server: &mut AppServerSession) {
+        self.backfill_loaded_subagent_threads(app_server).await;
+        self.restore_native_spawn_panes_from_saved_state(app_server)
+            .await;
+
         let mut items = Vec::new();
         items.push(section_item("User Panes"));
         items.extend(self.user_pane_items());
-        items.push(section_item("New Pane"));
-        items.extend(new_pane_items());
         items.push(section_item("Agent Panes"));
         items.extend(self.spawn_tree_items(/*show_task_actions*/ false));
+        items.push(section_item("New Pane"));
+        items.extend(new_pane_items());
 
         self.chat_widget.show_selection_view(SelectionViewParams {
             title: Some("Panes".to_string()),
@@ -48,6 +56,51 @@ impl App {
             search_placeholder: Some("Search panes".to_string()),
             ..Default::default()
         });
+    }
+
+    pub(crate) async fn restore_pane_layout_for_thread(
+        &mut self,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+    ) {
+        let thread_id_string = thread_id.to_string();
+        let restored_pane_layout =
+            load_pane_layout(self.config.codex_home.as_ref(), Some(&thread_id_string));
+
+        self.spawn_parent_by_node = restored_pane_layout
+            .as_ref()
+            .map(|layout| {
+                layout
+                    .spawn_parent_by_node
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.spawn_parent_by_thread.clear();
+        self.claude_panes = ClaudePaneRegistry::restore_from_disk(
+            self.config.codex_home.as_ref(),
+            restored_pane_layout.as_ref(),
+        );
+        self.spawn_nazgul_pane_id = restored_pane_layout
+            .as_ref()
+            .and_then(|layout| layout.spawn_nazgul_pane_id.clone())
+            .filter(|pane_id| self.valid_restored_nazgul_binding(pane_id));
+        self.claude_pane_transcript_cells.clear();
+        self.seed_restored_claude_pane_transcripts();
+        self.restore_native_spawn_panes_from_saved_state(app_server)
+            .await;
+        self.show_restored_active_claude_pane();
+    }
+
+    fn valid_restored_nazgul_binding(&self, pane_id: &str) -> bool {
+        pane_id == CODEX_MAIN_PANE_ID
+            || crate::spawn_orchestration::node_id_thread(pane_id).is_some()
+            || self
+                .claude_panes
+                .panes()
+                .iter()
+                .any(|pane| pane.id == pane_id)
     }
 
     pub(crate) fn open_claude_pane_profile_picker(&mut self) {
@@ -228,7 +281,9 @@ impl App {
                 )));
             }
             if let Some(audit_path) = audit_path {
-                let status = status.map(|status| status.label()).unwrap_or("unknown");
+                let status = status
+                    .map(super::pane::ClaudePaneTurnStatus::label)
+                    .unwrap_or("unknown");
                 entry.push(Arc::new(crate::history_cell::new_info_event(
                     "Restored Claude pane state.".to_string(),
                     Some(format!(
@@ -329,7 +384,7 @@ impl App {
 
     pub(crate) async fn create_spawn_claude_pane(
         &mut self,
-        tui: &mut tui::Tui,
+        _tui: &mut tui::Tui,
         role: SpawnRole,
         parent_node_id: Option<String>,
         profile: ClaudeProviderProfileKind,
@@ -340,7 +395,6 @@ impl App {
             );
             return;
         }
-        self.save_active_claude_pane_transcript();
         let spawn_nickname = self.next_spawn_agent_nickname(role);
         match self.claude_panes.create_pane_with_role(
             profile,
@@ -350,28 +404,28 @@ impl App {
             spawn_nickname.clone(),
         ) {
             Ok(id) => {
-                self.detach_active_thread_for_external_pane().await;
+                // Spawned workers are background children: the operator's
+                // control surface stays where it is. Switching focus into the
+                // new pane caused follow-up control-plane input to be routed
+                // into the worker (round-3 B5 failure mode).
                 self.claude_pane_transcript_cells
                     .entry(id.clone())
                     .or_default();
-                if let Err(err) = self.restore_claude_pane_transcript(tui, &id) {
-                    self.chat_widget.add_error_message(format!(
-                        "Failed to initialize Claude spawn pane display: {err}"
-                    ));
-                }
                 let title = claude_pane_title(profile, Some(role), spawn_nickname.as_deref());
                 let logical_parent_node_id =
                     self.logical_parent_node_for_spawn(role, parent_node_id.as_deref());
                 self.spawn_parent_by_node.insert(
                     crate::spawn_orchestration::pane_node_id(&id),
-                    logical_parent_node_id,
+                    logical_parent_node_id.clone(),
                 );
                 self.sync_active_agent_label();
                 self.persist_pane_state();
+                self.persist_claude_spawn_pane_state(&id, &logical_parent_node_id)
+                    .await;
                 self.chat_widget.add_info_message(
-                    format!("Created and switched to {title}."),
+                    format!("Created {title} as a background worker."),
                     Some(format!(
-                        "Harness: Claude Code; role: {}; no task was started.",
+                        "Harness: Claude Code; role: {}; control stays on the current pane (use /panes to open it); no task was started.",
                         role.label()
                     )),
                 );
@@ -420,6 +474,13 @@ impl App {
                 return true;
             }
         };
+        // Control-plane guard: slash commands act on PFTerminal itself, never
+        // on the active worker pane. Without this, a recognized command that
+        // reaches the op path while a Claude pane is active is forwarded to
+        // the worker as task text (the round-3 B5 failure mode).
+        if self.chat_widget.try_dispatch_slash_input(&prompt) {
+            return true;
+        }
         let prompt_context = self.claude_pane_prompt_context(&pane_id);
         let prompt = compose_claude_pane_prompt(prompt, prompt_context.as_deref());
         let prepared =
@@ -463,7 +524,7 @@ impl App {
         self.claude_panes
             .set_latest_task_message(&pane_id, Some(task.clone()));
         let prompt_context = self.claude_pane_prompt_context(&pane_id);
-        let prompt = compose_claude_pane_prompt(task, prompt_context.as_deref());
+        let prompt = compose_claude_pane_prompt(task.clone(), prompt_context.as_deref());
         let prepared =
             match self
                 .claude_panes
@@ -475,6 +536,7 @@ impl App {
                     return;
                 }
             };
+        self.record_claude_spawn_rollout_task_started(&pane_id, &task, prepared.plan.turn_index);
 
         if self.claude_panes.active_user_pane_id() == pane_id {
             self.chat_widget.begin_external_pane_turn();
@@ -512,18 +574,18 @@ impl App {
                 self.dispatch_spawn_task_blocks(&progress.pane_id, dispatches);
             }
         }
-        if let Some(status) = self.claude_panes.update_live_progress(&progress) {
-            if is_active {
-                if progress.phase == "assistant-text"
-                    && let Some(delta) = self
-                        .claude_panes
-                        .take_visible_assistant_transcript_delta(&progress.pane_id)
-                {
-                    self.chat_widget.stream_external_pane_response_delta(delta);
-                }
-                self.chat_widget
-                    .update_external_pane_live_status(status.header, status.details);
+        if let Some(status) = self.claude_panes.update_live_progress(&progress)
+            && is_active
+        {
+            if progress.phase == "assistant-text"
+                && let Some(delta) = self
+                    .claude_panes
+                    .take_visible_assistant_transcript_delta(&progress.pane_id)
+            {
+                self.chat_widget.stream_external_pane_response_delta(delta);
             }
+            self.chat_widget
+                .update_external_pane_live_status(status.header, status.details);
         }
     }
 
@@ -559,6 +621,7 @@ impl App {
                 } else {
                     output.text.clone()
                 };
+                self.record_claude_spawn_rollout_task_completed(&pane_id, &output);
                 self.record_spawn_child_report_for_claude_pane(
                     &pane_id,
                     &report_status,

@@ -21,6 +21,7 @@ use app::App;
 pub use app::AppExitInfo;
 pub use app::ExitReason;
 use app_server_session::AppServerSession;
+use app_server_session::ResumeModelOverride;
 use app_server_session::ThreadParamsMode;
 use codex_app_server_client::AppServerClient;
 use codex_app_server_client::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
@@ -1715,6 +1716,9 @@ async fn run_ratatui_app(
     #[cfg(not(target_os = "windows"))]
     let should_prompt_windows_sandbox_nux_at_startup = false;
 
+    let startup_resume_model_override =
+        resume_model_override_from_launch(&cli, &config, &cli_kv_overrides);
+
     let Cli {
         prompt,
         shared,
@@ -1795,6 +1799,7 @@ async fn run_ratatui_app(
         prompt,
         images,
         session_selection,
+        startup_resume_model_override,
         feedback,
         should_show_trust_screen, // Proxy to: is it a first run in this directory?
         should_prompt_windows_sandbox_nux_at_startup,
@@ -2021,6 +2026,40 @@ fn should_show_login_screen(login_status: LoginStatus, config: &Config) -> bool 
 
 fn provider_requires_login(config: &Config) -> bool {
     config.model_provider.requires_openai_auth || config.model_provider.env_key.is_some()
+}
+
+fn resume_model_override_from_launch(
+    cli: &Cli,
+    config: &Config,
+    cli_kv_overrides: &[(String, codex_config::TomlValue)],
+) -> Option<ResumeModelOverride> {
+    let has_model_config_override = cli_kv_overrides
+        .iter()
+        .any(|(key, _)| is_model_affecting_resume_config_key(key));
+    if cli.model.is_none()
+        && !cli.oss
+        && cli.oss_provider.is_none()
+        && cli.config_profile_v2.is_none()
+        && !has_model_config_override
+    {
+        return None;
+    }
+
+    Some(ResumeModelOverride {
+        model: config.model.clone(),
+        model_provider: Some(config.model_provider_id.clone()),
+    })
+}
+
+fn is_model_affecting_resume_config_key(key: &str) -> bool {
+    matches!(
+        key,
+        "model"
+            | "model_provider"
+            | "model_reasoning_effort"
+            | "model_reasoning_summary"
+            | "model_verbosity"
+    )
 }
 
 const KNOWN_PROVIDER_API_KEY_ENV_VARS: &[&str] = &[

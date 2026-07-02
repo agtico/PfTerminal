@@ -1,6 +1,5 @@
 ---
 source: tui/src/chatwidget/tests/side.rs
-assertion_line: 343
 expression: normalized_backend_snapshot(terminal.backend())
 ---
 "                                                                                "
@@ -9,4 +8,4 @@ expression: normalized_backend_snapshot(terminal.backend())
 "                                                                                "
 "› Ask PFTerminal to do anything                                                 "
 "                                                                                "
-"  z-ai/glm-5.2 standard                                Side starting...  "
+"  z-ai/glm-5.2 standard                                       Side starting...  "

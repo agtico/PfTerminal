@@ -6,7 +6,8 @@ use codex_protocol::openai_models::InputModality;
 use std::collections::HashSet;
 
 use crate::util::error_or_panic;
-use tracing::{info, warn};
+use tracing::info;
+use tracing::warn;
 
 const IMAGE_CONTENT_OMITTED_PLACEHOLDER: &str =
     "image content omitted because you do not support image input";
