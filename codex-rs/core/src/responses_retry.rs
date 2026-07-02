@@ -60,8 +60,41 @@ pub(crate) async fn handle_retryable_response_stream_error(
     sess: &Session,
     turn_context: &TurnContext,
     request: ResponsesStreamRequest,
+    attempt_elapsed: Duration,
 ) -> Result<(), CodexErr> {
-    if *retries >= max_retries
+    let long_failure = attempt_elapsed
+        >= turn_context
+            .provider
+            .info()
+            .stream_long_failure_retry_threshold();
+    let effective_max_retries = effective_max_stream_retries(
+        max_retries,
+        long_failure,
+        turn_context
+            .provider
+            .info()
+            .stream_long_failure_max_retries(),
+    );
+
+    if long_failure {
+        warn_long_stream_failure(
+            sess,
+            turn_context,
+            *retries + 1,
+            effective_max_retries,
+            attempt_elapsed,
+            &err,
+        )
+        .await;
+    }
+
+    if *retries >= effective_max_retries {
+        if long_failure {
+            return Err(err);
+        }
+    }
+
+    if *retries >= effective_max_retries
         && client_session.try_switch_fallback_transport(
             &turn_context.session_telemetry,
             &turn_context.model_info,
@@ -78,7 +111,7 @@ pub(crate) async fn handle_retryable_response_stream_error(
         return Ok(());
     }
 
-    if *retries < max_retries {
+    if *retries < effective_max_retries {
         *retries += 1;
         let retry_count = *retries;
         let delay = match &err {
@@ -87,7 +120,14 @@ pub(crate) async fn handle_retryable_response_stream_error(
             }
             _ => backoff(retry_count),
         };
-        log_retry(request, turn_context, &err, retry_count, max_retries, delay);
+        log_retry(
+            request,
+            turn_context,
+            &err,
+            retry_count,
+            effective_max_retries,
+            delay,
+        );
 
         // In release builds, hide the first websocket retry notification to reduce noisy
         // transient reconnect messages. In debug builds, keep full visibility for diagnosis.
@@ -109,6 +149,44 @@ pub(crate) async fn handle_retryable_response_stream_error(
     }
 
     Err(err)
+}
+
+fn effective_max_stream_retries(
+    max_retries: u64,
+    long_failure: bool,
+    long_failure_max_retries: u64,
+) -> u64 {
+    if long_failure {
+        max_retries.min(long_failure_max_retries)
+    } else {
+        max_retries
+    }
+}
+
+async fn warn_long_stream_failure(
+    sess: &Session,
+    turn_context: &TurnContext,
+    attempt_number: u64,
+    effective_max_retries: u64,
+    attempt_elapsed: Duration,
+    err: &CodexErr,
+) {
+    let elapsed_seconds = attempt_elapsed.as_secs_f64();
+    let retry_state = if attempt_number <= effective_max_retries {
+        format!("retrying with long-failure cap {effective_max_retries}")
+    } else {
+        format!("not retrying; long-failure cap {effective_max_retries} reached")
+    };
+    sess.send_event(
+        turn_context,
+        EventMsg::Warning(WarningEvent {
+            message: format!(
+                "Provider stream failed after {elapsed_seconds:.1}s on attempt \
+                 {attempt_number}: {err:#}. {retry_state}."
+            ),
+        }),
+    )
+    .await;
 }
 
 fn log_retry(
@@ -167,5 +245,27 @@ mod tests {
             .expect("non-idle stream error should not abort");
 
         assert_eq!(failures, 0);
+    }
+
+    #[test]
+    fn long_stream_failure_retries_are_capped_to_one() {
+        assert_eq!(
+            effective_max_stream_retries(
+                /*max_retries*/ 5, /*long_failure*/ true,
+                /*long_failure_max_retries*/ 1,
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn normal_stream_failures_keep_provider_retry_count() {
+        assert_eq!(
+            effective_max_stream_retries(
+                /*max_retries*/ 5, /*long_failure*/ false,
+                /*long_failure_max_retries*/ 1,
+            ),
+            5
+        );
     }
 }

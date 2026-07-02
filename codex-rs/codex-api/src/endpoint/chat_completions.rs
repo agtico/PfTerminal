@@ -21,6 +21,7 @@ use codex_protocol::models::ReasoningItemReasoningSummary;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TokenUsage;
+use eventsource_stream::Event;
 use eventsource_stream::EventStreamError;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
@@ -38,6 +39,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tokio::time::Instant;
 use tokio::time::timeout;
 use tracing::debug;
@@ -51,6 +53,7 @@ const GENERATION_ID_HEADERS: [&str; 3] = [
     "openrouter-generation-id",
 ];
 const SSE_IDLE_TIMEOUT_MESSAGE: &str = "idle timeout waiting for SSE";
+const DEFAULT_ACTIONABLE_SILENCE_TIMEOUT: Duration = Duration::from_secs(180);
 const SERIALIZED_TOOL_TEXT_PROBE_CHARS: usize = 96;
 const CALL_METRICS_TAG: &str = "pfterminal_call_metrics";
 static CHAT_CALL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -67,6 +70,7 @@ pub struct ChatCompletionsOptions {
     pub session_source: Option<SessionSource>,
     pub extra_headers: HeaderMap,
     pub same_turn_attempt_index: Option<u64>,
+    pub actionable_silence_timeout: Option<Duration>,
 }
 
 impl<T: HttpTransport> ChatCompletionsClient<T> {
@@ -109,6 +113,7 @@ impl<T: HttpTransport> ChatCompletionsClient<T> {
             session_source,
             extra_headers,
             same_turn_attempt_index,
+            actionable_silence_timeout,
         } = options;
 
         let body = EncodedJsonBody::encode(&request).map_err(|e| {
@@ -151,6 +156,7 @@ impl<T: HttpTransport> ChatCompletionsClient<T> {
         Ok(spawn_chat_completions_stream(
             stream_response,
             self.session.provider().stream_idle_timeout,
+            actionable_silence_timeout.unwrap_or(DEFAULT_ACTIONABLE_SILENCE_TIMEOUT),
             self.sse_telemetry.clone(),
             metrics,
         ))
@@ -164,6 +170,7 @@ impl<T: HttpTransport> ChatCompletionsClient<T> {
 fn spawn_chat_completions_stream(
     stream_response: StreamResponse,
     idle_timeout: Duration,
+    actionable_silence_timeout: Duration,
     telemetry: Option<Arc<dyn SseTelemetry>>,
     metrics: ChatCallMetrics,
 ) -> ResponseStream {
@@ -180,6 +187,7 @@ fn spawn_chat_completions_stream(
             stream_response.bytes,
             tx_event,
             idle_timeout,
+            actionable_silence_timeout,
             telemetry,
             response_id_hint,
             Some(metrics),
@@ -347,6 +355,43 @@ fn line_is_sse_comment(line: &[u8]) -> bool {
         .skip_while(|byte| matches!(byte, b' ' | b'\t'))
         .next()
         == Some(b':')
+}
+
+#[derive(Clone, Debug)]
+struct ChatStreamActivity {
+    comment_frame_count: Arc<AtomicU64>,
+    sequence: Arc<AtomicU64>,
+    tx_activity: watch::Sender<u64>,
+}
+
+impl ChatStreamActivity {
+    fn new() -> (Self, watch::Receiver<u64>) {
+        let (tx_activity, rx_activity) = watch::channel(0);
+        (
+            Self {
+                comment_frame_count: Arc::new(AtomicU64::new(0)),
+                sequence: Arc::new(AtomicU64::new(0)),
+                tx_activity,
+            },
+            rx_activity,
+        )
+    }
+
+    fn record_bytes(&self, bytes: &[u8], comment_frames: u64) {
+        if bytes.is_empty() {
+            return;
+        }
+        if comment_frames > 0 {
+            self.comment_frame_count
+                .fetch_add(comment_frames, Ordering::Relaxed);
+        }
+        let sequence = self.sequence.fetch_add(1, Ordering::Relaxed) + 1;
+        let _ = self.tx_activity.send(sequence);
+    }
+
+    fn comment_frame_count(&self) -> u64 {
+        self.comment_frame_count.load(Ordering::Relaxed)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -932,20 +977,58 @@ async fn process_chat_sse(
     stream: ByteStream,
     tx_event: mpsc::Sender<Result<ResponseEvent, ApiError>>,
     idle_timeout: Duration,
+    actionable_silence_timeout: Duration,
     telemetry: Option<Arc<dyn SseTelemetry>>,
     response_id_hint: Option<String>,
     metrics: Option<ChatCallMetrics>,
 ) {
-    let mut stream = byte_idle_timeout_stream(stream, idle_timeout, metrics.clone()).eventsource();
+    let (activity, mut activity_rx) = ChatStreamActivity::new();
+    let mut stream =
+        byte_idle_timeout_stream(stream, idle_timeout, metrics.clone(), activity.clone())
+            .eventsource();
     let mut state = ChatStreamState::new(response_id_hint);
+    let mut first_activity_at: Option<Instant> = None;
+    let mut actionable_deadline_at: Option<Instant> = None;
 
     loop {
         let start = Instant::now();
-        let response = Ok::<_, tokio::time::error::Elapsed>(stream.next().await);
+        let response = match poll_chat_sse_event(
+            &mut stream,
+            &mut activity_rx,
+            actionable_deadline_at,
+        )
+        .await
+        {
+            ChatSsePoll::Activity => {
+                if first_activity_at.is_none() {
+                    let now = Instant::now();
+                    first_activity_at = Some(now);
+                    actionable_deadline_at = Some(now + actionable_silence_timeout);
+                }
+                continue;
+            }
+            ChatSsePoll::ActionableTimeout => {
+                let elapsed = first_activity_at
+                    .map(|started_at| started_at.elapsed())
+                    .unwrap_or(actionable_silence_timeout);
+                let message = actionable_silence_timeout_message(
+                    elapsed,
+                    actionable_silence_timeout,
+                    activity.comment_frame_count(),
+                );
+                if let Some(metrics) = metrics.as_ref() {
+                    metrics.finish(message.clone());
+                }
+                let _ = tx_event.send(Err(ApiError::Stream(message))).await;
+                return;
+            }
+            ChatSsePoll::Event(response) => response,
+        };
+        let telemetry_response = Ok::<_, tokio::time::error::Elapsed>(response);
         if let Some(t) = telemetry.as_ref() {
-            t.on_sse_poll(&response, start.elapsed());
+            t.on_sse_poll(&telemetry_response, start.elapsed());
         }
-        let sse = match response {
+        let sse = match telemetry_response {
             Ok(Some(Ok(sse))) => sse,
             Ok(Some(Err(e))) => {
                 debug!("Chat completions SSE error: {e:#}");
@@ -978,6 +1061,11 @@ async fn process_chat_sse(
         trace!("Chat completions SSE event: {}", &sse.data);
         if let Some(metrics) = metrics.as_ref() {
             metrics.record_parsed_data_event();
+        }
+        if first_activity_at.is_none() {
+            let now = Instant::now();
+            first_activity_at = Some(now);
+            actionable_deadline_at = Some(now + actionable_silence_timeout);
         }
 
         if sse.data.trim() == "[DONE]" {
@@ -1022,6 +1110,9 @@ async fn process_chat_sse(
                 metrics.record_actionable_event();
             }
         }
+        if chunk_has_actionable_event(&chunk) {
+            actionable_deadline_at = Some(Instant::now() + actionable_silence_timeout);
+        }
         if !state.process_chunk(chunk, &tx_event).await {
             if let Some(metrics) = metrics.as_ref() {
                 metrics.finish("receiver dropped before chat completions finished");
@@ -1031,23 +1122,69 @@ async fn process_chat_sse(
     }
 }
 
+enum ChatSsePoll {
+    Activity,
+    ActionableTimeout,
+    Event(Option<Result<Event, EventStreamError<TransportError>>>),
+}
+
+async fn poll_chat_sse_event(
+    stream: &mut (impl futures::Stream<Item = Result<Event, EventStreamError<TransportError>>> + Unpin),
+    activity_rx: &mut watch::Receiver<u64>,
+    actionable_deadline_at: Option<Instant>,
+) -> ChatSsePoll {
+    tokio::select! {
+        _ = async {
+            if let Some(deadline) = actionable_deadline_at {
+                tokio::time::sleep_until(deadline).await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        } => ChatSsePoll::ActionableTimeout,
+        changed = activity_rx.changed() => {
+            if changed.is_ok() {
+                ChatSsePoll::Activity
+            } else {
+                ChatSsePoll::Event(None)
+            }
+        }
+        response = stream.next() => ChatSsePoll::Event(response),
+    }
+}
+
+fn actionable_silence_timeout_message(
+    elapsed: Duration,
+    timeout: Duration,
+    comment_frame_count: u64,
+) -> String {
+    format!(
+        "actionable silence timeout: no content, tool-call, or reasoning delta for {}ms after \
+         stream activity; elapsed_ms={}; comment_frame_count={comment_frame_count}",
+        duration_ms(timeout),
+        duration_ms(elapsed),
+    )
+}
+
 fn byte_idle_timeout_stream(
     stream: ByteStream,
     idle_timeout: Duration,
     metrics: Option<ChatCallMetrics>,
+    activity: ChatStreamActivity,
 ) -> ByteStream {
     Box::pin(stream::unfold(
         (stream, CommentFrameCounter::default()),
         move |(mut stream, mut comment_counter)| {
             let metrics = metrics.clone();
+            let activity = activity.clone();
             async move {
                 match timeout(idle_timeout, stream.next()).await {
                     Ok(Some(item)) => {
                         let item = item.inspect(|bytes| {
+                            let comment_frames = comment_counter.push(bytes);
                             if let Some(metrics) = metrics.as_ref() {
-                                let comment_frames = comment_counter.push(bytes);
                                 metrics.record_sse_bytes(bytes, comment_frames);
                             }
+                            activity.record_bytes(bytes, comment_frames);
                         });
                         Some((item, (stream, comment_counter)))
                     }
@@ -1128,6 +1265,7 @@ mod tests {
             Box::pin(body),
             tx_event,
             Duration::from_secs(5),
+            DEFAULT_ACTIONABLE_SILENCE_TIMEOUT,
             /*telemetry*/ None,
             Some("req_123".to_string()),
             /*metrics*/ None,
@@ -1419,6 +1557,7 @@ mod tests {
             body,
             tx_event,
             Duration::from_millis(30),
+            DEFAULT_ACTIONABLE_SILENCE_TIMEOUT,
             /*telemetry*/ None,
             None,
             /*metrics*/ None,
@@ -1442,6 +1581,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn comment_only_stream_hits_actionable_silence_timeout() {
+        let body = delayed_body(vec![
+            (Duration::ZERO, b": OPENROUTER PROCESSING\n\n".to_vec()),
+            (
+                Duration::from_millis(20),
+                b": OPENROUTER PROCESSING\n\n".to_vec(),
+            ),
+            (
+                Duration::from_millis(20),
+                b": OPENROUTER PROCESSING\n\n".to_vec(),
+            ),
+            (
+                Duration::from_millis(20),
+                br#"data: {"id":"chatcmpl-late","choices":[{"delta":{"content":"late"}}]}"#
+                    .to_vec(),
+            ),
+            (Duration::ZERO, b"\n\n".to_vec()),
+            (Duration::ZERO, b"data: [DONE]\n\n".to_vec()),
+        ]);
+        let (tx_event, mut rx_event) = mpsc::channel(1600);
+
+        process_chat_sse(
+            body,
+            tx_event,
+            Duration::from_millis(100),
+            Duration::from_millis(30),
+            /*telemetry*/ None,
+            None,
+            /*metrics*/ None,
+        )
+        .await;
+
+        let event = rx_event.recv().await.expect("event should be emitted");
+        assert_matches!(
+            event,
+            Err(ApiError::Stream(message))
+                if message.contains("actionable silence timeout")
+                    && message.contains("comment_frame_count=")
+        );
+    }
+
+    #[tokio::test]
     async fn truly_silent_stream_hits_idle_timeout() {
         let body: ByteStream =
             Box::pin(futures::stream::pending::<Result<Bytes, TransportError>>());
@@ -1451,6 +1632,7 @@ mod tests {
             body,
             tx_event,
             Duration::from_millis(10),
+            Duration::from_millis(50),
             /*telemetry*/ None,
             None,
             /*metrics*/ None,
@@ -1478,6 +1660,7 @@ mod tests {
             Box::pin(body),
             tx_event,
             Duration::from_secs(5),
+            DEFAULT_ACTIONABLE_SILENCE_TIMEOUT,
             /*telemetry*/ None,
             None,
             /*metrics*/ None,

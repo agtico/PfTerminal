@@ -29,6 +29,9 @@ base_url = "http://localhost:11434/v1"
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        stream_actionable_timeout_ms: None,
+        stream_long_failure_retry_threshold_ms: None,
+        stream_long_failure_max_retries: None,
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
@@ -64,6 +67,9 @@ query_params = { api-version = "2025-04-01-preview" }
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        stream_actionable_timeout_ms: None,
+        stream_long_failure_retry_threshold_ms: None,
+        stream_long_failure_max_retries: None,
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
@@ -102,6 +108,9 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        stream_actionable_timeout_ms: None,
+        stream_long_failure_retry_threshold_ms: None,
+        stream_long_failure_max_retries: None,
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
@@ -198,6 +207,9 @@ fn test_supports_remote_compaction_for_azure_name() {
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        stream_actionable_timeout_ms: None,
+        stream_long_failure_retry_threshold_ms: None,
+        stream_long_failure_max_retries: None,
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
@@ -224,6 +236,9 @@ fn test_supports_remote_compaction_for_non_openai_non_azure_provider() {
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        stream_actionable_timeout_ms: None,
+        stream_long_failure_retry_threshold_ms: None,
+        stream_long_failure_max_retries: None,
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
@@ -308,6 +323,9 @@ fn test_create_amazon_bedrock_provider() {
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            stream_actionable_timeout_ms: None,
+            stream_long_failure_retry_threshold_ms: None,
+            stream_long_failure_max_retries: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -335,6 +353,9 @@ fn test_create_ambient_provider() {
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            stream_actionable_timeout_ms: None,
+            stream_long_failure_retry_threshold_ms: None,
+            stream_long_failure_max_retries: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -365,6 +386,9 @@ fn test_create_zai_provider() {
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            stream_actionable_timeout_ms: None,
+            stream_long_failure_retry_threshold_ms: None,
+            stream_long_failure_max_retries: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -393,6 +417,9 @@ fn test_create_anthropic_provider() {
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            stream_actionable_timeout_ms: None,
+            stream_long_failure_retry_threshold_ms: None,
+            stream_long_failure_max_retries: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -430,6 +457,9 @@ fn test_create_claude_plan_provider() {
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            stream_actionable_timeout_ms: None,
+            stream_long_failure_retry_threshold_ms: None,
+            stream_long_failure_max_retries: None,
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
@@ -578,6 +608,9 @@ fn configured_built_in_provider_can_override_transport_knobs() {
             request_max_retries: Some(2),
             stream_max_retries: Some(3),
             stream_idle_timeout_ms: Some(900_000),
+            stream_actionable_timeout_ms: Some(240_000),
+            stream_long_failure_retry_threshold_ms: Some(90_000),
+            stream_long_failure_max_retries: Some(0),
             websocket_connect_timeout_ms: Some(30_000),
             ..ModelProviderInfo::default()
         },
@@ -600,6 +633,15 @@ fn configured_built_in_provider_can_override_transport_knobs() {
         openrouter.stream_idle_timeout(),
         Duration::from_millis(900_000)
     );
+    assert_eq!(
+        openrouter.stream_actionable_timeout(),
+        Duration::from_millis(240_000)
+    );
+    assert_eq!(
+        openrouter.stream_long_failure_retry_threshold(),
+        Duration::from_millis(90_000)
+    );
+    assert_eq!(openrouter.stream_long_failure_max_retries(), 0);
     assert_eq!(
         openrouter.websocket_connect_timeout(),
         Duration::from_millis(30_000)
@@ -760,6 +802,9 @@ fn test_merge_configured_model_providers_applies_amazon_bedrock_transport_overri
             request_max_retries: Some(2),
             stream_max_retries: Some(3),
             stream_idle_timeout_ms: Some(900_000),
+            stream_actionable_timeout_ms: Some(240_000),
+            stream_long_failure_retry_threshold_ms: Some(90_000),
+            stream_long_failure_max_retries: Some(0),
             websocket_connect_timeout_ms: Some(30_000),
             ..ModelProviderInfo::default()
         },
@@ -787,6 +832,15 @@ fn test_merge_configured_model_providers_applies_amazon_bedrock_transport_overri
         bedrock.stream_idle_timeout(),
         Duration::from_millis(900_000)
     );
+    assert_eq!(
+        bedrock.stream_actionable_timeout(),
+        Duration::from_millis(240_000)
+    );
+    assert_eq!(
+        bedrock.stream_long_failure_retry_threshold(),
+        Duration::from_millis(90_000)
+    );
+    assert_eq!(bedrock.stream_long_failure_max_retries(), 0);
     assert_eq!(
         bedrock.websocket_connect_timeout(),
         Duration::from_millis(30_000)

@@ -1231,7 +1231,8 @@ async fn run_sampling_request(
         );
         trace_turn_timing("after_build_prompt", sampling_started_at);
         let same_turn_attempt_index = retries + 1;
-        let err = match try_run_sampling_request(
+        let attempt_started_at = Instant::now();
+        let attempt_result = try_run_sampling_request(
             tool_runtime.clone(),
             Arc::clone(&sess),
             Arc::clone(&turn_context),
@@ -1243,8 +1244,9 @@ async fn run_sampling_request(
             same_turn_attempt_index,
             cancellation_token.child_token(),
         )
-        .await
-        {
+        .await;
+        let attempt_elapsed = attempt_started_at.elapsed();
+        let err = match attempt_result {
             Ok(output) => {
                 return Ok((output, original_input.unwrap_or(prompt.input)));
             }
@@ -1279,6 +1281,7 @@ async fn run_sampling_request(
             &sess,
             &turn_context,
             ResponsesStreamRequest::Sampling,
+            attempt_elapsed,
         )
         .await?;
         turn_context.turn_timing_state.record_sampling_retry();

@@ -1598,6 +1598,13 @@ impl ModelClientSession {
                 headers
             },
             same_turn_attempt_index: None,
+            actionable_silence_timeout: Some(
+                self.client
+                    .state
+                    .provider
+                    .info()
+                    .stream_actionable_timeout(),
+            ),
         }
     }
 

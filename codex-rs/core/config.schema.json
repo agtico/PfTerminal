@@ -1632,8 +1632,26 @@
           "description": "Does this provider require an OpenAI API Key or ChatGPT login token? If true, user is presented with login screen on first run, and login preference and token/key are stored in auth.json. If false (which is the default), login screen is skipped, and API key (if needed) comes from the \"env_key\" environment variable.",
           "type": "boolean"
         },
+        "stream_actionable_timeout_ms": {
+          "description": "Timeout (in milliseconds) to wait for actionable stream deltas after stream activity starts. Comment frames and empty data events do not reset this deadline.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "stream_idle_timeout_ms": {
           "description": "Idle timeout (in milliseconds) to wait for activity on a streaming response before treating the connection as lost.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "stream_long_failure_max_retries": {
+          "description": "Maximum retry count for long stream failures. Values above one are clamped to one.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "stream_long_failure_retry_threshold_ms": {
+          "description": "Elapsed stream-attempt duration after which retry policy switches to the long-failure cap.",
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
