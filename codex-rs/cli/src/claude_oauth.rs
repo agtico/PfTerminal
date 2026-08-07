@@ -3,6 +3,7 @@
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -18,7 +19,8 @@ use tokio::process::Command;
 
 const CLAUDE_CREDENTIALS_FILE: &str = ".credentials.json";
 const CLAUDE_REFRESH_LOCK_FILE: &str = ".pfterminal-oauth-refresh.lock";
-const MIN_TOKEN_VALIDITY_MS: u64 = 60_000;
+// Avoid beginning a potentially long streaming request with a token that is about to expire.
+const MIN_TOKEN_VALIDITY_MS: u64 = 5 * 60_000;
 const CLAUDE_REFRESH_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug, Deserialize)]
@@ -84,18 +86,28 @@ async fn resolve_stored_claude_oauth_access_token(
         return Ok(access_token);
     }
 
+    let credentials_before_refresh = tokio::fs::read(&credentials_path)
+        .await
+        .with_context(|| format!("failed to snapshot {}", credentials_path.display()))?;
     let refresh_status =
         refresh_with_claude_cli(config_dir, &credentials, claude_executable).await?;
 
-    let refreshed = read_credentials(&credentials_path).await?;
-    if let Some(access_token) = usable_access_token(&refreshed, current_time_ms().max(now_ms))
+    let refreshed = read_credentials(&credentials_path).await;
+    if let Ok(refreshed) = &refreshed
+        && let Some(access_token) = usable_access_token(refreshed, current_time_ms().max(now_ms))
         && Some(access_token.clone()) != original_access_token
     {
         return Ok(access_token);
     }
+    restore_credentials_if_changed(&credentials_path, &credentials_before_refresh).await?;
     if !refresh_status.success() {
         return Err(anyhow!(
             "Claude Code OAuth refresh failed with status {refresh_status}. Run `claude /login` again."
+        ));
+    }
+    if let Err(err) = refreshed {
+        return Err(err.context(
+            "Claude Code produced invalid credentials during refresh; PFTerminal restored the previous credential file",
         ));
     }
     Err(anyhow!(
@@ -142,7 +154,7 @@ async fn refresh_with_claude_cli(
             "Claude Code OAuth credentials are missing. Run `claude /login` and choose a Claude subscription account."
         )
     })?;
-    let refresh_token = oauth
+    oauth
         .refresh_token
         .as_deref()
         .map(str::trim)
@@ -163,13 +175,26 @@ async fn refresh_with_claude_cli(
     };
     let mut command = Command::new(&executable);
     command
-        .args(["auth", "login"])
+        .args([
+            "-p",
+            "--safe-mode",
+            "--no-session-persistence",
+            "--model",
+            "haiku",
+            "--tools",
+            "",
+            "--max-budget-usd",
+            "0.01",
+            "Reply with OK.",
+        ])
         .env("CLAUDE_CONFIG_DIR", config_dir)
-        .env("CLAUDE_CODE_OAUTH_REFRESH_TOKEN", refresh_token)
-        .env("CLAUDE_CODE_OAUTH_SCOPES", oauth.scopes.join(" "))
         .env_remove("CLAUDE_CODE_OAUTH_TOKEN")
+        .env_remove("CLAUDE_CODE_AUTH_TOKEN")
+        .env_remove("CLAUDE_CODE_OAUTH_REFRESH_TOKEN")
+        .env_remove("CLAUDE_CODE_OAUTH_SCOPES")
         .env_remove("ANTHROPIC_API_KEY")
         .env_remove("ANTHROPIC_AUTH_TOKEN")
+        .env_remove("ANTHROPIC_BASE_URL")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -184,6 +209,44 @@ async fn refresh_with_claude_cli(
                 executable.display()
             )
         })
+}
+
+async fn restore_credentials_if_changed(path: &Path, original: &[u8]) -> Result<()> {
+    if matches!(tokio::fs::read(path).await, Ok(current) if current == original) {
+        return Ok(());
+    }
+
+    let path = path.to_path_buf();
+    let original = original.to_vec();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow!("Claude credentials path has no parent: {}", path.display()))?;
+        let mut replacement = tempfile::NamedTempFile::new_in(parent).with_context(|| {
+            format!(
+                "failed to create credential recovery file in {}",
+                parent.display()
+            )
+        })?;
+        replacement
+            .write_all(&original)
+            .context("failed to write credential recovery file")?;
+        replacement
+            .as_file()
+            .sync_all()
+            .context("failed to sync credential recovery file")?;
+        replacement.persist(&path).map_err(|err| {
+            anyhow!(
+                "failed to restore Claude credentials at {}: {}",
+                path.display(),
+                err.error
+            )
+        })?;
+        Ok(())
+    })
+    .await
+    .context("Claude credential recovery task failed")??;
+    Ok(())
 }
 
 async fn acquire_refresh_lock(config_dir: &Path) -> Result<File> {
@@ -241,7 +304,7 @@ mod tests {
             temp_dir.path(),
             "valid-access",
             "valid-refresh",
-            now_ms + 120_000,
+            now_ms + 600_000,
         );
 
         let token = resolve_stored_claude_oauth_access_token(
@@ -265,7 +328,7 @@ mod tests {
             temp_dir.path(),
             "expiring-access",
             "rotating-refresh",
-            now_ms + 30_000,
+            now_ms + 4 * 60_000,
         );
         let claude = fake_refreshing_claude(temp_dir.path(), now_ms + 600_000, 0, 0);
 
@@ -277,10 +340,7 @@ mod tests {
         assert_eq!(token, "refreshed-access");
         let refresh_log =
             std::fs::read_to_string(temp_dir.path().join("refresh.log")).expect("refresh log");
-        assert_eq!(
-            refresh_log,
-            "rotating-refresh|user:profile user:inference\n"
-        );
+        assert_eq!(refresh_log, "official-cli-refresh\n");
         let persisted = read_credentials(&temp_dir.path().join(CLAUDE_CREDENTIALS_FILE))
             .await
             .expect("persisted credentials");
@@ -430,8 +490,10 @@ mod tests {
         let script = format!(
             r#"#!/bin/sh
 set -eu
-[ "$1 $2" = "auth login" ]
-printf '%s|%s\n' "$CLAUDE_CODE_OAUTH_REFRESH_TOKEN" "$CLAUDE_CODE_OAUTH_SCOPES" >> "$CLAUDE_CONFIG_DIR/refresh.log"
+[ "$1" = "-p" ]
+[ -z "${{CLAUDE_CODE_OAUTH_REFRESH_TOKEN:-}}" ]
+[ -z "${{CLAUDE_CODE_OAUTH_SCOPES:-}}" ]
+printf '%s\n' 'official-cli-refresh' >> "$CLAUDE_CONFIG_DIR/refresh.log"
 sleep {sleep_seconds}
 printf '%s\n' '{{"claudeAiOauth":{{"accessToken":"refreshed-access","refreshToken":"refreshed-refresh","expiresAt":{expires_at},"scopes":["user:profile","user:inference"]}}}}' > "$CLAUDE_CONFIG_DIR/{CLAUDE_CREDENTIALS_FILE}"
 exit {exit_code}
@@ -449,7 +511,10 @@ exit {exit_code}
     #[cfg(unix)]
     fn fake_failing_claude(config_dir: &Path) -> PathBuf {
         let executable = config_dir.join("failing-claude");
-        std::fs::write(&executable, "#!/bin/sh\nexit 7\n").expect("write failing Claude");
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' '{{\"claudeAiOauth\":{{\"accessToken\":\"\",\"refreshToken\":\"\",\"expiresAt\":0,\"scopes\":[]}}}}' > \"$CLAUDE_CONFIG_DIR/{CLAUDE_CREDENTIALS_FILE}\"\nexit 7\n"
+        );
+        std::fs::write(&executable, script).expect("write failing Claude");
         let mut permissions = std::fs::metadata(&executable)
             .expect("failing Claude metadata")
             .permissions();

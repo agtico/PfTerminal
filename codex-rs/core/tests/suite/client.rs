@@ -31,6 +31,7 @@ use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::Verbosity;
 use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::FunctionCallOutputContentItem;
@@ -1432,6 +1433,38 @@ async fn provider_auth_command_refreshes_after_401() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn provider_auth_command_does_not_refresh_for_plan_entitlement_401() {
+    skip_if_no_network!();
+
+    let server = MockServer::start().await;
+    let auth_fixture = ProviderAuthCommandFixture::new(&["command-token", "unused-token"]).unwrap();
+    let response = Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .and(header_regex("Authorization", "Bearer command-token"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "error": {
+                "type": "invalid_request_error",
+                "message": "This context exceeds the token quota for your plan."
+            }
+        })))
+        .expect(1)
+        .mount_as_scoped(&server)
+        .await;
+
+    let error =
+        send_request_with_provider(provider_with_command_auth(&server, auth_fixture.auth()))
+            .await
+            .expect_err("plan entitlement rejection should surface without an auth retry");
+
+    assert!(matches!(
+        error.details(),
+        CodexErrorDetails::PlanEntitlementExceeded(_)
+    ));
+    assert_eq!(auth_fixture.refresh_signals(), ["0"]);
+    assert_eq!(response.received_requests().await.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn amazon_bedrock_proxy_uses_command_auth_and_custom_headers() {
     skip_if_no_network!();
 
@@ -1453,7 +1486,9 @@ async fn amazon_bedrock_proxy_uses_command_auth_and_custom_headers() {
         .get_or_insert_default()
         .insert("x-some-header".to_string(), "foo".to_string());
 
-    send_request_with_provider(provider).await;
+    send_request_with_provider(provider)
+        .await
+        .expect("Bedrock proxy request should complete");
 
     let request = response.single_request();
     assert_eq!(request.path(), "/v1/responses");
@@ -1475,7 +1510,16 @@ async fn amazon_bedrock_proxy_uses_command_auth_and_custom_headers() {
 /// The caller owns the server-side assertions, so this helper only validates that the request
 /// reaches `Completed` without surfacing an auth or transport error to the client.
 async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuthInfo) {
-    let provider = ModelProviderInfo {
+    send_request_with_provider(provider_with_command_auth(server, auth))
+        .await
+        .expect("responses request should complete");
+}
+
+fn provider_with_command_auth(
+    server: &MockServer,
+    auth: ModelProviderAuthInfo,
+) -> ModelProviderInfo {
+    ModelProviderInfo {
         name: "corp".into(),
         base_url: Some(format!("{}/v1", server.uri())),
         env_key: None,
@@ -1499,13 +1543,11 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
         requires_openai_auth: false,
         supports_websockets: false,
         supports_standalone_web_search: false,
-    };
-
-    send_request_with_provider(provider).await;
+    }
 }
 
 #[expect(clippy::unwrap_used)]
-async fn send_request_with_provider(provider: ModelProviderInfo) {
+async fn send_request_with_provider(provider: ModelProviderInfo) -> Result<(), CodexErr> {
     let codex_home = TempDir::new().unwrap();
     let mut config = load_default_config_for_test(&codex_home).await;
     config.model_provider_id = provider.name.clone();
@@ -1574,14 +1616,18 @@ async fn send_request_with_provider(provider: ModelProviderInfo) {
             &responses_metadata,
             &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
-        .await
-        .expect("responses stream to start");
+        .await?;
 
     while let Some(event) = stream.next().await {
-        if let Ok(ResponseEvent::Completed { .. }) = event {
-            break;
+        match event {
+            Ok(ResponseEvent::Completed { .. }) => return Ok(()),
+            Ok(_) => {}
+            Err(error) => return Err(error),
         }
     }
+    Err(CodexErr::Stream(
+        "responses stream ended without completion".to_string(),
+    ))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

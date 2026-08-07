@@ -92,7 +92,8 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                 } else if status == http::StatusCode::INTERNAL_SERVER_ERROR {
                     CodexErr::InternalServerError
                 } else if status == http::StatusCode::UNAUTHORIZED
-                    && indicates_plan_entitlement_rejection(&body_text)
+                    && classify_unauthorized_response(&body_text)
+                        == UnauthorizedResponseKind::Entitlement
                 {
                     // Some providers (e.g. Kimi Code) answer requests beyond the
                     // plan's context entitlement with 401 instead of 4xx/413.
@@ -183,19 +184,80 @@ const CYBER_POLICY_FALLBACK_MESSAGE: &str =
 const CLOUDFLARE_BLOCKED_MESSAGE: &str =
     "Access blocked by Cloudflare. This usually happens when connecting from a restricted region";
 
+/// The reason a provider returned HTTP 401.
+///
+/// Some plan-backed providers incorrectly use 401 for request-entitlement failures. Callers use
+/// this classification before deciding whether rotating credentials can actually help.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UnauthorizedResponseKind {
+    Authentication,
+    Entitlement,
+    Unknown,
+}
+
+pub fn classify_unauthorized_response(body: &str) -> UnauthorizedResponseKind {
+    if let Ok(value) = serde_json::from_str::<Value>(body) {
+        let error = value.get("error").unwrap_or(&value);
+        let error_type = error
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let error_code = error
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+
+        if [error_type.as_str(), error_code.as_str()]
+            .iter()
+            .any(|value| {
+                value.contains("authentication")
+                    || value.contains("invalid_token")
+                    || value.contains("token_expired")
+                    || value.contains("invalid_api_key")
+            })
+        {
+            return UnauthorizedResponseKind::Authentication;
+        }
+    }
+
+    if indicates_plan_entitlement_rejection(body) {
+        UnauthorizedResponseKind::Entitlement
+    } else if indicates_authentication_rejection(body) {
+        UnauthorizedResponseKind::Authentication
+    } else {
+        UnauthorizedResponseKind::Unknown
+    }
+}
+
 /// Heuristic for providers that signal "request exceeds plan entitlement" with a 401.
 /// Matches on semantic phrases (context/token limit combined with plan/quota language),
 /// never on one provider's exact sentence.
 fn indicates_plan_entitlement_rejection(body: &str) -> bool {
     let lower = body.to_ascii_lowercase();
-    let mentions_context_or_tokens =
-        lower.contains("context") || lower.contains("token limit") || lower.contains("tokens");
+    let mentions_context_or_tokens = lower.contains("context") || lower.contains("token");
     let mentions_entitlement = lower.contains("plan")
         || lower.contains("quota")
         || lower.contains("entitlement")
         || lower.contains("exceed")
         || lower.contains("maximum allowed");
     mentions_context_or_tokens && mentions_entitlement
+}
+
+fn indicates_authentication_rejection(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    let mentions_credential = lower.contains("access token")
+        || lower.contains("oauth token")
+        || lower.contains("api key")
+        || lower.contains("authorization header")
+        || lower.contains("credential");
+    let mentions_rejection = lower.contains("expired")
+        || lower.contains("invalid")
+        || lower.contains("revoked")
+        || lower.contains("missing")
+        || lower.contains("unauthorized");
+    mentions_credential && mentions_rejection
 }
 
 #[cfg(test)]

@@ -43,6 +43,36 @@ fn map_api_error_classifies_entitlement_401_separately_from_bad_credential() {
 }
 
 #[test]
+fn unauthorized_classifier_routes_semantic_variants_without_literal_matching() {
+    let entitlement_variants = [
+        r#"{"error":{"type":"invalid_request_error","message":"Your plan quota does not permit this context length."}}"#,
+        r#"{"error":{"message":"Token maximum allowed by this entitlement was exceeded."}}"#,
+    ];
+    for body in entitlement_variants {
+        assert_eq!(
+            classify_unauthorized_response(body),
+            UnauthorizedResponseKind::Entitlement
+        );
+    }
+
+    let authentication_variants = [
+        r#"{"error":{"type":"authentication_error","message":"Access denied."}}"#,
+        r#"{"error":{"message":"The OAuth token has expired."}}"#,
+    ];
+    for body in authentication_variants {
+        assert_eq!(
+            classify_unauthorized_response(body),
+            UnauthorizedResponseKind::Authentication
+        );
+    }
+
+    assert_eq!(
+        classify_unauthorized_response(r#"{"error":{"message":"Request denied."}}"#),
+        UnauthorizedResponseKind::Unknown
+    );
+}
+
+#[test]
 fn map_api_error_maps_server_overloaded() {
     let err = map_api_error(ApiError::ServerOverloaded);
     assert!(matches!(err.details(), CodexErrorDetails::ServerOverloaded));

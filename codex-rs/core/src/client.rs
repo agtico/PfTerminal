@@ -72,9 +72,11 @@ use codex_api::SharedAuthProvider;
 use codex_api::SseTelemetry;
 use codex_api::StreamOptions;
 use codex_api::TransportError;
+use codex_api::UnauthorizedResponseKind;
 use codex_api::WebsocketTelemetry;
 use codex_api::auth_header_telemetry;
 use codex_api::build_session_headers;
+use codex_api::classify_unauthorized_response;
 use codex_api::create_text_param_for_request;
 use codex_api::response_create_client_metadata;
 use codex_http_client::ClientRouteClass;
@@ -2353,15 +2355,49 @@ impl ModelClientSession {
             );
 
             match stream_result {
-                Ok(stream) => {
-                    let (stream, _) = map_response_stream(
-                        stream,
-                        session_telemetry.clone(),
-                        inference_trace_attempt,
-                        Arc::clone(&self.client.state.provider),
-                        None,
-                    );
-                    return Ok(stream);
+                Ok(mut stream) => {
+                    let mut prefetched_events = Vec::new();
+                    loop {
+                        match stream.next().await {
+                            Some(Ok(ResponseEvent::Created)) => {
+                                prefetched_events.push(Ok(ResponseEvent::Created));
+                            }
+                            Some(Err(err))
+                                if !signed_thinking_history_retry_used
+                                    && is_anthropic_signed_thinking_history_rejection(&err) =>
+                            {
+                                let response_debug_context =
+                                    extract_response_debug_context_from_api_error(&err);
+                                let mapped_err = self.client.state.provider.map_api_error(err);
+                                inference_trace_attempt.record_failed(
+                                    &mapped_err,
+                                    response_debug_context.request_id.as_deref(),
+                                    /*output_items*/ &[],
+                                );
+                                warn!(
+                                    "Anthropic rejected an incomplete signed-thinking assistant \
+                                     response in the response stream; removing that response from \
+                                     this request and retrying once"
+                                );
+                                signed_thinking_history_retry_used = true;
+                                break;
+                            }
+                            event => {
+                                prefetched_events.extend(event);
+                                let upstream_request_id = stream.upstream_request_id.take();
+                                let stream = futures::stream::iter(prefetched_events).chain(stream);
+                                let (stream, _) = map_response_events_with_server_state(
+                                    upstream_request_id,
+                                    stream,
+                                    session_telemetry.clone(),
+                                    inference_trace_attempt,
+                                    Arc::clone(&self.client.state.provider),
+                                    None,
+                                );
+                                return Ok(stream);
+                            }
+                        }
+                    }
                 }
                 Err(ApiError::Transport(
                     unauthorized_transport @ TransportError::Http { status, .. },
@@ -4226,7 +4262,7 @@ fn is_anthropic_signed_thinking_history_rejection(error: &ApiError) -> bool {
                     .map(str::to_string)
             })
             .unwrap_or_else(|| body.clone()),
-        ApiError::InvalidRequest { message } => message.clone(),
+        ApiError::InvalidRequest { message } | ApiError::Stream(message) => message.clone(),
         _ => return false,
     };
     let message = message.to_ascii_lowercase();
@@ -5110,6 +5146,33 @@ async fn handle_unauthorized(
     provider: &SharedModelProvider,
 ) -> Result<UnauthorizedRecoveryExecution> {
     let debug = extract_response_debug_context(&transport);
+    if !unauthorized_requires_auth_recovery(&transport) {
+        let (mode, phase) = auth_recovery
+            .as_ref()
+            .map(|recovery| (recovery.mode_name(), recovery.step_name()))
+            .unwrap_or(("none", "none"));
+        session_telemetry.record_auth_recovery(
+            mode,
+            phase,
+            "recovery_not_run",
+            debug.request_id.as_deref(),
+            debug.cf_ray.as_deref(),
+            debug.auth_error.as_deref(),
+            debug.auth_error_code.as_deref(),
+            Some("response_is_plan_entitlement_rejection"),
+            /*auth_state_changed*/ None,
+        );
+        emit_feedback_auth_recovery_tags(
+            mode,
+            phase,
+            "recovery_not_run",
+            debug.request_id.as_deref(),
+            debug.cf_ray.as_deref(),
+            debug.auth_error.as_deref(),
+            debug.auth_error_code.as_deref(),
+        );
+        return Err(provider.map_api_error(ApiError::Transport(transport)));
+    }
     if let Some(recovery) = auth_recovery
         && recovery.has_next()
     {
@@ -5218,6 +5281,16 @@ async fn handle_unauthorized(
     );
 
     Err(provider.map_api_error(ApiError::Transport(transport)))
+}
+
+fn unauthorized_requires_auth_recovery(transport: &TransportError) -> bool {
+    let TransportError::Http { body, .. } = transport else {
+        return true;
+    };
+    !matches!(
+        classify_unauthorized_response(body.as_deref().unwrap_or_default()),
+        UnauthorizedResponseKind::Entitlement
+    )
 }
 
 fn api_error_http_status(error: &ApiError) -> Option<u16> {

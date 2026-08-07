@@ -707,13 +707,41 @@ fn anthropic_history_rejection_classifier_is_narrow_and_structured() {
     let unrelated = ApiError::InvalidRequest {
         message: "The latest assistant message has invalid tool input.".to_string(),
     };
+    let streamed = ApiError::Stream(
+        "invalid_request_error: messages.299.content.1: `thinking` or `redacted_thinking` blocks \
+         in the latest assistant message cannot be modified."
+            .to_string(),
+    );
 
     assert!(super::is_anthropic_signed_thinking_history_rejection(
         &matching
     ));
+    assert!(super::is_anthropic_signed_thinking_history_rejection(
+        &streamed
+    ));
     assert!(!super::is_anthropic_signed_thinking_history_rejection(
         &unrelated
     ));
+}
+
+#[test]
+fn unauthorized_recovery_is_skipped_for_entitlement_but_retained_for_auth_and_unknown_401s() {
+    let transport = |body: &str| codex_api::TransportError::Http {
+        status: http::StatusCode::UNAUTHORIZED,
+        url: None,
+        headers: None,
+        body: Some(body.to_string()),
+    };
+
+    assert!(!super::unauthorized_requires_auth_recovery(&transport(
+        r#"{"error":{"type":"invalid_request_error","message":"This context exceeds the token quota for your plan."}}"#,
+    )));
+    assert!(super::unauthorized_requires_auth_recovery(&transport(
+        r#"{"error":{"type":"authentication_error","message":"Token expired."}}"#,
+    )));
+    assert!(super::unauthorized_requires_auth_recovery(&transport(
+        r#"{"error":{"message":"Request denied."}}"#,
+    )));
 }
 
 fn test_model_client(session_source: SessionSource) -> ModelClient {
