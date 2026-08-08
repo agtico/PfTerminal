@@ -3,6 +3,8 @@ use crate::StartThreadOptions;
 use crate::ThreadManager;
 use crate::config::AgentRoleConfig;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
+use crate::config::PermissionProfileSnapshot;
+use crate::environment_selection::TurnEnvironmentState;
 use crate::function_tool::FunctionCallError;
 use crate::init_state_db;
 use crate::local_agent_graph_store_from_state_db;
@@ -43,6 +45,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
+use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
@@ -595,9 +598,6 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
     config
         .permissions
         .approval_policy
-        .set(AskForApproval::OnRequest)
-        .expect("approval policy should be set");
-    turn.approval_policy
         .set(AskForApproval::OnRequest)
         .expect("approval policy should be set");
     turn.config = Arc::new(config);
@@ -3050,7 +3050,7 @@ async fn direct_spawn_troll_can_followup_task_two_named_orc_children() {
             parent_trace: None,
             environments: Some(Vec::new()),
             thread_extension_init: ExtensionDataInit::default(),
-            supports_openai_form_elicitation: false,
+            client_mcp_extensions: codex_protocol::mcp::ClientMcpExtensions::default(),
         })
         .await
         .expect("direct troll pane should start");
@@ -3075,7 +3075,7 @@ async fn direct_spawn_troll_can_followup_task_two_named_orc_children() {
             parent_trace: None,
             environments: Some(Vec::new()),
             thread_extension_init: ExtensionDataInit::default(),
-            supports_openai_form_elicitation: false,
+            client_mcp_extensions: codex_protocol::mcp::ClientMcpExtensions::default(),
         })
         .await
         .expect("direct first orc pane should start");
@@ -3100,7 +3100,7 @@ async fn direct_spawn_troll_can_followup_task_two_named_orc_children() {
             parent_trace: None,
             environments: Some(Vec::new()),
             thread_extension_init: ExtensionDataInit::default(),
-            supports_openai_form_elicitation: false,
+            client_mcp_extensions: codex_protocol::mcp::ClientMcpExtensions::default(),
         })
         .await
         .expect("direct second orc pane should start");
@@ -3642,17 +3642,42 @@ async fn spawn_agent_reapplies_runtime_sandbox_after_role_config() {
         &expected_file_system_sandbox_policy,
         expected_network_sandbox_policy,
     );
-    turn.approval_policy
+    Arc::make_mut(&mut turn.config)
+        .permissions
+        .approval_policy
         .set(AskForApproval::OnRequest)
         .expect("approval policy should be set");
     let mut config = (*turn.config).clone();
     config.approvals_reviewer = ApprovalsReviewer::AutoReview;
+    config
+        .permissions
+        .set_permission_profile(PermissionProfile::Disabled)
+        .expect("test setup should allow updating permission profile");
     set_turn_config(&mut turn, config);
-    turn.permission_profile = expected_permission_profile.clone();
+    let role_name = install_role_with_model_override(&mut turn).await;
+    let mut role_config = (*turn.config).clone();
+    crate::agent::role::apply_role_to_config(&mut role_config, Some(role_name.as_str()))
+        .await
+        .expect("non-empty role config should apply");
+    let TurnEnvironmentState::Ready(environment) = turn
+        .environments
+        .environments
+        .first_mut()
+        .expect("parent environment should exist")
+    else {
+        panic!("parent environment should be ready");
+    };
+    environment.config.permission_profile =
+        PermissionProfileSnapshot::legacy(expected_permission_profile.clone());
+    assert_ne!(
+        role_config.permissions.effective_permission_profile(),
+        expected_permission_profile,
+        "role config must discard the runtime permission override before it is reapplied"
+    );
     assert_ne!(
         expected_permission_profile,
-        turn.config.permissions.effective_permission_profile(),
-        "test requires a runtime profile override that differs from base config"
+        turn.permission_profile(),
+        "test requires an environment profile that differs from the thread profile"
     );
     let manager = install_live_root(&mut session, &turn).await;
 
@@ -3662,7 +3687,7 @@ async fn spawn_agent_reapplies_runtime_sandbox_after_role_config() {
         "spawn_agent",
         function_payload(json!({
             "message": "await this command",
-            "agent_type": "explorer"
+            "agent_type": role_name
         })),
     );
     let output = SpawnAgentHandler::default()
@@ -3778,7 +3803,7 @@ async fn spawn_agent_allows_depth_up_to_configured_max_depth() {
             parent_trace: None,
             environments: Some(Vec::new()),
             thread_extension_init: ExtensionDataInit::default(),
-            supports_openai_form_elicitation: false,
+            client_mcp_extensions: codex_protocol::mcp::ClientMcpExtensions::default(),
         })
         .await
         .expect("live parent at the configured depth should start");
@@ -4369,7 +4394,7 @@ async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
             })]),
             AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy")),
             /*parent_trace*/ None,
-            /*supports_openai_form_elicitation*/ false,
+            ClientMcpExtensions::default(),
         )
         .await
         .expect("start thread");
@@ -6383,12 +6408,19 @@ async fn build_agent_spawn_config_uses_turn_context_values() {
         &file_system_sandbox_policy,
         network_sandbox_policy,
     );
-    turn.permission_profile = permission_profile.clone();
-    turn.approval_policy
+    turn.environments.environments.clear();
+    Arc::make_mut(&mut turn.config)
+        .permissions
+        .set_permission_profile(permission_profile)
+        .expect("permission profile set");
+    Arc::make_mut(&mut turn.config)
+        .permissions
+        .approval_policy
         .set(AskForApproval::OnRequest)
         .expect("approval policy set");
 
-    let config = build_agent_spawn_config(&base_instructions, &turn).expect("spawn config");
+    let config = build_agent_spawn_config(&base_instructions, &turn, turn.environments.primary())
+        .expect("spawn config");
     let mut expected = (*turn.config).clone();
     expected.base_instructions = Some(base_instructions.text);
     expected.model = Some(turn.model_info.slug.clone());
@@ -6407,7 +6439,7 @@ async fn build_agent_spawn_config_uses_turn_context_values() {
         .expect("approval policy set");
     expected
         .permissions
-        .set_permission_profile(permission_profile)
+        .set_permission_profile(turn.permission_profile())
         .expect("permission profile set");
     assert_eq!(config, expected);
 }
@@ -6418,11 +6450,30 @@ async fn build_agent_resume_config_clears_base_instructions() {
     let mut base_config = (*turn.config).clone();
     base_config.base_instructions = Some("caller-base".to_string());
     turn.config = Arc::new(base_config);
-    turn.approval_policy
+    Arc::make_mut(&mut turn.config)
+        .permissions
+        .approval_policy
         .set(AskForApproval::OnRequest)
         .expect("approval policy set");
+    let environment_permission_profile =
+        if turn.permission_profile() == PermissionProfile::read_only() {
+            PermissionProfile::workspace_write()
+        } else {
+            PermissionProfile::read_only()
+        };
+    let TurnEnvironmentState::Ready(environment) = turn
+        .environments
+        .environments
+        .first_mut()
+        .expect("parent environment should exist")
+    else {
+        panic!("parent environment should be ready");
+    };
+    environment.config.permission_profile =
+        PermissionProfileSnapshot::legacy(environment_permission_profile.clone());
 
-    let config = build_agent_resume_config(&turn).expect("resume config");
+    let config =
+        build_agent_resume_config(&turn, turn.environments.primary()).expect("resume config");
 
     let mut expected = (*turn.config).clone();
     expected.base_instructions = None;
@@ -6442,7 +6493,7 @@ async fn build_agent_resume_config_clears_base_instructions() {
         .expect("approval policy set");
     expected
         .permissions
-        .set_permission_profile(turn.permission_profile())
+        .set_permission_profile(environment_permission_profile)
         .expect("permission profile set");
     assert_eq!(config, expected);
 }

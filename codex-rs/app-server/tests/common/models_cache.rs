@@ -7,6 +7,7 @@ use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::ModelBilling;
 use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ModelMessages;
 use codex_protocol::openai_models::ModelOrchestrationMetadata;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelVisibility;
@@ -36,9 +37,18 @@ fn preset_to_info(preset: &ModelPreset, priority: i32) -> ModelInfo {
         service_tiers: preset.service_tiers.clone(),
         default_service_tier: preset.default_service_tier.clone(),
         upgrade: preset.upgrade.as_ref().map(Into::into),
-        base_instructions: "base instructions".to_string(),
-        model_messages: None,
+        model_messages: Some(ModelMessages {
+            instructions_template: Some("base instructions".to_string()),
+            instructions_variables: None,
+            approvals: None,
+            collaboration_modes: None,
+            auto_review: None,
+            permissions: None,
+            token_budget: None,
+        }),
         include_skills_usage_instructions: false,
+        include_plugin_usage_instructions: false,
+        include_apps_usage_instructions: false,
         supports_reasoning_summary_parameter: true,
         default_reasoning_summary: ReasoningSummary::Auto,
         support_verbosity: false,
@@ -62,6 +72,7 @@ fn preset_to_info(preset: &ModelPreset, priority: i32) -> ModelInfo {
         supports_search_tool: false,
         use_responses_lite: false,
         auto_review_model_override: None,
+        model_specialty: None,
         tool_mode: None,
         multi_agent_version: None,
     }

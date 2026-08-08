@@ -80,6 +80,7 @@ codex-rmcp-client = { workspace = true }
 codex-rollout = { workspace = true }
 codex-rollout-trace = { workspace = true }
 codex-sandboxing = { workspace = true }
+codex-skills-extension = { workspace = true }
 codex-state = { workspace = true }
 codex-stdio-to-uds = { workspace = true }
 codex-terminal-detection = { workspace = true }
@@ -87,6 +88,7 @@ codex-telegram = { workspace = true }
 codex-tui = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-path = { workspace = true }
+codex-tasknode-session = { workspace = true }
 codex-vault = { workspace = true }
 crossterm = { workspace = true }
 http = { workspace = true }

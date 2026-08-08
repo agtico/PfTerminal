@@ -84,6 +84,7 @@ pub(super) async fn handle_message_string_tool(
     let ToolInvocation {
         session,
         turn,
+        step_context,
         call_id,
         source,
         ..
@@ -117,7 +118,8 @@ pub(super) async fn handle_message_string_tool(
     // Persisted agents are represented in the control plane before their runtime is loaded.
     // Reopen that runtime first so mailbox admission can use its state database. Live agents
     // take the fast path in `ensure_v2_agent_loaded`.
-    let resume_config = build_agent_resume_config(turn.as_ref())?;
+    let resume_config =
+        build_agent_resume_config(turn.as_ref(), step_context.environments.primary())?;
     session
         .services
         .agent_control

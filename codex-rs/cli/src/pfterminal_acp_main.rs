@@ -301,7 +301,7 @@ mod tests {
     fn env_guard() -> MutexGuard<'static, ()> {
         ENV_LOCK
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     #[test]

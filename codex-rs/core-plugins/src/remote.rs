@@ -47,6 +47,7 @@ use url::Url;
 
 mod catalog_cache;
 mod remote_installed_plugin_sync;
+mod search;
 mod share;
 
 #[cfg(test)]
@@ -60,6 +61,9 @@ pub use remote_installed_plugin_sync::RemotePluginMaterialization;
 pub use remote_installed_plugin_sync::mark_remote_plugin_cache_mutation_in_flight;
 pub(crate) use remote_installed_plugin_sync::maybe_start_remote_installed_plugin_bundle_sync;
 pub use remote_installed_plugin_sync::sync_remote_installed_plugin_bundles_once;
+pub use search::RemotePluginSearchPage;
+pub use search::RemotePluginSearchRequest;
+pub use search::search_remote_plugins;
 pub use share::RemotePluginShareAccessPolicy;
 pub use share::RemotePluginShareDiscoverability;
 pub use share::RemotePluginSharePrincipal;
@@ -1520,6 +1524,7 @@ pub async fn resolve_remote_plugin_uninstall_target(
     let fallback_capability_summary = PluginCapabilitySummary {
         config_name: plugin_id.as_key(),
         display_name: plugin.release.display_name,
+        plugin_namespace: Some(plugin_id.plugin_name.clone()),
         description: prompt_safe_plugin_description(Some(&plugin.release.description)),
         has_skills: !plugin.release.skills.is_empty(),
         mcp_server_names,

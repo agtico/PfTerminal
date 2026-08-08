@@ -1500,6 +1500,7 @@ mod tests {
             id: model.to_string(),
             model: model.to_string(),
             provider_id: None,
+            model_specialty: None,
             orchestration: None,
             display_name: model.to_string(),
             description: format!("{model} description"),

@@ -10,6 +10,7 @@ use crate::migrations::repair_legacy_recency_migration_version;
 use crate::migrations::runtime_goals_migrator;
 use crate::migrations::runtime_logs_migrator;
 use crate::migrations::runtime_memories_migrator;
+use crate::migrations::runtime_queue_migrator;
 use crate::migrations::runtime_state_migrator;
 use crate::migrations::runtime_thread_history_migrator;
 use crate::runtime::RuntimeDbInitError;
@@ -35,6 +36,7 @@ use std::time::Instant;
 const LOGS_DB_FILENAME: &str = "pfterminal_logs_2.sqlite";
 const GOALS_DB_FILENAME: &str = "pfterminal_goals_1.sqlite";
 const MEMORIES_DB_FILENAME: &str = "pfterminal_memories_1.sqlite";
+const QUEUE_DB_FILENAME: &str = "pfterminal_queue_1.sqlite";
 const STATE_DB_FILENAME: &str = "pfterminal_state_5.sqlite";
 const THREAD_HISTORY_DB_FILENAME: &str = "pfterminal_thread_history_1.sqlite";
 
@@ -90,6 +92,15 @@ const MEMORIES_DB: RuntimeDbSpec = RuntimeDbSpec {
     migrate_phase: "migrate_memories",
 };
 
+const QUEUE_DB: RuntimeDbSpec = RuntimeDbSpec {
+    label: "queue DB",
+    filename: QUEUE_DB_FILENAME,
+    legacy_filename: "queue_1.sqlite",
+    kind: DbKind::Queue,
+    open_phase: "open_queue",
+    migrate_phase: "migrate_queue",
+};
+
 const THREAD_HISTORY_DB: RuntimeDbSpec = RuntimeDbSpec {
     label: "thread history DB",
     filename: THREAD_HISTORY_DB_FILENAME,
@@ -99,8 +110,14 @@ const THREAD_HISTORY_DB: RuntimeDbSpec = RuntimeDbSpec {
     migrate_phase: "migrate_thread_history",
 };
 
-const RUNTIME_DBS: [RuntimeDbSpec; 5] =
-    [STATE_DB, LOGS_DB, GOALS_DB, MEMORIES_DB, THREAD_HISTORY_DB];
+const RUNTIME_DBS: [RuntimeDbSpec; 6] = [
+    STATE_DB,
+    LOGS_DB,
+    GOALS_DB,
+    MEMORIES_DB,
+    QUEUE_DB,
+    THREAD_HISTORY_DB,
+];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeDbPath {
@@ -170,6 +187,11 @@ impl SqliteConfig {
         MEMORIES_DB.path(self.home())
     }
 
+    /// Return the path to the durable user-message queue database.
+    pub fn queue_db_path(&self) -> PathBuf {
+        QUEUE_DB.path(self.home())
+    }
+
     /// Return the path to the paginated thread-history database.
     pub fn thread_history_db_path(&self) -> PathBuf {
         THREAD_HISTORY_DB.path(self.home())
@@ -215,6 +237,7 @@ impl SqliteConfig {
                 DbKind::Logs => runtime_logs_migrator(),
                 DbKind::Goals => runtime_goals_migrator(),
                 DbKind::Memories => runtime_memories_migrator(),
+                DbKind::Queue => runtime_queue_migrator(),
                 DbKind::ThreadHistory => runtime_thread_history_migrator(),
             };
             validate_applied_migrations(&legacy_path, &migrator).await?;
@@ -265,6 +288,15 @@ impl SqliteConfig {
         telemetry_override: Option<&dyn DbTelemetry>,
     ) -> anyhow::Result<SqlitePool> {
         self.open_runtime_db(MEMORIES_DB, migrator, telemetry_override)
+            .await
+    }
+
+    pub(super) async fn open_queue_db(
+        &self,
+        migrator: &Migrator,
+        telemetry_override: Option<&dyn DbTelemetry>,
+    ) -> anyhow::Result<SqlitePool> {
+        self.open_runtime_db(QUEUE_DB, migrator, telemetry_override)
             .await
     }
 

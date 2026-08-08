@@ -16,7 +16,7 @@ export type Model = { id: string, model: string, upgrade: string | null, upgrade
  * This field is always present on the wire. `null` means the route is not trusted for
  * orchestration; clients must not infer eligibility from its display name.
  */
-orchestration: ModelOrchestrationMetadata | null, hidden: boolean, supportedReasoningEfforts: Array<ReasoningEffortOption>, defaultReasoningEffort: ReasoningEffort, inputModalities: Array<InputModality>, supportsPersonality: boolean,
+orchestration: ModelOrchestrationMetadata | null, modelSpecialty: string | null, hidden: boolean, supportedReasoningEfforts: Array<ReasoningEffortOption>, defaultReasoningEffort: ReasoningEffort, inputModalities: Array<InputModality>, supportsPersonality: boolean,
 /**
  * Deprecated: use `serviceTiers` instead.
  */

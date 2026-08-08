@@ -180,7 +180,7 @@ write-config-schema:
 
 # Regenerate vendored app-server protocol schema artifacts.
 write-app-server-schema *args:
-    python3 codex-rs/app-server-protocol/scripts/write_schema_fixtures.py {args}
+    python3 app-server-protocol/scripts/write_schema_fixtures.py {args}
 
 [no-cd]
 write-hooks-schema:

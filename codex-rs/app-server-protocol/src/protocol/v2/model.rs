@@ -93,6 +93,8 @@ pub struct Model {
     /// This field is always present on the wire. `null` means the route is not trusted for
     /// orchestration; clients must not infer eligibility from its display name.
     pub orchestration: Option<ModelOrchestrationMetadata>,
+    #[serde(default)]
+    pub model_specialty: Option<String>,
     pub hidden: bool,
     pub supported_reasoning_efforts: Vec<ReasoningEffortOption>,
     pub default_reasoning_effort: ReasoningEffort,

@@ -11,12 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.request import urlopen
 
-from .cargo_lock import package_versions
-from .targets import REPO_ROOT
-from .targets import TargetSpec
-
+from .targets import REPO_ROOT, TargetSpec
 
 DOWNLOAD_TIMEOUT_SECS = 120
+V8_ARTIFACT_PROFILE = "ptrcomp_sandbox_release"
 
 
 @dataclass(frozen=True)
@@ -31,9 +29,6 @@ def resolve_codex_v8_cargo_env(
     environ: Mapping[str, str] | None = None,
     cache_root: Path | None = None,
 ) -> dict[str, str]:
-    if spec.is_windows:
-        return {}
-
     environ = os.environ if environ is None else environ
     if environ.get("V8_FROM_SOURCE") in {"true", "1", "yes"}:
         return {}
@@ -60,20 +55,23 @@ def fetch_codex_v8_artifacts(
     version: str | None = None,
     cache_root: Path | None = None,
 ) -> RustyV8ArtifactPair:
-    if spec.is_windows:
-        raise RuntimeError(
-            f"No Codex-built V8 release artifacts for target: {spec.target}"
-        )
-
     version = version or resolved_v8_crate_version()
     release_url = (
         f"https://github.com/openai/codex/releases/download/rusty-v8-v{version}"
     )
     target = spec.target
     cache_dir = (cache_root or default_cache_root()) / f"rusty-v8-{version}-{target}"
-    archive = cache_dir / f"librusty_v8_release_{target}.a.gz"
-    binding = cache_dir / f"src_binding_release_{target}.rs"
-    checksums = cache_dir / f"rusty_v8_release_{target}.sha256"
+
+    if spec.is_windows:
+        archive_name = f"rusty_v8_{V8_ARTIFACT_PROFILE}_{target}.lib.gz"
+    else:
+        archive_name = f"librusty_v8_{V8_ARTIFACT_PROFILE}_{target}.a.gz"
+    binding_name = f"src_binding_{V8_ARTIFACT_PROFILE}_{target}.rs"
+    checksums_name = f"rusty_v8_{V8_ARTIFACT_PROFILE}_{target}.sha256"
+
+    archive = cache_dir / archive_name
+    binding = cache_dir / binding_name
+    checksums = cache_dir / checksums_name
 
     download_file(f"{release_url}/{checksums.name}", checksums)
     expected_checksums = load_checksums(checksums, {archive.name, binding.name})
@@ -88,7 +86,16 @@ def fetch_codex_v8_artifacts(
 
 
 def resolved_v8_crate_version() -> str:
-    versions = package_versions(REPO_ROOT / "codex-rs" / "Cargo.lock", "v8")
+    import tomllib
+
+    cargo_lock = tomllib.loads((REPO_ROOT / "codex-rs" / "Cargo.lock").read_text())
+    versions = sorted(
+        {
+            package["version"]
+            for package in cargo_lock["package"]
+            if package["name"] == "v8"
+        }
+    )
     if len(versions) != 1:
         raise RuntimeError(
             f"Expected exactly one resolved v8 version, found: {versions}"

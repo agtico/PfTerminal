@@ -123,8 +123,11 @@ async fn handle_spawn_agent(
             .config
             .agent_default_subagent_reasoning_effort
             .is_some();
-    let mut config =
-        build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref())?;
+    let mut config = build_agent_spawn_config(
+        &session.get_base_instructions().await,
+        turn.as_ref(),
+        step_context.environments.primary(),
+    )?;
     if let Some(service_tier) = args.service_tier.as_ref() {
         config.service_tier = Some(service_tier.clone());
     }
@@ -166,7 +169,11 @@ async fn handle_spawn_agent(
         args.service_tier.as_deref(),
     )
     .await?;
-    apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
+    apply_spawn_agent_runtime_overrides(
+        &mut config,
+        turn.as_ref(),
+        step_context.environments.primary(),
+    )?;
     ensure_spawn_provider_authorized(&config, &config.model_provider_id)?;
     // Existing sessions may legitimately run a model that has since been hidden or disabled in
     // the refreshed catalogue. Inheriting that already-authorized runtime preserves the active

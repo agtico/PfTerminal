@@ -17,6 +17,7 @@ use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::parse_arguments_with_base_path;
 use crate::tools::handlers::reject_source_write_heredoc_when_structured_edit_enabled;
+use crate::tools::handlers::resolve_sandbox_permissions;
 use crate::tools::handlers::resolve_workdir_base_path;
 use crate::tools::handlers::rewrite_function_string_argument;
 use crate::tools::handlers::updated_hook_command;
@@ -91,14 +92,14 @@ impl ShellCommandHandler {
         turn_context: &TurnContext,
         turn_environment: &TurnEnvironment,
         cwd: AbsolutePathBuf,
-        allow_login_shell: bool,
     ) -> Result<ExecParams, FunctionCallError> {
         let session_shell = session.user_shell();
         let shell = turn_environment
             .shell
             .as_ref()
             .unwrap_or(session_shell.as_ref());
-        let use_login_shell = Self::resolve_use_login_shell(params.login, allow_login_shell)?;
+        let use_login_shell =
+            Self::resolve_use_login_shell(params.login, turn_environment.config.allow_login_shell)?;
         let command = Self::base_command(shell, &params.command, use_login_shell);
 
         let provider_env_keys = turn_context
@@ -112,8 +113,12 @@ impl ShellCommandHandler {
             Some(session.thread_id),
             provider_env_keys,
         );
-        let active_permission_profile = turn_context.config.permissions.active_permission_profile();
+        let active_permission_profile = turn_environment.active_permission_profile();
         inject_permission_profile_env(&mut env, active_permission_profile.as_ref());
+        let sandbox_permissions = resolve_sandbox_permissions(
+            params.sandbox_permissions,
+            params.justification.as_deref(),
+        )?;
 
         Ok(ExecParams {
             command,
@@ -123,7 +128,7 @@ impl ShellCommandHandler {
             env,
             network: turn_context.network.clone(),
             network_environment_id: Some(turn_environment.environment_id.clone()),
-            sandbox_permissions: params.sandbox_permissions.unwrap_or_default(),
+            sandbox_permissions,
             windows_sandbox_level: turn_context.windows_sandbox_level,
             windows_sandbox_private_desktop: turn_context
                 .config
@@ -218,7 +223,6 @@ impl ShellCommandHandler {
             turn.as_ref(),
             &turn_environment,
             cwd,
-            turn.config.permissions.allow_login_shell,
         )?;
         let shell_type = Some(
             turn_environment

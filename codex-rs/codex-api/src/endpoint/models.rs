@@ -7,6 +7,7 @@ use codex_client::RequestTelemetry;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ModelMessages;
 use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::TruncationPolicyConfig;
@@ -132,9 +133,18 @@ fn openai_model_item_to_info(item: OpenAiModelListItem) -> ModelInfo {
         default_service_tier: None,
         availability_nux: None,
         upgrade: None,
-        base_instructions: "You are Codex, a coding agent.".to_string(),
-        model_messages: None,
+        model_messages: Some(ModelMessages {
+            instructions_template: Some("You are Codex, a coding agent.".to_string()),
+            instructions_variables: None,
+            approvals: None,
+            collaboration_modes: None,
+            auto_review: None,
+            permissions: None,
+            token_budget: None,
+        }),
         include_skills_usage_instructions: false,
+        include_plugin_usage_instructions: false,
+        include_apps_usage_instructions: false,
         supports_reasoning_summary_parameter: false,
         default_reasoning_summary: ReasoningSummary::Auto,
         support_verbosity: false,
@@ -156,6 +166,7 @@ fn openai_model_item_to_info(item: OpenAiModelListItem) -> ModelInfo {
         supports_search_tool: false,
         use_responses_lite: false,
         auto_review_model_override: None,
+        model_specialty: None,
         tool_mode: None,
         multi_agent_version: None,
     }
@@ -290,7 +301,6 @@ mod tests {
                     "supported_in_api": true,
                     "priority": 1,
                     "upgrade": null,
-                    "base_instructions": "base instructions",
                     "support_verbosity": false,
                     "default_verbosity": null,
                     "apply_patch_tool_type": null,

@@ -45,6 +45,7 @@ codex-git-utils = { workspace = true }
 codex-gpu-market = { workspace = true }
 codex-http-client = { workspace = true }
 codex-login = { workspace = true }
+codex-tasknode-session = { workspace = true }
 codex-vault = { workspace = true }
 codex-wallet = { workspace = true }
 codex-wallet-daemon = { workspace = true }

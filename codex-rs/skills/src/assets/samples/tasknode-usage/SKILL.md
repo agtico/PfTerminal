@@ -73,6 +73,8 @@ When requesting a task, include enough relevant context to let Task Node scope i
 
 When accepting a task, inspect the full card before acting. Confirm objective, steps, reward, deadline, verification criteria, and current status.
 
+In every shell command, use the helper binary that matches this session's state home: `pfterminal` when `CODEX_HOME` is `~/.pfterminal`, `pfterminal-debug` when it is `~/.pfterminal-debug` (see the binary-resolution preamble in references/tooling.md). The wrong entrypoint reads a different vault and falsely reports "not linked".
+
 When submitting initial evidence for an accepted task, first inspect the task with `pfterminal tasknode task show <task-id> --json` and confirm `actions.canSubmitInitialEvidence` is true. Draft the response from the Initial Evidence template, save it to a temporary file, and submit it with `pfterminal tasknode task evidence <task-id> --body-file <path> --json`. Do not use the verification response command for this state.
 
 Initial evidence is not completion. After every initial evidence receipt:

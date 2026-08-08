@@ -31,6 +31,12 @@ max-threads = 1
 [test-groups.windows_process_heavy]
 max-threads = 2
 
+# Vault and Task Node session tests intentionally exercise repeated age
+# encryption writes. Serialize them and allow enough time for slower local
+# key-derivation backends rather than treating valid crypto work as a hang.
+[test-groups.encrypted_vault]
+max-threads = 1
+
 [[profile.default.overrides]]
 # Do not add new tests here
 filter = 'test(rmcp_client) | test(humanlike_typing_1000_chars_appears_live_no_placeholder)'
@@ -55,6 +61,11 @@ test-group = 'app_server_integration'
 # limits this to the machine's logical CPU count.
 filter = 'package(codex-app-server) & kind(test)'
 test-group = 'app_server_integration_local'
+
+[[profile.default.overrides]]
+filter = 'package(codex-vault) | package(codex-tasknode-session)'
+test-group = 'encrypted_vault'
+slow-timeout = { period = "1m", terminate-after = 3 }
 
 [[profile.default.overrides]]
 # These tests exercise full Codex turns and apply_patch execution, and they are

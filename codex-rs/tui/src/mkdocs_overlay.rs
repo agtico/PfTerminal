@@ -111,7 +111,7 @@ impl MkDocsOverlay {
 
     pub(crate) fn handle_event(&mut self, tui: &mut tui::Tui, event: TuiEvent) -> Result<()> {
         match event {
-            TuiEvent::Draw | TuiEvent::Resize => {
+            TuiEvent::Draw | TuiEvent::Resize(_) => {
                 tui.draw(u16::MAX, |frame| self.render(frame.area(), frame.buffer))?;
             }
             TuiEvent::Key(key_event) => {

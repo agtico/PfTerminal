@@ -2,6 +2,7 @@ mod delegate;
 mod execute_handler;
 pub(crate) mod execute_spec;
 mod response_adapter;
+mod telemetry;
 mod wait_handler;
 pub(crate) mod wait_spec;
 
@@ -23,14 +24,12 @@ use serde_json::Value as JsonValue;
 use tokio::sync::OnceCell;
 use tokio_util::sync::CancellationToken;
 
-use crate::audio_preparation::estimate_audio_token_count;
 use crate::function_tool::FunctionCallError;
 use crate::original_image_detail::can_request_original_image_detail;
 use crate::original_image_detail::sanitize_original_image_detail as sanitize_image_detail_items;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
-use crate::tools::ToolRouter;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolPayload;
@@ -41,6 +40,7 @@ use crate::tools::router::ToolCallSource;
 use crate::unified_exec::resolve_max_tokens;
 use codex_protocol::openai_models::ToolMode;
 use codex_tools::ToolName;
+use codex_utils_audio::estimate_audio_token_count;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::formatted_truncate_text_content_items_with_policy;
 use codex_utils_output_truncation::truncate_function_output_items_with_policy;
@@ -62,9 +62,9 @@ pub(crate) fn default_exec_yield_time_override_ms(features: &Features) -> Option
         .then_some(BUFFERED_EXEC_YIELD_TIME_MS)
 }
 
-/// Returns true for the un-namespaced code-mode `exec` tool.
+/// Returns true for the code-mode `exec` tool in the default namespace.
 pub(crate) fn is_exec_tool_name(tool_name: &ToolName) -> bool {
-    tool_name.namespace.is_none() && tool_name.name == PUBLIC_TOOL_NAME
+    tool_name.is_default_namespace() && tool_name.name == PUBLIC_TOOL_NAME
 }
 
 #[derive(Clone)]
@@ -178,7 +178,6 @@ impl CodeModeService {
         &self,
         session: &Arc<Session>,
         step_context: Arc<StepContext>,
-        router: Arc<ToolRouter>,
         tracker: SharedTurnDiffTracker,
     ) -> Option<CodeModeDispatchWorker> {
         let turn = &step_context.turn;
@@ -193,7 +192,7 @@ impl CodeModeService {
         };
         Some(
             self.dispatch_broker
-                .start_turn_worker(exec, router, step_context, tracker),
+                .start_turn_worker(exec, step_context, tracker),
         )
     }
 
@@ -316,7 +315,7 @@ fn truncate_code_mode_result(
 }
 
 async fn call_nested_tool(
-    _exec: ExecContext,
+    exec: ExecContext,
     tool_runtime: ToolCallRuntime,
     invocation: CodeModeNestedToolCall,
     cancellation_token: CancellationToken,
@@ -340,11 +339,20 @@ async fn call_nested_tool(
     };
 
     let call = ToolCall {
-        tool_name,
+        tool_name: tool_name.with_default_namespace(),
         call_id: format!("{PUBLIC_TOOL_NAME}-{}", uuid::Uuid::new_v4()),
         payload,
         encrypted_function_args: None,
     };
+    exec.session
+        .services
+        .analytics_events_client
+        .track_code_mode_tool_call(codex_analytics::CodeModeToolCallFact::ChildStarted {
+            thread_id: exec.session.thread_id.to_string(),
+            turn_id: exec.turn.sub_id.clone(),
+            call_id: call.call_id.clone(),
+            cell_id: cell_id.to_string(),
+        });
     let result = tool_runtime
         .handle_tool_call_with_source(
             call,

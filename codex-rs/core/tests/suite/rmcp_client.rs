@@ -21,6 +21,7 @@ use codex_config::types::McpServerAuth;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerEnvVar;
 use codex_config::types::McpServerTransportConfig;
+use codex_config::types::OAuthCredentialsStoreMode;
 use codex_core::config::Config;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_exec_server::Environment;
@@ -332,6 +333,7 @@ fn insert_mcp_server(
             enabled: true,
             required: false,
             supports_parallel_tool_calls: options.supports_parallel_tool_calls,
+            omit_tools_from: None,
             disabled_reason: None,
             startup_timeout_sec: Some(Duration::from_secs(10)),
             tool_timeout_sec: options.tool_timeout_sec,
@@ -424,58 +426,6 @@ async fn openai_form_capability_is_not_advertised_by_default() -> anyhow::Result
     assert_openai_form_capability_advertisement(/*expected*/ false).await
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn openai_form_capability_updates_for_loaded_thread() -> anyhow::Result<()> {
-    skip_if_wine_exec!(
-        Ok(()),
-        "requires a Windows test_stdio_server in the Wine-exec environment"
-    );
-
-    let server = start_mock_server().await;
-    let server_name = "capabilities";
-    let command = stdio_server_bin()?;
-    let fixture = test_codex()
-        .with_config(move |config| {
-            insert_mcp_server(
-                config,
-                server_name,
-                stdio_transport(command, /*env*/ None, Vec::new()),
-                TestMcpServerOptions::default(),
-            );
-        })
-        .build(&server)
-        .await?;
-    wait_for_mcp_server(&fixture.codex, server_name).await?;
-
-    let unsupported = call_structured_tool(
-        &server,
-        &fixture,
-        server_name,
-        "client_capabilities",
-        "call-client-capabilities-unsupported",
-    )
-    .await?;
-    assert_eq!(
-        unsupported,
-        json!({ "supportsOpenaiFormElicitation": false })
-    );
-
-    fixture
-        .codex
-        .set_openai_form_elicitation_support(/*supported*/ true)
-        .await?;
-    let supported = call_structured_tool(
-        &server,
-        &fixture,
-        server_name,
-        "client_capabilities",
-        "call-client-capabilities-supported",
-    )
-    .await?;
-    assert_eq!(supported, json!({ "supportsOpenaiFormElicitation": true }));
-    Ok(())
-}
-
 async fn assert_openai_form_capability_advertisement(expected: bool) -> anyhow::Result<()> {
     skip_if_wine_exec!(
         Ok(()),
@@ -543,7 +493,7 @@ fn assert_cwd_tool_output(structured: &Value, expected_cwd: &Path) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mcp_namespace_instructions_are_bounded_without_hiding_tools() -> anyhow::Result<()> {
+async fn mcp_namespace_instructions_are_preserved_without_hiding_tools() -> anyhow::Result<()> {
     skip_if_wine_exec!(
         Ok(()),
         "requires a Windows test_stdio_server in the Wine-exec environment"
@@ -551,8 +501,8 @@ async fn mcp_namespace_instructions_are_bounded_without_hiding_tools() -> anyhow
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let expected_description = "é".repeat(499);
-    let instructions = format!("{expected_description}🦀keep the valid MCP server");
+    let expected_description = format!("{}🦀keep the valid MCP server", "é".repeat(499));
+    let instructions = expected_description.clone();
     let response = mount_sse_once(
         &server,
         responses::sse(vec![
@@ -612,7 +562,7 @@ async fn mcp_namespace_instructions_are_bounded_without_hiding_tools() -> anyhow
     );
     assert!(
         responses::namespace_child_tool(&body, "mcp__bounded", "echo").is_some(),
-        "bounding the namespace must not hide a valid MCP tool"
+        "preserving the namespace must not hide a valid MCP tool"
     );
     Ok(())
 }
@@ -670,8 +620,8 @@ async fn stdio_server_round_trip() -> anyhow::Result<()> {
     .await;
 
     let expected_env_value = "propagated-env";
-    let expected_description = "é".repeat(499);
-    let instructions = format!("{expected_description}🦀keep the complete MCP metadata");
+    let expected_description = format!("{}🦀keep the complete MCP metadata", "é".repeat(11_000));
+    let instructions = expected_description.clone();
     let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
 
     let fixture = test_codex()
@@ -763,11 +713,11 @@ async fn stdio_server_round_trip() -> anyhow::Result<()> {
         .and_then(|tool| tool.get("description").and_then(Value::as_str))
         .expect("the model should receive a tool search description");
     assert!(
-        search_description.len() < 5 * 1024,
+        search_description.len() < 513 * 1024,
         "the complete tool search description must remain bounded"
     );
     assert!(search_description.contains(&format!("- rmcp: {expected_description}")));
-    assert!(!search_description.contains("🦀keep the complete MCP metadata"));
+    assert!(search_description.contains("🦀keep the complete MCP metadata"));
 
     let search_output = call_mock
         .single_request()
@@ -2259,9 +2209,10 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
                 service_tiers: Vec::new(),
                 default_service_tier: None,
                 upgrade: None,
-                base_instructions: "base instructions".to_string(),
                 model_messages: None,
                 include_skills_usage_instructions: false,
+                include_plugin_usage_instructions: false,
+                include_apps_usage_instructions: false,
                 supports_reasoning_summary_parameter: true,
                 default_reasoning_summary: ReasoningSummary::Auto,
                 support_verbosity: false,
@@ -2284,6 +2235,7 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
                 supports_search_tool: false,
                 use_responses_lite: false,
                 auto_review_model_override: None,
+                model_specialty: None,
                 tool_mode: None,
                 multi_agent_version: None,
             }],
@@ -3171,9 +3123,14 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
     // server so the test does not share credentials with other suite cases.
     let temp_home = Arc::new(tempdir()?);
     let _codex_home_guard = EnvVarGuard::set("CODEX_HOME", temp_home.path().as_os_str());
+    let environment_id = remote_aware_environment_id();
+    let credential_config: McpServerConfig = serde_json::from_value(json!({
+        "url": &server_url,
+        "environment_id": &environment_id,
+    }))?;
+    let credential_name = credential_config.oauth_credential_name(server_name);
     write_fallback_oauth_tokens(
-        temp_home.path(),
-        server_name,
+        credential_name.as_ref(),
         &server_url,
         client_id,
         expected_token,
@@ -3199,7 +3156,7 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
                     env_http_headers: None,
                 },
                 TestMcpServerOptions {
-                    environment_id: remote_aware_environment_id(),
+                    environment_id,
                     ..Default::default()
                 },
             );
@@ -3631,7 +3588,6 @@ fn streamable_http_metadata_url(server_url: &str) -> String {
 }
 
 fn write_fallback_oauth_tokens(
-    home: &Path,
     server_name: &str,
     server_url: &str,
     client_id: &str,
@@ -3644,21 +3600,25 @@ fn write_fallback_oauth_tokens(
         .duration_since(UNIX_EPOCH)?
         .as_millis() as u64;
 
-    let store = serde_json::json!({
-        "stub": {
-            "server_name": server_name,
-            "server_url": server_url,
-            "client_id": client_id,
+    let tokens = serde_json::from_value(json!({
+        "server_name": server_name,
+        "url": server_url,
+        "client_id": client_id,
+        "token_response": {
             "access_token": access_token,
-            "expires_at": expires_at,
+            "token_type": "Bearer",
             "refresh_token": refresh_token,
-            "scopes": ["profile"],
-        }
-    });
+            "scope": "profile",
+        },
+        "expires_at": expires_at,
+    }))?;
 
-    let file_path = home.join(".credentials.json");
-    fs::write(&file_path, serde_json::to_vec(&store)?)?;
-    Ok(())
+    codex_rmcp_client::save_oauth_tokens(
+        server_name,
+        &tokens,
+        OAuthCredentialsStoreMode::File,
+        codex_config::types::AuthKeyringBackendKind::default(),
+    )
 }
 
 struct EnvVarGuard {

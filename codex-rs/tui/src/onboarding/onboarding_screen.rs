@@ -250,7 +250,8 @@ impl OnboardingScreen {
             config,
         } = args;
         let cwd = config.cwd.to_path_buf();
-        let forced_login_method = config.forced_login_method;
+        let auth_config = config.auth_config();
+        let forced_login_method = auth_config.forced_login_method;
         let mut api_key_provider_id = config.model_provider_id.clone();
         let mut api_key_provider_name = config.model_provider.name.clone();
         let mut api_key_env_var = config.model_provider.env_key.clone();
@@ -283,11 +284,10 @@ impl OnboardingScreen {
             let has_multiple_provider_options = api_key_provider_options.len() > 1;
             let highlighted_mode = if has_multiple_provider_options {
                 SignInOption::ProviderApiKey(selected_provider_index.unwrap_or(0))
+            } else if auth_config.is_login_method_allowed(ForcedLoginMethod::Chatgpt) {
+                SignInOption::ChatGpt
             } else {
-                match forced_login_method {
-                    Some(ForcedLoginMethod::Api) => SignInOption::ApiKey,
-                    _ => SignInOption::ChatGpt,
-                }
+                SignInOption::ApiKey
             };
             let initial_sign_in_state = if !has_multiple_provider_options
                 && (matches!(forced_login_method, Some(ForcedLoginMethod::Api))
@@ -310,6 +310,7 @@ impl OnboardingScreen {
                     api_key_provider_name,
                     api_key_env_var,
                     api_key_provider_options,
+                    auth_config,
                     animations_enabled: config.animations,
                     animations_suppressed: std::cell::Cell::new(false),
                 }));
@@ -710,6 +711,7 @@ pub(crate) async fn run_onboarding_app(
         tokio::select! {
             event = tui_events.next() => {
                 if let Some(event) = event {
+                    tui.screen_size_for_event(&event)?;
                     match event {
                         TuiEvent::Key(key_event) => {
                             onboarding_screen.handle_key_event(key_event);
@@ -724,7 +726,7 @@ pub(crate) async fn run_onboarding_app(
                         TuiEvent::Paste(text) => {
                             onboarding_screen.handle_paste(text);
                         }
-                        TuiEvent::Draw | TuiEvent::Resize => {
+                        TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) => {
                             if !did_full_clear_after_success
                                 && onboarding_screen.steps.iter().any(|step| {
                                     if let Step::Auth(w) = step {

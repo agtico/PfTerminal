@@ -32,6 +32,7 @@ use codex_mcp::resolve_oauth_scopes;
 use codex_mcp::should_retry_without_scopes;
 use codex_protocol::protocol::McpAuthStatus;
 use codex_rmcp_client::OAuthDiscoveryTimeout;
+use codex_rmcp_client::StreamableHttpRedirectMode;
 use codex_rmcp_client::delete_oauth_tokens;
 use codex_rmcp_client::perform_oauth_login;
 use codex_utils_cli::CliConfigOverrides;
@@ -371,6 +372,7 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
         enabled: true,
         required: false,
         supports_parallel_tool_calls: false,
+        omit_tools_from: None,
         disabled_reason: None,
         startup_timeout_sec: None,
         tool_timeout_sec: None,
@@ -405,6 +407,7 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
         &transport,
         Arc::clone(&http_client),
         OAuthDiscoveryTimeout::LOCAL,
+        StreamableHttpRedirectMode::Legacy,
     )
     .await;
     match login_support {
@@ -510,6 +513,7 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
             &server.transport,
             Arc::clone(&http_client),
             OAuthDiscoveryTimeout::LOCAL,
+            StreamableHttpRedirectMode::Legacy,
         )
         .await
     } else {
@@ -517,9 +521,10 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
     };
     let resolved_scopes =
         resolve_oauth_scopes(explicit_scopes, server.scopes.clone(), discovered_scopes);
+    let credential_name = server.oauth_credential_name(&name);
 
     perform_oauth_login_retry_without_scopes(
-        &name,
+        credential_name.as_ref(),
         &url,
         config.mcp_oauth_credentials_store_mode,
         config.auth_keyring_backend_kind(),
@@ -551,9 +556,10 @@ async fn run_logout(config: &Config, logout_args: LogoutArgs) -> Result<()> {
         McpServerTransportConfig::StreamableHttp { url, .. } => url.clone(),
         _ => bail!("OAuth logout is only supported for streamable_http transports."),
     };
+    let credential_name = server.oauth_credential_name(&name);
 
     match delete_oauth_tokens(
-        &name,
+        credential_name.as_ref(),
         &url,
         config.mcp_oauth_credentials_store_mode,
         config.auth_keyring_backend_kind(),

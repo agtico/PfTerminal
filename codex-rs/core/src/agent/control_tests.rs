@@ -305,7 +305,7 @@ async fn crew_child_terminal_result_uses_one_triggering_native_mailbox_message()
             parent_trace: None,
             environments: Some(Vec::new()),
             thread_extension_init: ExtensionDataInit::default(),
-            supports_openai_form_elicitation: false,
+            client_mcp_extensions: codex_protocol::mcp::ClientMcpExtensions::default(),
         })
         .await
         .expect("crew manager should start");
@@ -343,7 +343,7 @@ async fn crew_child_terminal_result_uses_one_triggering_native_mailbox_message()
             parent_trace: None,
             environments: Some(Vec::new()),
             thread_extension_init: ExtensionDataInit::default(),
-            supports_openai_form_elicitation: false,
+            client_mcp_extensions: codex_protocol::mcp::ClientMcpExtensions::default(),
         })
         .await
         .expect("crew worker should start");
@@ -1163,6 +1163,7 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
     let (home, mut config) = test_config().await;
     let _ = config.features.enable(Feature::MultiAgentV2);
     let _ = config.features.enable(Feature::Sqlite);
+    config.model = Some("gpt-5.6-sol".to_string());
     let harness = AgentControlHarness::new_with_config(home, config).await;
     let (parent_thread_id, _parent_thread) = harness.start_paginated_thread().await;
     let agent_path = AgentPath::try_from("/root/worker").expect("agent path");
@@ -1454,12 +1455,20 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         Ok(_) => panic!("expected thread to be removed"),
     }
 
+    let mut sender_config = harness.config.clone();
+    sender_config.model_provider_id = "ollama".to_string();
+    sender_config.model_provider = sender_config
+        .model_providers
+        .get("ollama")
+        .cloned()
+        .expect("ollama provider should be configured");
+
     harness
         .control
-        .ensure_v2_agent_loaded(harness.config.clone(), spawned_agent.thread_id)
+        .ensure_v2_agent_loaded(sender_config, spawned_agent.thread_id)
         .await
         .expect("known v2 agent should reload");
-    let _ = harness
+    let _reloaded_child = harness
         .manager
         .get_thread(spawned_agent.thread_id)
         .await

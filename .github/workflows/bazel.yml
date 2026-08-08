@@ -15,25 +15,33 @@ concurrency:
 
 jobs:
   test:
-    # Non-Linux Bazel coverage is disabled until working runners are available.
-    # See docs/ci.md for the restoration plan.
-    #
-    # PRs from forks do not receive the `bazel` environment secrets, so
-    # `BUILDBUDDY_API_KEY` is empty and `run-bazel-ci.sh` falls back to a purely
-    # local build. That path compiles the whole toolchain -- including V8 and
-    # ICU, which arrive transitively under `//codex-rs/...` -- on a hosted
-    # 4-core runner, and does not fit in 30 minutes. Budget for the slow path so
-    # the job reports a real result instead of being cancelled mid-build; runs
-    # with RBE finish long before this cap and are unaffected by it.
-    timeout-minutes: 120
+    # PRs use the sharded Windows cross-compiled test jobs below. Post-merge
+    # pushes to main also run the native Windows test job for broader Windows
+    # signal without putting PR latency back on the critical path. When
+    # Code-mode unit tests run on every Bazel target. When authenticated RBE
+    # is available, the Windows-cross shards exercise the source-built V8 path.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
+          # macOS
+          - os: macos-15-xlarge
+            target: aarch64-apple-darwin
+          - os: macos-15-xlarge
+            target: x86_64-apple-darwin
+
+          # Linux
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-musl
+          # 2026-02-27 Bazel tests have been flaky on arm in CI.
+          # Disable until we can investigate and stabilize them.
+          # - os: ubuntu-24.04-arm
+          #   target: aarch64-unknown-linux-musl
+          # - os: ubuntu-24.04-arm
+          #   target: aarch64-unknown-linux-gnu
 
     runs-on: ${{ matrix.os }}
 
@@ -110,21 +118,10 @@ jobs:
 
       # Save the job-scoped Bazel repository cache after cache misses. Keep the
       # upload non-fatal so cache service issues never fail the job itself.
-      #
-      # Deliberately not gated on `!cancelled()`: a job cancelled by
-      # `timeout-minutes` is exactly the case that most needs its downloaded
-      # external repositories preserved, and skipping the save there means the
-      # next run starts cold and times out again.
-      #
-      # `always()` also reaches the case where `Prepare Bazel CI` itself failed
-      # and left its outputs empty, so require a key before attempting a save
-      # that could only warn `Key is not specified.`
       - name: Save bazel repository cache
-        if: >-
-          always() && steps.prepare_bazel.outputs.repository-cache-key != ''
-          && steps.prepare_bazel.outputs.repository-cache-hit != 'true'
+        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true'
         continue-on-error: true
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ${{ steps.prepare_bazel.outputs.repository-cache-path }}
           key: ${{ steps.prepare_bazel.outputs.repository-cache-key }}
@@ -133,27 +130,232 @@ jobs:
         if: always() && !cancelled()
         uses: ./.github/actions/check-clean-worktree
 
-  # The Windows Bazel legs (`test-windows-shard`, its `test-windows` gatherer,
-  # and `test-windows-native-main`) were removed here. They were pinned to the
-  # self-hosted `<repo>-windows-x64` label in the `<repo>-runners` group, which
-  # does not exist for this repository, so every one of them failed before
-  # checkout with no executed steps -- red status on every PR that tested
-  # nothing. That is the same class of job docs/ci.md already declares
-  # "Disabled Until Runners Exist"; this change finishes carrying out that
-  # decision rather than making a new one. See docs/ci.md for the restoration
-  # requirements before adding them back.
+  test-windows-shard:
+    # Split the Windows Bazel test leg across separate Windows hosts. Jobs with
+    # BuildBuddy credentials use Linux RBE for build actions; test execution
+    # remains on a Windows runner.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - 1
+          - 2
+          - 3
+          - 4
+    runs-on:
+      group: ${{ github.event.repository.name }}-runners
+      labels: ${{ github.event.repository.name }}-windows-x64
+    name: Bazel test on windows-latest for x86_64-pc-windows-gnullvm shard ${{ matrix.shard }}/4
+    environment:
+      name: bazel
+      deployment: false
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Test BuildBuddy Bazel wrapper
+        if: matrix.shard == 1
+        shell: pwsh
+        run: python .github/scripts/test_run_bazel_with_buildbuddy.py
+
+      - name: Prepare Bazel CI
+        id: prepare_bazel
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: x86_64-pc-windows-gnullvm
+          # Reuse the former monolithic Windows test cache for restores. Do
+          # not save it from every shard below; duplicate uploads would sit on
+          # the PR-blocking critical path after the useful test work is done.
+          cache-scope: bazel-test
+
+      - name: bazel test shard
+        env:
+          BAZEL_TEST_SHARD: ${{ matrix.shard }}
+          BAZEL_TEST_SHARD_COUNT: 4
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          bazel_test_query='tests(//...) except tests(//third_party/v8:all) except attr(tags, "manual", tests(//...))'
+          mapfile -t bazel_targets < <(
+            ./.github/scripts/run-bazel-query-ci.sh --output=label -- "${bazel_test_query}" \
+              | LC_ALL=C sort
+          )
+
+          selected_targets=()
+          for bazel_target in "${bazel_targets[@]}"; do
+            target_bucket="$(
+              printf '%s\n' "${bazel_target}" \
+                | cksum \
+                | awk -v shard_count="${BAZEL_TEST_SHARD_COUNT}" '{ print ($1 % shard_count) + 1 }'
+            )"
+            if [[ "${target_bucket}" == "${BAZEL_TEST_SHARD}" ]]; then
+              selected_targets+=("${bazel_target}")
+            fi
+          done
+
+          if [[ ${#selected_targets[@]} -eq 0 ]]; then
+            echo "No Bazel test targets selected for Windows shard ${BAZEL_TEST_SHARD}/${BAZEL_TEST_SHARD_COUNT}." >&2
+            exit 1
+          fi
+
+          echo "Selected ${#selected_targets[@]} of ${#bazel_targets[@]} Bazel test targets for Windows shard ${BAZEL_TEST_SHARD}/${BAZEL_TEST_SHARD_COUNT}."
+
+          bazel_test_args=(
+            test
+            --skip_incompatible_explicit_targets
+            --test_tag_filters=-argument-comment-lint
+            --test_verbose_timeout_warnings
+            --build_metadata=COMMIT_SHA=${GITHUB_SHA}
+            --build_metadata=TAG_windows_test_shard=${BAZEL_TEST_SHARD}
+          )
+
+          ./.github/scripts/run-bazel-ci.sh \
+            --print-failed-action-summary \
+            --print-failed-test-logs \
+            --windows-cross-compile \
+            --remote-download-toplevel \
+            -- \
+            "${bazel_test_args[@]}" \
+            -- \
+            "${selected_targets[@]}"
+
+      - name: Upload Bazel execution logs
+        if: always() && !cancelled()
+        continue-on-error: true
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: bazel-execution-logs-test-x86_64-pc-windows-gnullvm-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/bazel-execution-logs
+          if-no-files-found: ignore
+
+      - name: Check for a clean worktree
+        if: always() && !cancelled()
+        uses: ./.github/actions/check-clean-worktree
+
+  test-windows:
+    # Preserve the existing required-check surface while the real work happens
+    # in the sharded Windows jobs above.
+    if: always()
+    needs: test-windows-shard
+    runs-on: ubuntu-24.04
+    name: Bazel test on windows-latest for x86_64-pc-windows-gnullvm
+
+    steps:
+      - name: Confirm Windows Bazel test shards passed
+        shell: bash
+        run: |
+          if [[ "${{ needs.test-windows-shard.result }}" != "success" ]]; then
+            echo "Windows Bazel test shards finished with result: ${{ needs.test-windows-shard.result }}" >&2
+            exit 1
+          fi
+
+  test-windows-native-main:
+    # Native Windows Bazel tests are slower and frequently approach the
+    # 30-minute PR budget. Run this only for post-merge commits to main and give
+    # it a larger timeout.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    timeout-minutes: 40
+    runs-on:
+      group: ${{ github.event.repository.name }}-runners
+      labels: ${{ github.event.repository.name }}-windows-x64
+    name: Bazel test on windows-latest for x86_64-pc-windows-msvc (native main)
+    environment:
+      name: bazel
+      deployment: false
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Prepare Bazel CI
+        id: prepare_bazel
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: x86_64-pc-windows-msvc
+          cache-scope: bazel-${{ github.job }}
+
+      - name: bazel test //...
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        shell: bash
+        run: |
+          bazel_targets=(
+            //...
+            # Keep standalone V8 library targets out of the ordinary Bazel CI
+            # path. V8 consumers under `//codex-rs/...` still participate
+            # transitively through `//...`.
+            -//third_party/v8:all
+            -//codex-rs/v8-poc:v8-poc-unit-tests
+          )
+
+          bazel_test_args=(
+            test
+            --platforms=//:windows_x86_64_msvc
+            --test_tag_filters=-argument-comment-lint
+            --test_verbose_timeout_warnings
+            --build_metadata=COMMIT_SHA=${GITHUB_SHA}
+            --build_metadata=TAG_windows_native_main=true
+          )
+
+          ./.github/scripts/run-bazel-ci.sh \
+            --print-failed-action-summary \
+            --print-failed-test-logs \
+            --windows-msvc-host-platform \
+            -- \
+            "${bazel_test_args[@]}" \
+            -- \
+            "${bazel_targets[@]}"
+
+      - name: Upload Bazel execution logs
+        if: always() && !cancelled()
+        continue-on-error: true
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: bazel-execution-logs-test-windows-native-x86_64-pc-windows-msvc
+          path: ${{ runner.temp }}/bazel-execution-logs
+          if-no-files-found: ignore
+
+      # Save the job-scoped Bazel repository cache after cache misses. Keep the
+      # upload non-fatal so cache service issues never fail the job itself.
+      - name: Save bazel repository cache
+        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ${{ steps.prepare_bazel.outputs.repository-cache-path }}
+          key: ${{ steps.prepare_bazel.outputs.repository-cache-key }}
+
+      - name: Check for a clean worktree
+        if: always() && !cancelled()
+        uses: ./.github/actions/check-clean-worktree
 
   clippy:
-    # See the `test` job for why this is not 30 minutes.
-    timeout-minutes: 120
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Non-Linux Bazel coverage is disabled until working runners are
-          # available. See docs/ci.md for the restoration plan.
+          # Keep Linux lint coverage on x64 and add the arm64 macOS path that
+          # the Bazel test job already exercises. Add Windows gnullvm as well
+          # so PRs get Bazel-native lint signal on the same Windows toolchain
+          # that the Bazel test job uses.
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+          - os: macos-15-xlarge
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-gnullvm
+            runs_on:
+              group: ${{ github.event.repository.name }}-runners
+              labels: ${{ github.event.repository.name }}-windows-x64
     runs-on: ${{ matrix.runs_on || matrix.os }}
     name: Bazel clippy on ${{ matrix.os }} for ${{ matrix.target }}
     environment:
@@ -227,21 +429,10 @@ jobs:
 
       # Save the job-scoped Bazel repository cache after cache misses. Keep the
       # upload non-fatal so cache service issues never fail the job itself.
-      #
-      # Deliberately not gated on `!cancelled()`: a job cancelled by
-      # `timeout-minutes` is exactly the case that most needs its downloaded
-      # external repositories preserved, and skipping the save there means the
-      # next run starts cold and times out again.
-      #
-      # `always()` also reaches the case where `Prepare Bazel CI` itself failed
-      # and left its outputs empty, so require a key before attempting a save
-      # that could only warn `Key is not specified.`
       - name: Save bazel repository cache
-        if: >-
-          always() && steps.prepare_bazel.outputs.repository-cache-key != ''
-          && steps.prepare_bazel.outputs.repository-cache-hit != 'true'
+        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true'
         continue-on-error: true
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ${{ steps.prepare_bazel.outputs.repository-cache-path }}
           key: ${{ steps.prepare_bazel.outputs.repository-cache-key }}
@@ -251,14 +442,20 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   verify-release-build:
-    # See the `test` job for why this is not 30 minutes.
-    timeout-minutes: 120
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+          - os: macos-15-xlarge
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-gnullvm
+            runs_on:
+              group: ${{ github.event.repository.name }}-runners
+              labels: ${{ github.event.repository.name }}-windows-x64
     runs-on: ${{ matrix.runs_on || matrix.os }}
     name: Verify release build on ${{ matrix.os }} for ${{ matrix.target }}
     environment:
@@ -349,21 +546,10 @@ jobs:
 
       # Save the job-scoped Bazel repository cache after cache misses. Keep the
       # upload non-fatal so cache service issues never fail the job itself.
-      #
-      # Deliberately not gated on `!cancelled()`: a job cancelled by
-      # `timeout-minutes` is exactly the case that most needs its downloaded
-      # external repositories preserved, and skipping the save there means the
-      # next run starts cold and times out again.
-      #
-      # `always()` also reaches the case where `Prepare Bazel CI` itself failed
-      # and left its outputs empty, so require a key before attempting a save
-      # that could only warn `Key is not specified.`
       - name: Save bazel repository cache
-        if: >-
-          always() && steps.prepare_bazel.outputs.repository-cache-key != ''
-          && steps.prepare_bazel.outputs.repository-cache-hit != 'true'
+        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true'
         continue-on-error: true
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ${{ steps.prepare_bazel.outputs.repository-cache-path }}
           key: ${{ steps.prepare_bazel.outputs.repository-cache-key }}

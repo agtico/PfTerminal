@@ -523,6 +523,7 @@ impl InProcessClientStartArgs {
         let capabilities = InitializeCapabilities {
             experimental_api: self.experimental_api,
             request_attestation: false,
+            extensions: None,
             opt_out_notification_methods: if self.opt_out_notification_methods.is_empty() {
                 None
             } else {
@@ -2053,6 +2054,7 @@ mod tests {
                             is_secret: false,
                             options: Some(vec![]),
                         }],
+                        is_blocking: true,
                         auto_resolution_ms: None,
                     })
                     .expect("params should serialize"),
@@ -2115,6 +2117,7 @@ mod tests {
                                 is_secret: false,
                                 options: Some(vec![]),
                             }],
+                            is_blocking: true,
                             auto_resolution_ms: None,
                         })
                         .expect("params should serialize"),

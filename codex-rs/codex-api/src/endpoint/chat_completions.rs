@@ -303,6 +303,7 @@ impl From<ChatUsage> for TokenUsage {
                 .map(|details| details.reasoning_tokens)
                 .unwrap_or(0),
             total_tokens: value.total_tokens,
+            codex_rollout_budget_units: None,
         }
     }
 }

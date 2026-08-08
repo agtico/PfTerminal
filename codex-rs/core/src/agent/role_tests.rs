@@ -1,9 +1,8 @@
 use super::*;
-use crate::SkillsService;
+use crate::HostSkillsService;
 use crate::config::ConfigBuilder;
 use crate::config::PermissionProfileSnapshot;
 use crate::skills_load_input_from_config;
-use codex_config::ConfigLayerStackOrdering;
 use codex_core_plugins::PluginsManager;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_protocol::config_types::ServiceTier;
@@ -52,11 +51,7 @@ async fn write_role_config(home: &TempDir, name: &str, contents: &str) -> PathBu
 fn session_flags_layer_count(config: &Config) -> usize {
     config
         .config_layer_stack
-        .get_layers(
-            ConfigLayerStackOrdering::LowestPrecedenceFirst,
-            /*include_disabled*/ true,
-        )
-        .into_iter()
+        .all_layers_low_to_high()
         .filter(|layer| layer.name == ConfigLayerSource::SessionFlags)
         .count()
 }
@@ -295,6 +290,7 @@ async fn apply_role_preserves_unspecified_keys() {
     .await;
     config.codex_linux_sandbox_exe = Some(PathBuf::from("/tmp/codex-linux-sandbox"));
     config.main_execve_wrapper_exe = Some(PathBuf::from("/tmp/codex-execve-wrapper"));
+    config.psp = true;
     let role_path = write_role_config(
         &home,
         "instructions-only.toml",
@@ -329,6 +325,7 @@ async fn apply_role_preserves_unspecified_keys() {
         config.main_execve_wrapper_exe,
         Some(PathBuf::from("/tmp/codex-execve-wrapper"))
     );
+    assert!(config.psp);
 }
 
 #[tokio::test]
@@ -431,11 +428,7 @@ writable_roots = ["./sandbox-root"]
 
     let role_layer = config
         .config_layer_stack
-        .get_layers(
-            ConfigLayerStackOrdering::LowestPrecedenceFirst,
-            /*include_disabled*/ true,
-        )
-        .into_iter()
+        .all_layers_low_to_high()
         .rfind(|layer| layer.name == ConfigLayerSource::SessionFlags)
         .expect("expected a session flags layer");
     let sandbox_workspace_write = role_layer
@@ -537,7 +530,7 @@ enabled = false
 
     let plugins_manager = Arc::new(PluginsManager::new(home.path().to_path_buf()));
     let skills_service =
-        SkillsService::new(home.path().abs(), /*bundled_skills_enabled*/ true);
+        HostSkillsService::new(home.path().abs(), /*bundled_skills_enabled*/ true);
     let plugins_input = config.plugins_config_input();
     let plugin_outcome = plugins_manager.plugins_for_config(&plugins_input).await;
     let effective_skill_roots = plugin_outcome.effective_plugin_skill_roots();
@@ -758,7 +751,7 @@ async fn hierarchy_role_base_precedence_over_standard_model_defaults_is_determin
         .expect("bundled models.json should include claude-fable-5");
     assert!(
         fable
-            .base_instructions
+            .get_model_instructions(/*personality*/ None)
             .contains(STANDARD_BASE_OUTCOME_MARKER)
     );
 
@@ -767,10 +760,14 @@ async fn hierarchy_role_base_precedence_over_standard_model_defaults_is_determin
         .iter()
         .find(|model| model.slug == "gpt-5.5")
         .expect("bundled models.json should include gpt-5.5");
-    assert!(gpt55.base_instructions.contains("vivid inner life"));
+    assert!(
+        gpt55
+            .get_model_instructions(/*personality*/ None)
+            .contains("vivid inner life")
+    );
     assert!(
         !gpt55
-            .base_instructions
+            .get_model_instructions(/*personality*/ None)
             .contains(STANDARD_BASE_OUTCOME_MARKER)
     );
 }

@@ -29,7 +29,24 @@ Follow the TUI footer for exact keybindings. Multiline prompts may use a submit 
 
 ## JSON Helper
 
-Prefer the JSON helper for agent work:
+Prefer the JSON helper for agent work.
+
+**Resolve the helper binary first.** PFTerminal entrypoints pin isolated state
+homes: `pfterminal` always uses `~/.pfterminal`, and `pfterminal-debug` always
+uses `~/.pfterminal-debug`, regardless of the shell's `CODEX_HOME`. Calling the
+wrong entrypoint queries a different vault than the running session and reports
+"not linked" even when the session is linked. Pick the binary that matches the
+session's home before any Task Node call:
+
+```bash
+PF_BIN=pfterminal
+case "${CODEX_HOME:-}" in
+  *.pfterminal-debug) PF_BIN=pfterminal-debug ;;
+esac
+"$PF_BIN" tasknode status --json
+```
+
+Every `pfterminal tasknode` command below means `"$PF_BIN" tasknode`.
 
 ```bash
 pfterminal tasknode status --json

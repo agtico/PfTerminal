@@ -15,6 +15,7 @@ use codex_app_server_protocol::CancelLoginAccountParams;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::LoginAccountParams;
 use codex_app_server_protocol::LoginAccountResponse;
+use codex_login::AuthConfig;
 use codex_login::OPENAI_API_KEY_ENV_VAR;
 use codex_login::read_openai_api_key_from_env;
 use codex_protocol::auth::AuthMode;
@@ -286,6 +287,7 @@ pub(crate) struct AuthModeWidget {
     pub api_key_provider_name: String,
     pub api_key_env_var: Option<String>,
     pub api_key_provider_options: Vec<ApiKeyProviderOption>,
+    pub auth_config: AuthConfig,
     pub animations_enabled: bool,
     pub animations_suppressed: Cell<bool>,
 }
@@ -359,7 +361,8 @@ impl AuthModeWidget {
     }
 
     fn is_api_login_allowed(&self) -> bool {
-        !matches!(self.forced_login_method, Some(ForcedLoginMethod::Chatgpt))
+        self.auth_config
+            .is_login_method_allowed(ForcedLoginMethod::Api)
     }
 
     fn provider_picker_enabled(&self) -> bool {
@@ -367,7 +370,8 @@ impl AuthModeWidget {
     }
 
     fn is_chatgpt_login_allowed(&self) -> bool {
-        !matches!(self.forced_login_method, Some(ForcedLoginMethod::Api))
+        self.auth_config
+            .is_login_method_allowed(ForcedLoginMethod::Chatgpt)
     }
 
     fn is_device_code_login_allowed(&self) -> bool {
@@ -1279,9 +1283,6 @@ mod tests {
     use codex_app_server_client::InProcessClientStartArgs;
     use codex_arg0::Arg0DispatchPaths;
     use codex_cloud_config::cloud_config_bundle_loader_for_storage;
-    use codex_config::types::AuthCredentialsStoreMode;
-    use codex_login::AuthKeyringBackendKind;
-
     use pretty_assertions::assert_eq;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -1309,7 +1310,7 @@ mod tests {
             .build()
             .await
             .unwrap();
-        let auth_route_config = config.auth_route_config();
+        let mut auth_config = config.auth_config();
         let client = InProcessAppServerClient::start(InProcessClientStartArgs {
             arg0_paths: Arg0DispatchPaths::default(),
             config: Arc::new(config),
@@ -1317,12 +1318,8 @@ mod tests {
             loader_overrides: Default::default(),
             strict_config: false,
             cloud_config_bundle: cloud_config_bundle_loader_for_storage(
-                codex_home_path.clone(),
+                auth_config.clone(),
                 /*enable_codex_api_key_env*/ false,
-                AuthCredentialsStoreMode::File,
-                AuthKeyringBackendKind::default(),
-                "https://chatgpt.com/backend-api/".to_string(),
-                auth_route_config,
             )
             .await,
             feedback: codex_feedback::CodexFeedback::new(),
@@ -1344,6 +1341,7 @@ mod tests {
         })
         .await
         .unwrap();
+        auth_config.forced_login_method = Some(ForcedLoginMethod::Chatgpt);
         let widget = AuthModeWidget {
             request_frame: FrameRequester::test_dummy(),
             highlighted_mode: SignInOption::ChatGpt,
@@ -1356,6 +1354,7 @@ mod tests {
             api_key_provider_name: "OpenAI".to_string(),
             api_key_env_var: None,
             api_key_provider_options: Vec::new(),
+            auth_config,
             animations_enabled: true,
             animations_suppressed: std::cell::Cell::new(false),
         };
@@ -1848,6 +1847,7 @@ mod tests {
             login_id: Some("login-1".to_string()),
             success: true,
             error: None,
+            onboarding_entrypoint: None,
         });
 
         assert!(matches!(

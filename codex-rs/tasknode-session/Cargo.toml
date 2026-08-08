@@ -1,0 +1,25 @@
+[package]
+name = "codex-tasknode-session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "codex_tasknode_session"
+path = "src/lib.rs"
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+codex-vault = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+codex-keyring-store = { workspace = true }
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }

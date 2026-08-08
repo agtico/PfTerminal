@@ -218,6 +218,7 @@ impl From<AnthropicUsage> for TokenUsage {
             output_tokens,
             reasoning_output_tokens: 0,
             total_tokens: input_tokens + output_tokens,
+            codex_rollout_budget_units: None,
         }
     }
 }

@@ -4,7 +4,6 @@ use clap::Parser;
 use clap::Subcommand;
 use codex_core::config::ConfigBuilder;
 use codex_utils_cli::CliConfigOverrides;
-use serde::Deserialize;
 use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
@@ -13,7 +12,6 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
-const TASKNODE_SESSION_LABEL: &str = "tasknode/session";
 const DEFAULT_TASKNODE_ORIGIN: &str = "https://tasknode.postfiat.org";
 
 #[derive(Debug, Parser)]
@@ -35,6 +33,10 @@ pub(crate) struct TaskNodeCli {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum TaskNodeCommand {
+    /// Link Task Node via GitHub, or manage a link attempt. Starting a link
+    /// never disturbs an existing working session.
+    Link(LinkCli),
+
     /// Show linked account, wallet, server flags, and task counts.
     Status,
 
@@ -64,6 +66,35 @@ pub(crate) enum TaskNodeCommand {
 
     /// Respond to verification requests.
     Verification(VerificationCli),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct LinkCli {
+    #[command(subcommand)]
+    action: Option<LinkCommand>,
+}
+
+#[derive(Debug, Subcommand)]
+enum LinkCommand {
+    /// Start a GitHub link attempt (default). Prints the verification URL.
+    Start,
+
+    /// Poll the pending attempt; on success the token is validated against the
+    /// server before it replaces any stored session.
+    Poll(LinkPollArgs),
+
+    /// Show non-secret local auth state (works without a valid session).
+    Status,
+
+    /// Abandon the pending link attempt. The active session is untouched.
+    Cancel,
+}
+
+#[derive(Debug, Args)]
+struct LinkPollArgs {
+    /// Keep polling for up to this many seconds; 0 polls exactly once.
+    #[arg(long, default_value_t = 0)]
+    wait: u64,
 }
 
 #[derive(Debug, Args)]
@@ -375,9 +406,14 @@ pub(crate) async fn run(command: TaskNodeCli) -> anyhow::Result<()> {
 
 async fn run_inner(command: TaskNodeCli) -> anyhow::Result<i32> {
     let _json_flag = command.json;
+    // `link` must work without an existing session; everything else requires one.
+    if let TaskNodeCommand::Link(link) = command.command {
+        return run_link_command(command.config_overrides, command.origin, link).await;
+    }
     let client = TaskNodeClient::from_cli(command.config_overrides, command.origin).await?;
 
     match command.command {
+        TaskNodeCommand::Link(_) => unreachable!("handled above"),
         TaskNodeCommand::Status => {
             emit_response(client.get("/api/terminal/tasknode/status").await?)
         }
@@ -792,6 +828,210 @@ struct TaskNodeClient {
     token: String,
 }
 
+async fn resolve_codex_home(
+    config_overrides: CliConfigOverrides,
+) -> anyhow::Result<std::path::PathBuf> {
+    let cli_kv_overrides = config_overrides
+        .parse_overrides()
+        .map_err(anyhow::Error::msg)?;
+    let config = ConfigBuilder::default()
+        .cli_overrides(cli_kv_overrides)
+        .build()
+        .await?;
+    Ok(config.codex_home.as_path().to_path_buf())
+}
+
+async fn run_link_command(
+    config_overrides: CliConfigOverrides,
+    origin_override: Option<String>,
+    link: LinkCli,
+) -> anyhow::Result<i32> {
+    let codex_home = resolve_codex_home(config_overrides).await?;
+    let state = load_tasknode_state(&codex_home)?;
+    let saved_origin = state
+        .active
+        .as_ref()
+        .map(|active| active.origin.clone())
+        .or_else(|| state.pending.as_ref().map(|pending| pending.origin.clone()));
+    let origin = resolve_origin(origin_override, saved_origin.as_deref());
+
+    match link.action.unwrap_or(LinkCommand::Start) {
+        LinkCommand::Start => run_link_start(&codex_home, &origin, &state).await,
+        LinkCommand::Poll(args) => run_link_poll(&codex_home, &origin, args.wait).await,
+        LinkCommand::Status => {
+            let mut summary = codex_tasknode_session::state_summary(&state);
+            if let Some(map) = summary.as_object_mut() {
+                map.insert("ok".to_string(), Value::Bool(true));
+                map.insert("origin".to_string(), Value::String(origin));
+            }
+            print_json(&summary)?;
+            Ok(0)
+        }
+        LinkCommand::Cancel => {
+            let removed = codex_tasknode_session::clear_pending(&tasknode_vault(&codex_home))
+                .map_err(|err| anyhow::anyhow!("failed to clear pending link: {err}"))?;
+            print_json(&json!({
+                "ok": true,
+                "action": "link_cancelled",
+                "removedPendingAttempt": removed,
+                "activeSessionPreserved": state.active.is_some(),
+            }))?;
+            Ok(0)
+        }
+    }
+}
+
+async fn run_link_start(
+    codex_home: &std::path::Path,
+    origin: &str,
+    state: &codex_tasknode_session::LocalState,
+) -> anyhow::Result<i32> {
+    let url = format!("{origin}/api/auth/terminal/start/github");
+    let response = normal_http_client()?
+        .post(url)
+        .json(&json!({}))
+        .send()
+        .await
+        .map_err(reqwest_error)?;
+    let response = parse_response(response).await?;
+    if !response_is_ok(&response) {
+        return emit_response(response);
+    }
+    let started: codex_tasknode_session::TerminalAuthStart =
+        serde_json::from_value(response.body).context("invalid terminal auth start response")?;
+    let pending = codex_tasknode_session::PendingLink {
+        origin: origin.to_string(),
+        request_id: started.request_id.clone(),
+        poll_token: started.poll_token.clone(),
+        verification_url: started.verification_url.clone(),
+        started_at: Some(now_unix_string()),
+    };
+    codex_tasknode_session::save_pending(&tasknode_vault(codex_home), &pending)
+        .map_err(|err| anyhow::anyhow!("failed to store link attempt: {err}"))?;
+    print_json(&json!({
+        "ok": true,
+        "state": "pending",
+        "requestId": started.request_id,
+        "verificationUrl": started.verification_url,
+        "expiresAt": started.expires_at,
+        "activeSessionPreserved": state.active.is_some(),
+        "nextStep": format!(
+            "Open {} in a browser, complete GitHub auth, then run `pfterminal tasknode link poll --wait 120`.",
+            started.verification_url
+        ),
+    }))?;
+    Ok(0)
+}
+
+async fn run_link_poll(
+    codex_home: &std::path::Path,
+    origin: &str,
+    wait_seconds: u64,
+) -> anyhow::Result<i32> {
+    let state = load_tasknode_state(codex_home)?;
+    let Some(pending) = state.pending else {
+        if state.active.as_ref().is_some_and(|a| !a.is_expired()) {
+            print_json(&json!({
+                "ok": true,
+                "state": "linked",
+                "message": "No link attempt is pending; an active session already exists.",
+            }))?;
+            return Ok(0);
+        }
+        print_json(&json!({
+            "ok": false,
+            "error": "tasknode_link_not_started",
+            "message": "No link attempt is pending. Run `pfterminal tasknode link` first.",
+        }))?;
+        return Ok(1);
+    };
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait_seconds);
+    loop {
+        let url = format!(
+            "{origin}/api/auth/terminal/session?requestId={}&pollToken={}",
+            urlencoding::encode(&pending.request_id),
+            urlencoding::encode(&pending.poll_token),
+        );
+        let response = normal_http_client()?
+            .get(url)
+            .send()
+            .await
+            .map_err(reqwest_error)?;
+        let response = parse_response(response).await?;
+        match response.status {
+            200 => {
+                let issued: codex_tasknode_session::TerminalSessionIssued =
+                    serde_json::from_value(response.body.clone())
+                        .context("invalid terminal session response")?;
+                let candidate =
+                    codex_tasknode_session::ActiveSession::from_issued(origin.to_string(), issued);
+                // Validate before promoting: the issued token must prove itself
+                // against the server before it replaces any stored session.
+                let status_url = format!("{origin}/api/terminal/tasknode/status");
+                let status_response = normal_http_client()?
+                    .get(status_url)
+                    .bearer_auth(&candidate.terminal_token)
+                    .send()
+                    .await
+                    .map_err(reqwest_error)?;
+                let status_response = parse_response(status_response).await?;
+                if !response_is_ok(&status_response) {
+                    print_json(&json!({
+                        "ok": false,
+                        "error": "tasknode_issued_token_invalid",
+                        "message": "Issued token failed validation; local state unchanged.",
+                        "serverResponse": status_response.body,
+                    }))?;
+                    return Ok(1);
+                }
+                codex_tasknode_session::promote_active(&tasknode_vault(codex_home), &candidate)
+                    .map_err(|err| anyhow::anyhow!("failed to store session: {err}"))?;
+                print_json(&json!({
+                    "ok": true,
+                    "state": "linked",
+                    "accountId": candidate.account_id,
+                    "githubUsername": candidate.github_username,
+                    "expiresAt": candidate.expires_at,
+                }))?;
+                return Ok(0);
+            }
+            202 => {
+                if std::time::Instant::now() >= deadline {
+                    print_json(&json!({
+                        "ok": false,
+                        "state": "pending",
+                        "verificationUrl": pending.verification_url,
+                        "message": "GitHub auth has not completed yet. Finish it in the browser, then poll again.",
+                    }))?;
+                    return Ok(1);
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+            404 | 409 => {
+                // The attempt is unknown or consumed server-side; keeping the
+                // local record can only produce the same failure forever.
+                let _ = codex_tasknode_session::clear_pending(&tasknode_vault(codex_home));
+                print_json(&json!({
+                    "ok": false,
+                    "error": "tasknode_link_expired",
+                    "message": "The link attempt expired or was already used. Run `pfterminal tasknode link` to start again.",
+                    "serverResponse": response.body,
+                }))?;
+                return Ok(1);
+            }
+            _ => return emit_response(response),
+        }
+    }
+}
+
+fn now_unix_string() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs().to_string())
+        .unwrap_or_default()
+}
+
 impl TaskNodeClient {
     async fn from_cli(
         config_overrides: CliConfigOverrides,
@@ -804,13 +1044,10 @@ impl TaskNodeClient {
             .cli_overrides(cli_kv_overrides)
             .build()
             .await?;
-        let session = load_tasknode_session(config.codex_home.as_path())?;
-        let token = session.terminal_token.clone().ok_or_else(|| {
-            anyhow::anyhow!("Task Node session is missing a terminal token. Run /tasknode link.")
-        })?;
+        let session = require_active_session(config.codex_home.as_path())?;
         Ok(Self {
-            origin: resolve_origin(origin_override, session.origin.as_deref()),
-            token,
+            origin: resolve_origin(origin_override, Some(session.origin.as_str())),
+            token: session.terminal_token,
         })
     }
 
@@ -920,31 +1157,48 @@ struct TaskNodeResponse {
     body: Value,
 }
 
-#[derive(Debug, Deserialize)]
-struct TaskNodeLocalSession {
-    origin: Option<String>,
-    terminal_token: Option<String>,
-    pending_verification_url: Option<String>,
+fn tasknode_vault(codex_home: &std::path::Path) -> codex_vault::Vault {
+    codex_vault::Vault::new(codex_home.to_path_buf())
 }
 
-fn load_tasknode_session(codex_home: &std::path::Path) -> anyhow::Result<TaskNodeLocalSession> {
-    let vault = codex_vault::Vault::new(codex_home.to_path_buf());
-    let secret = vault
-        .reveal(TASKNODE_SESSION_LABEL)
-        .map_err(|err| anyhow::anyhow!("Task Node is not linked. Run /tasknode link. ({err})"))?;
-    let session: TaskNodeLocalSession =
-        serde_json::from_str(&secret).context("invalid local Task Node session")?;
-    if session.terminal_token.is_none() {
-        if let Some(url) = session
-            .pending_verification_url
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-        {
-            anyhow::bail!("Task Node link is pending. Finish GitHub auth: {url}");
+fn load_tasknode_state(
+    codex_home: &std::path::Path,
+) -> anyhow::Result<codex_tasknode_session::LocalState> {
+    codex_tasknode_session::load(&tasknode_vault(codex_home))
+        .map_err(|err| anyhow::anyhow!("failed to read local Task Node state: {err}"))
+}
+
+/// Resolve the active session or explain exactly which state the user is in.
+fn require_active_session(
+    codex_home: &std::path::Path,
+) -> anyhow::Result<codex_tasknode_session::ActiveSession> {
+    let state = load_tasknode_state(codex_home)?;
+    let expired_active = match state.active {
+        Some(active) if !active.is_expired() => return Ok(active),
+        other => other,
+    };
+    if expired_active.is_some() {
+        match state.pending {
+            Some(_) => anyhow::bail!(
+                "Task Node session expired and a link attempt is pending. Finish GitHub auth, then run `pfterminal tasknode link poll`."
+            ),
+            None => anyhow::bail!(
+                "Task Node session expired. Run `pfterminal tasknode link` to re-authenticate."
+            ),
         }
-        anyhow::bail!("Task Node session is missing a terminal token. Run /tasknode link.");
     }
-    Ok(session)
+    match state.pending {
+        Some(pending) if !pending.verification_url.trim().is_empty() => anyhow::bail!(
+            "Task Node link is pending. Finish GitHub auth: {} then run `pfterminal tasknode link poll`.",
+            pending.verification_url
+        ),
+        Some(_) => anyhow::bail!(
+            "Task Node link is pending. Run `pfterminal tasknode link poll` to complete it."
+        ),
+        None => anyhow::bail!(
+            "Task Node is not linked. Run `pfterminal tasknode link` (or /tasknode link in the TUI)."
+        ),
+    }
 }
 
 fn resolve_origin(origin_override: Option<String>, saved_origin: Option<&str>) -> String {

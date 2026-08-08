@@ -12,6 +12,10 @@ use std::path::PathBuf;
     override_usage = "pfterminal exec [OPTIONS] [PROMPT]\n       pfterminal exec [OPTIONS] <COMMAND> [ARGS]"
 )]
 pub struct Cli {
+    /// Process-only PSP routing selected by the parent Codex CLI.
+    #[clap(skip)]
+    pub psp: bool,
+
     /// Action to perform. If omitted, runs a new non-interactive session.
     #[command(subcommand)]
     pub command: Option<Command>,
